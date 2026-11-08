@@ -22,7 +22,8 @@
 | Host-тесты (zig c++, Windows) | 39 / 0 ошибок |
 | check_tables.py | все таблицы совпадают с данными анализа |
 | build_webui.py --check / node --check | OK |
-| arduino-cli, esp32 3.3.8, ESP32S3 Dev Module | первая сборка выявила ошибку `size_t` в HfmDtc.cpp — исправлено; результат повторной сборки — в SESSION_HANDOFF |
+| arduino-cli в CI (ESP32S3 Dev Module, Default 4MB) | успешно, 0 предупреждений: 1 114 301 Б (85 % APP), RAM 78 КБ (23 %) |
+| Локально esp32 3.3.8 (Windows) | первая сборка нашла ошибку `size_t` (исправлено); повторная — в процессе на момент завершения сессии |
 
 ## Реализованные функции (кратко)
 
