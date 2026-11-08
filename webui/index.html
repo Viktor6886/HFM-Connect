@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#f2f2f7" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)">
+<title>HFM Connect</title>
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<div id="app">
+  <aside id="sidebar" aria-label="Разделы"></aside>
+  <div id="main">
+    <header id="navbar">
+      <button id="backBtn" class="nav-back hidden" aria-label="Назад">‹ Ещё</button>
+      <div class="nav-title-small" id="navTitleSmall"></div>
+      <div id="linkPill" class="pill" title="Состояние K-Line">—</div>
+    </header>
+    <div id="banner" class="banner hidden"></div>
+    <main id="content" tabindex="-1"></main>
+  </div>
+  <nav id="tabbar" aria-label="Навигация"></nav>
+</div>
+<div id="sheet" class="sheet hidden" role="dialog" aria-modal="true"><div class="sheet-card" id="sheetCard"></div></div>
+<div id="toast" class="toast hidden" role="status"></div>
+<script src="app.js"></script>
+</body>
+</html>

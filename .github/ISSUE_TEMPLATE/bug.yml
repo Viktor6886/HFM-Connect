@@ -1,0 +1,14 @@
+name: Ошибка
+description: Ошибка прошивки или WebUI
+labels: ["bug"]
+body:
+  - type: textarea
+    id: what
+    attributes: {label: "Что произошло и как воспроизвести"}
+    validations: {required: true}
+  - type: input
+    id: fw
+    attributes: {label: "Версия прошивки / ядра esp32 / браузер"}
+  - type: textarea
+    id: log
+    attributes: {label: "Лог Serial / трасса", render: text}

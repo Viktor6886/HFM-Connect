@@ -1,0 +1,655 @@
+#ifdef ARDUINO
+#include "DiagEngine.h"
+
+#include <LittleFS.h>
+#include <esp_random.h>
+
+#include "Config.h"
+#include "KLineUart.h"
+#include "SimEcu.h"
+
+DiagEngine Engine;
+
+// SimEcu driven by the real clock (on-device simulator source).
+class SimEcuRealtime : public SimEcu {
+ public:
+  void sleepMs(uint32_t ms) override { delay(ms); }
+  uint32_t nowMs() override { return millis(); }
+  uint32_t nowUs() override { return micros(); }
+  LinkStatus exchange(uint8_t tx, Parity p, uint16_t d, uint8_t& e, uint8_t& r) override {
+    delayMicroseconds(3600);  // realistic byte timing at 9600 Bd
+    return SimEcu::exchange(tx, p, d, e, r);
+  }
+
+ protected:
+  uint32_t modelMs() override { return millis(); }
+};
+
+const char* jobCode(Job j) {
+  static const char* const names[] = {"none", "connect", "disconnect", "identify", "read_dtc", "read_adapt",
+                                      "read_coding", "read_vin", "live_start", "live_stop", "svc_prepare",
+                                      "svc_execute", "purge_on", "purge_off", "stop", "impulse_read",
+                                      "ack_fault", "apply_source"};
+  return names[(uint8_t)j < sizeof(names) / sizeof(names[0]) ? (uint8_t)j : 0];
+}
+
+const char* jobStateCode(JobState s) {
+  switch (s) {
+    case JobState::Queued: return "queued";
+    case JobState::Running: return "running";
+    case JobState::Done: return "done";
+    case JobState::Failed: return "failed";
+    default: return "idle";
+  }
+}
+
+static void traceLock(void* m) { xSemaphoreTakeRecursive((SemaphoreHandle_t)m, portMAX_DELAY); }
+static void traceUnlock(void* m) { xSemaphoreGiveRecursive((SemaphoreHandle_t)m); }
+static SemaphoreHandle_t gTraceMtx = nullptr;
+
+void DiagEngine::begin(Settings* s) {
+  settings_ = s;
+  mtx_ = xSemaphoreCreateRecursiveMutex();
+  gTraceMtx = xSemaphoreCreateRecursiveMutex();
+  trace_.setLock(traceLock, traceUnlock, gTraceMtx);
+  trace_.setEnabled(s->traceCapture);
+  kline_ = new KLineUart(HFM_KLINE_UART_NUM, HFM_KLINE_TX_PIN, HFM_KLINE_RX_PIN, HFM_KLINE_TX_INVERTED,
+                         HFM_KLINE_RX_INVERTED);
+  sim_ = new SimEcuRealtime();
+  snprintf(sessionId_, sizeof sessionId_, "S%08lX", (unsigned long)esp_random());
+  pinMode(HFM_WRITE_EN_PIN, INPUT_PULLUP);
+  selectLink();
+  EcuIdent none;
+  prof::ResolveOptions o;
+  prof::resolve(none, o, st_.profile);
+  xTaskCreatePinnedToCore(taskEntry, "hfm-engine", HFM_ENGINE_TASK_STACK, this, 3, nullptr, HFM_ENGINE_TASK_CORE);
+}
+
+void DiagEngine::selectLink() {
+  if (session_) {
+    session_->disconnect();
+    delete session_;
+  }
+  st_.simulator = settings_->source == 1;
+  link_ = st_.simulator ? (ByteLink*)sim_ : (ByteLink*)kline_;
+  if (st_.simulator) sim_->setScenario((SimEcu::Scenario)(settings_->simScenario % 4));
+  session_ = new HfmSession(*link_, trace_);
+  session_->setExperimentalReads(settings_->experimentalReads);
+}
+
+const char* DiagEngine::transportName() { return link_ ? link_->name() : "none"; }
+
+void DiagEngine::lock() { xSemaphoreTakeRecursive(mtx_, portMAX_DELAY); }
+void DiagEngine::unlock() { xSemaphoreGiveRecursive(mtx_); }
+
+uint32_t DiagEngine::submit(Job j, uint32_t arg, const char* text) {
+  lock();
+  // STOP always preempts (purge restore / live stop); others need a free slot.
+  bool busy = pending_ != Job::None || st_.job.state == JobState::Running;
+  if (busy && j != Job::Stop && j != Job::LiveStop) {
+    unlock();
+    return 0;
+  }
+  pending_ = j;
+  pendingArg_ = arg;
+  strlcpy(pendingText_, text ? text : "", sizeof pendingText_);
+  uint32_t id = nextJobId_++;
+  if (st_.job.state != JobState::Running) {
+    st_.job = JobInfo();
+    st_.job.id = id;
+    st_.job.job = j;
+    st_.job.state = JobState::Queued;
+  }
+  unlock();
+  return id;
+}
+
+void DiagEngine::taskEntry(void* self) { static_cast<DiagEngine*>(self)->run(); }
+
+void DiagEngine::finishJob(bool ok, const char* msg) {
+  lock();
+  st_.job.state = ok ? JobState::Done : JobState::Failed;
+  strlcpy(st_.job.message, msg ? msg : "", sizeof st_.job.message);
+  st_.job.finishedMs = millis();
+  st_.session = session_->state();
+  st_.lastError = session_->lastError();
+  st_.txCount = session_->txCount();
+  st_.errCount = session_->errorCount();
+  unlock();
+}
+
+void DiagEngine::readHardware() {
+  bool il = digitalRead(HFM_WRITE_EN_PIN) == (HFM_WRITE_EN_ACTIVE_LOW ? LOW : HIGH);
+  float v = -1;
+#if HFM_VBAT_ADC_PIN >= 0
+  v = analogReadMilliVolts(HFM_VBAT_ADC_PIN) / 1000.0f * HFM_VBAT_DIVIDER * HFM_VBAT_CAL;
+#endif
+  lock();
+  st_.interlock = il;
+  st_.batteryV = v;
+  st_.parityErrors = kline_->parityErrors();
+  st_.frameErrors = kline_->frameErrors();
+  unlock();
+}
+
+void DiagEngine::reresolveProfile() {
+  lock();
+  prof::ResolveOptions o;
+  o.experimentalReads = settings_->experimentalReads;
+  o.engineerMode = settings_->engineerMode;
+  prof::resolve(st_.ident, o, st_.profile);
+  if (session_) session_->setExperimentalReads(settings_->experimentalReads);
+  trace_.setEnabled(settings_->traceCapture);
+  unlock();
+}
+
+bool DiagEngine::can(uint8_t f, char* msg, size_t n) {
+  lock();
+  const prof::Capability c = st_.profile.caps[f];
+  unlock();
+  if (!c.allowed) snprintf(msg, n, "%s", c.reason ? c.reason : "Недоступно для профиля");
+  return c.allowed;
+}
+
+void DiagEngine::doConnect(char* msg, size_t n, bool& ok) {
+  LinkStatus s = session_->connect();
+  ok = s == LinkStatus::Ok;
+  lock();
+  st_.session = session_->state();
+  st_.connectedAtMs = session_->connectedAtMs();
+  st_.lastError = s;
+  unlock();
+  if (!ok) snprintf(msg, n, "Нет синхронизации AA/55 (%s): проверьте питание, массу и K-Line", linkStatusCode(s));
+}
+
+void DiagEngine::doIdentify(char* msg, size_t n, bool& ok) {
+  uint8_t raw[28];
+  LinkStatus s = session_->readIdent(raw, 28);
+  ok = s == LinkStatus::Ok;
+  EcuIdent id;
+  parseIdent(raw, ok ? 28 : 0, id);
+  lock();
+  if (ok) st_.ident = id;
+  prof::ResolveOptions o;
+  o.experimentalReads = settings_->experimentalReads;
+  o.engineerMode = settings_->engineerMode;
+  prof::resolve(st_.ident, o, st_.profile);
+  unlock();
+  if (!ok) snprintf(msg, n, "Ошибка чтения F0 (%s)", linkStatusCode(s));
+  else snprintf(msg, n, "%s", st_.profile.name);
+}
+
+bool DiagEngine::ensureConnected(char* msg, size_t n) {
+  if (session_->ready()) return true;
+  bool ok;
+  doConnect(msg, n, ok);
+  if (ok) doIdentify(msg, n, ok);
+  return ok;
+}
+
+void DiagEngine::fillFacts(guard::Facts& f) {
+  uint32_t now = millis();
+  f.sessionReady = session_->ready();
+  f.interlockClosed = st_.interlock;
+  const live::Value& rpm = st_.live.v[live::P_RPM];
+  const live::Value& ect = st_.live.v[live::P_ECT];
+  f.liveAgeMs = st_.live.tMs ? now - st_.live.tMs : 0xFFFFFFFF;
+  if (rpm.hasValue) {
+    f.rpm = rpm.v;
+    f.engineStopped = rpm.raw0 == 0 ? 1 : 0;
+  }
+  if (ect.hasValue && ect.q == live::Quality::Valid) f.ect = ect.v;
+  f.batteryV = st_.batteryV;
+  f.batteryManualConfirm = settings_->batteryManualConfirm;
+  if (st_.dtc.valid) {
+    f.faultMemAgeMs = now - st_.dtc.tMs;
+    f.faultMemNonZero = false;
+    for (int i = 0; i < 16; i++)
+      if (st_.dtc.fm.bankA[i] || st_.dtc.fm.bankB[i]) f.faultMemNonZero = true;
+  }
+  if (st_.adapt.valid) f.adaptAgeMs = now - st_.adapt.tMs;
+}
+
+static uint16_t decodeAll(const svc::FaultMemory& fm, const prof::EcuProfile& p, dtc::Decoded* out, uint16_t max) {
+  uint16_t n = dtc::decodeBank(fm.bankA, 0x00, p.variant, out, max);
+  n += dtc::decodeBank(fm.bankB, 0x10, p.variant, out + n, (uint16_t)(max - n));
+  return n;
+}
+
+void DiagEngine::execute(Job j, uint32_t arg, const char* text) {
+  char msg[96] = "OK";
+  bool ok = true;
+  lock();
+  st_.job.state = JobState::Running;
+  st_.job.startedMs = millis();
+  unlock();
+
+  switch (j) {
+    case Job::ApplySource:
+      lock();
+      st_.liveActive = false;
+      st_.ident = EcuIdent();
+      st_.dtc = DtcView();
+      st_.adapt = svc::Adaptations();
+      st_.coding = svc::Coding();
+      unlock();
+      selectLink();
+      reresolveProfile();
+      snprintf(msg, sizeof msg, "Источник: %s", st_.simulator ? "симулятор (синтетические данные)" : "K-Line");
+      break;
+    case Job::Connect:
+      if (session_->ready()) session_->disconnect();
+      doConnect(msg, sizeof msg, ok);
+      if (ok) doIdentify(msg, sizeof msg, ok);
+      break;
+    case Job::Disconnect:
+      lock();
+      st_.liveActive = false;
+      unlock();
+      session_->disconnect();
+      snprintf(msg, sizeof msg, "Отключено");
+      break;
+    case Job::Identify:
+      if (!ensureConnected(msg, sizeof msg)) { ok = false; break; }
+      doIdentify(msg, sizeof msg, ok);
+      break;
+    case Job::ReadDtc: {
+      if (!ensureConnected(msg, sizeof msg)) { ok = false; break; }
+      if (!can(prof::F_DTC_READ, msg, sizeof msg)) { ok = false; break; }
+      bool ext = st_.profile.caps[prof::F_DTC_EXTENDED].allowed;
+      svc::FaultMemory fm;
+      LinkStatus s = svc::readFaultMemory(*session_, fm, ext);
+      ok = fm.valid;
+      if (ok) {
+        lock();
+        st_.dtc.fm = fm;
+        st_.dtc.valid = true;
+        st_.dtc.tMs = millis();
+        st_.dtc.count = decodeAll(fm, st_.profile, st_.dtc.items, 48);
+        snprintf(msg, sizeof msg, "Прочитано 32 байта F1, установлено битов: %u", st_.dtc.count);
+        unlock();
+      } else {
+        snprintf(msg, sizeof msg, "Ошибка чтения F1 (%s)", linkStatusCode(s));
+      }
+      break;
+    }
+    case Job::ReadAdapt: {
+      if (!ensureConnected(msg, sizeof msg) || !can(prof::F_ADAPT_READ, msg, sizeof msg)) { ok = false; break; }
+      svc::Adaptations a;
+      LinkStatus s = svc::readAdaptations(*session_, a);
+      ok = a.valid;
+      lock();
+      if (ok) st_.adapt = a;
+      unlock();
+      if (!ok) snprintf(msg, sizeof msg, "Ошибка чтения 24* 90/92/93 (%s)", linkStatusCode(s));
+      break;
+    }
+    case Job::ReadCoding: {
+      if (!ensureConnected(msg, sizeof msg) || !can(prof::F_CODING_READ, msg, sizeof msg)) { ok = false; break; }
+      svc::Coding c;
+      LinkStatus s = svc::readCoding(*session_, c);
+      ok = c.valid;
+      lock();
+      if (ok) st_.coding = c;
+      unlock();
+      if (!ok) snprintf(msg, sizeof msg, "Ошибка чтения 27* 02 24* F0 (%s)", linkStatusCode(s));
+      break;
+    }
+    case Job::ReadVin: {
+      if (!ensureConnected(msg, sizeof msg) || !can(prof::F_VIN_READ, msg, sizeof msg)) { ok = false; break; }
+      svc::Vin v;
+      LinkStatus s = svc::readVin(*session_, v);
+      ok = s == LinkStatus::Ok;
+      lock();
+      st_.vin = v;
+      unlock();
+      snprintf(msg, sizeof msg, ok ? (v.valid ? "VIN прочитан" : "VIN в ЭБУ не записан (00/FF)") : "Ошибка F9 (%s)",
+               linkStatusCode(s));
+      break;
+    }
+    case Job::LiveStart:
+      if (!ensureConnected(msg, sizeof msg) || !can(prof::F_LIVE_NATIVE, msg, sizeof msg)) { ok = false; break; }
+      lock();
+      st_.liveActive = true;
+      st_.liveCycles = 0;
+      unlock();
+      snprintf(msg, sizeof msg, "Опрос Live Data запущен");
+      break;
+    case Job::LiveStop:
+      lock();
+      st_.liveActive = false;
+      unlock();
+      snprintf(msg, sizeof msg, "Опрос остановлен");
+      break;
+    case Job::SvcPrepare: {
+      guard::Op op = (guard::Op)arg;
+      if (!ensureConnected(msg, sizeof msg)) { ok = false; break; }
+      // Fresh read of engine state immediately before planning.
+      if (st_.profile.caps[prof::F_LIVE_NATIVE].allowed) {
+        live::Snapshot snap = st_.snap;
+        if (live::pollNative(*session_, snap) == LinkStatus::Ok) {
+          lock();
+          st_.snap = snap;
+          live::decode(snap, prof::NormGroup::None, st_.profile.vdoUnits, nullptr, st_.live);
+          unlock();
+        }
+      }
+      readHardware();
+      lock();
+      guard::Facts f;
+      fillFacts(f);
+      guard::Plan plan;
+      ok = guard_.prepare(op, st_.profile, st_.ident, f, millis(), esp_random() | 1, plan);
+      st_.plan = plan;
+      unlock();
+      snprintf(msg, sizeof msg, ok ? "План готов: подтвердите в течение 20 с" : "Условия не выполнены");
+      break;
+    }
+    case Job::SvcExecute: {
+      guard::Op op = (guard::Op)(arg & 0xFF);
+      readHardware();
+      lock();
+      guard::Facts f;
+      fillFacts(f);
+      uint32_t token = st_.plan.token;  // token is echoed by the UI in text
+      (void)token;
+      uint32_t given = strtoul(text, nullptr, 16);
+      const char* phrase = strchr(text, '|');
+      guard::AuthResult ar = guard_.authorize(op, given, phrase ? phrase + 1 : "", st_.profile, st_.ident, f, millis());
+      unlock();
+      if (ar != guard::AuthResult::Ok) {
+        ok = false;
+        snprintf(msg, sizeof msg, "Отказано: %s", guard::authCode(ar));
+        break;
+      }
+      lock();
+      st_.liveActive = false;
+      guard_.begin(op);
+      unlock();
+      session_->armWrite(esp_random() | 1);
+      LinkStatus s = LinkStatus::Ok;
+      char res[160];
+      if (op == guard::Op::DtcClear) {
+        bool verified = false;
+        svc::FaultMemory after;
+        s = svc::dtcClear(*session_, verified, after);
+        ok = s == LinkStatus::Ok;
+        lock();
+        if (after.valid) {
+          st_.dtc.fm = after;
+          st_.dtc.valid = true;
+          st_.dtc.tMs = millis();
+          st_.dtc.count = decodeAll(after, st_.profile, st_.dtc.items, 48);
+        }
+        unlock();
+        snprintf(res, sizeof res, ok ? (verified ? "Стирание выполнено, повторное чтение: все 32 байта = 00"
+                                                 : "Команды приняты, но память не пуста — неисправность активна?")
+                                     : "ОШИБКА при стирании (%s). Состояние неизвестно — запись заблокирована.",
+                 linkStatusCode(s));
+        guard_.finish(ok);
+      } else if (op == guard::Op::AdaptReset) {
+        uint8_t r[10];
+        s = svc::adaptationReset(*session_, r);
+        ok = s == LinkStatus::Ok;
+        snprintf(res, sizeof res, ok ? "Команды сброса приняты. Обязателен цикл зажигания ВЫКЛ/ВКЛ; результат не "
+                                       "подтверждён ЭБУ — прочитайте адаптации повторно."
+                                     : "ОШИБКА сброса (%s). Состояние неизвестно — запись заблокирована.",
+                 linkStatusCode(s));
+        guard_.finish(ok);
+      } else {
+        bool sonde = false;
+        s = svc::purgeEnter(*session_, sonde);
+        ok = s == LinkStatus::Ok;
+        lock();
+        st_.purgeSonde = sonde;
+        st_.purgeOn = false;
+        st_.purgeActiveSinceMs = millis();
+        unlock();
+        if (!ok) {
+          svc::purgeRestore(*session_, sonde);
+          guard_.finish(false);
+          snprintf(res, sizeof res, "ОШИБКА входа в режим управления (%s). Выключите зажигание.", linkStatusCode(s));
+        } else {
+          snprintf(res, sizeof res, "Режим управления Y58/1 активен. Лимит ВКЛ — 30 с, затем восстановление.");
+        }
+      }
+      session_->disarmWrite();
+      lock();
+      strlcpy(st_.lastServiceResult, res, sizeof st_.lastServiceResult);
+      st_.plan = guard::Plan();
+      unlock();
+      snprintf(msg, sizeof msg, "%s", ok ? "Выполнено" : "Ошибка");
+      break;
+    }
+    case Job::PurgeOn:
+    case Job::PurgeOff: {
+      if (guard_.state() != guard::State::Active) { ok = false; snprintf(msg, sizeof msg, "Тест не активен"); break; }
+      session_->armWrite(1);
+      LinkStatus s = svc::purgeSet(*session_, j == Job::PurgeOn);
+      session_->disarmWrite();
+      ok = s == LinkStatus::Ok;
+      lock();
+      if (ok) {
+        st_.purgeOn = j == Job::PurgeOn;
+        st_.purgeOnSinceMs = millis();
+      }
+      unlock();
+      if (!ok) {
+        guard_.finish(false);
+        snprintf(msg, sizeof msg, "Ошибка управления (%s) — выключите зажигание", linkStatusCode(s));
+      }
+      break;
+    }
+    case Job::Stop:
+      lock();
+      st_.liveActive = false;
+      unlock();
+      if (guard_.state() == guard::State::Active) {
+        guard_.restoring();
+        session_->armWrite(1);
+        LinkStatus s = svc::purgeRestore(*session_, st_.purgeSonde);
+        ok = s == LinkStatus::Ok;
+        guard_.finish(ok);
+        lock();
+        st_.purgeOn = false;
+        snprintf(st_.lastServiceResult, sizeof st_.lastServiceResult,
+                 ok ? "Восстановление выполнено (D0 0B, D1 00, D2 00, D3 40, D4 00)"
+                    : "ВОССТАНОВЛЕНИЕ НЕ ПОДТВЕРЖДЕНО — выключите зажигание!");
+        unlock();
+      }
+      snprintf(msg, sizeof msg, "STOP");
+      break;
+    case Job::AckFault:
+      guard_.acknowledgeFault();
+      snprintf(msg, sizeof msg, "Ошибка квитирована: переподключитесь и идентифицируйте ЭБУ");
+      break;
+    case Job::ImpulseRead: {
+      if (st_.simulator) { ok = false; snprintf(msg, sizeof msg, "Импульсный режим недоступен в симуляторе"); break; }
+      if (!settings_->impulseEnabled) { ok = false; snprintf(msg, sizeof msg, "Включите импульсный режим в настройках"); break; }
+      lock();
+      st_.liveActive = false;
+      unlock();
+      session_->disconnect();
+      if (!kline_->open()) { ok = false; snprintf(msg, sizeof msg, "UART недоступен"); break; }
+      ImpulseConfig cfg;
+      cfg.pressMs = settings_->impPressMs;
+      cfg.endGapMs = settings_->impEndGapMs;
+      ImpulseView v;
+      v.edgeCount = kline_->impulseCapture(cfg, v.edges, 96);
+      v.result = decodeImpulses(v.edges, v.edgeCount, cfg);
+      v.valid = true;
+      v.tMs = millis();
+      lock();
+      ImpulseView& cur = st_.impulse;
+      uint8_t codes[16];
+      uint8_t nc = cur.codeCount;
+      memcpy(codes, cur.codes, sizeof codes);
+      if (v.result.complete && nc < 16) codes[nc++] = v.result.pulses;
+      cur = v;
+      memcpy(cur.codes, codes, sizeof codes);
+      cur.codeCount = nc;
+      unlock();
+      kline_->close();
+      snprintf(msg, sizeof msg, v.result.complete ? "Код N = %u" : "Код не распознан (импульсов: %u)", v.result.pulses);
+      ok = v.result.complete;
+      break;
+    }
+    default:
+      break;
+  }
+  finishJob(ok, msg);
+}
+
+void DiagEngine::livePoll() {
+  uint32_t now = millis();
+  if (now - lastLiveMs_ < HFM_LIVE_MIN_CYCLE_MS) return;
+  lastLiveMs_ = now;
+  live::Snapshot snap;
+  lock();
+  snap = st_.snap;
+  bool ext = st_.profile.caps[prof::F_LIVE_EXTENDED].allowed;
+  int16_t vi = settings_->vehicleIdx;
+  bool vdo = st_.profile.vdoUnits;
+  unlock();
+  LinkStatus s = live::pollNative(*session_, snap);
+  if (s == LinkStatus::Ok && ext) live::pollExtended(*session_, snap);
+  prof::NormGroup ng = prof::NormGroup::None;
+  const prof::VehicleEntry* ve = vi >= 0 ? prof::vehicleByIndex((uint16_t)vi) : nullptr;
+  if (ve) ng = ve->norms;
+  lock();
+  st_.snap = snap;
+  prevLive_ = st_.live;
+  live::decode(snap, ng, vdo, &prevLive_, st_.live);
+  st_.liveCycles++;
+  st_.session = session_->state();
+  st_.txCount = session_->txCount();
+  st_.errCount = session_->errorCount();
+  unlock();
+  if (s != LinkStatus::Ok) {
+    // Read-only: HFMreader re-initialises up to 3 times (connect() retries).
+    char msg[96];
+    bool ok;
+    doConnect(msg, sizeof msg, ok);
+    if (!ok) {
+      lock();
+      st_.liveActive = false;
+      unlock();
+    }
+    return;
+  }
+  if (st_.recording) recordRow();
+}
+
+void DiagEngine::keepAlive() {
+  if (!settings_->keepAlive || !session_->ready()) return;
+  uint32_t now = millis();
+  if (now - session_->lastActivityMs() < HFM_KEEPALIVE_MS) return;
+  uint8_t b;
+  // Harmless read-only command (F0:00) instead of HFMScan "10 00": 0x10 is
+  // also an element of the DTC clear sequence (docs/DECISIONS.md D-006).
+  if (session_->prefix(0xF0) == LinkStatus::Ok) session_->selector(0x00, b);
+  lock();
+  st_.session = session_->state();
+  st_.lastError = session_->lastError();
+  unlock();
+}
+
+void DiagEngine::purgeWatchdog() {
+  if (guard_.state() != guard::State::Active) return;
+  uint32_t now = millis();
+  bool timeoutOn = st_.purgeOn && now - st_.purgeOnSinceMs > 30000;
+  bool timeoutTest = now - st_.purgeActiveSinceMs > 180000;
+  if (timeoutOn || timeoutTest) execute(Job::Stop, 0, nullptr);
+}
+
+bool DiagEngine::startRecording() {
+  lock();
+  if (st_.recording) { unlock(); return true; }
+  LittleFS.mkdir("/rec");
+  snprintf(st_.recordFile, sizeof st_.recordFile, "/rec/%s_%lu.csv", sessionId_, (unsigned long)(millis() / 1000));
+  File f = LittleFS.open(st_.recordFile, "w");
+  bool ok = (bool)f;
+  if (ok) {
+    f.print("t_ms");
+    for (uint8_t p = 0; p < live::P_COUNT; p++) {
+      f.print(',');
+      f.print(live::param(p).key);
+    }
+    f.print('\n');
+    f.close();
+    st_.recording = true;
+    st_.recordRows = 0;
+    recBuf_.clear();
+  }
+  unlock();
+  return ok;
+}
+
+void DiagEngine::stopRecording() {
+  lock();
+  if (st_.recording && !recBuf_.empty()) {
+    File f = LittleFS.open(st_.recordFile, "a");
+    if (f) { f.write((const uint8_t*)recBuf_.data(), recBuf_.size()); f.close(); }
+    recBuf_.clear();
+  }
+  st_.recording = false;
+  unlock();
+}
+
+void DiagEngine::recordRow() {
+  lock();
+  char t[24];
+  snprintf(t, sizeof t, "%lu", (unsigned long)st_.live.tMs);
+  recBuf_ += t;
+  for (uint8_t p = 0; p < live::P_COUNT; p++) {
+    const live::Value& v = st_.live.v[p];
+    recBuf_ += ',';
+    if (v.hasValue) {
+      snprintf(t, sizeof t, "%.*f", live::param(p).decimals, v.v);
+      recBuf_ += t;
+    }
+  }
+  recBuf_ += '\n';
+  st_.recordRows++;
+  unlock();
+}
+
+void DiagEngine::run() {
+  for (;;) {
+    readHardware();
+    Job j = Job::None;
+    uint32_t arg = 0;
+    char text[64];
+    lock();
+    if (pending_ != Job::None) {
+      j = pending_;
+      arg = pendingArg_;
+      strlcpy(text, pendingText_, sizeof text);
+      pending_ = Job::None;
+      st_.job.job = j;
+    }
+    bool liveOn = st_.liveActive;
+    unlock();
+    if (j != Job::None) {
+      execute(j, arg, text);
+    } else if (liveOn && session_->ready()) {
+      livePoll();
+    } else {
+      keepAlive();
+    }
+    purgeWatchdog();
+    uint32_t now = millis();
+    if (st_.recording && now - lastFlushMs_ > HFM_RECORD_FLUSH_MS) {
+      lastFlushMs_ = now;
+      lock();
+      if (!recBuf_.empty()) {
+        File f = LittleFS.open(st_.recordFile, "a");
+        if (f) { f.write((const uint8_t*)recBuf_.data(), recBuf_.size()); f.close(); }
+        recBuf_.clear();
+      }
+      unlock();
+    }
+    vTaskDelay(pdMS_TO_TICKS(liveOn ? 1 : 10));
+  }
+}
+#endif

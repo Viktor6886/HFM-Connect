@@ -1,0 +1,54 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  host-tests:
+    name: Host tests + data checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Firmware tables vs analysis data
+        run: python tools/check_tables.py
+      - name: WebUI bundle is up to date
+        run: python tools/build_webui.py --check
+      - name: WebUI JavaScript syntax
+        run: node --check webui/app.js
+      - name: Host tests (g++)
+        env:
+          CXX: g++
+        run: python tools/run_host_tests.py
+
+  firmware:
+    name: Compile ESP32-S3 (Arduino core)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: arduino/setup-arduino-cli@v2
+      - name: Install ESP32 core
+        run: |
+          arduino-cli config init
+          arduino-cli config set board_manager.additional_urls https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json
+          arduino-cli core update-index
+          arduino-cli core install esp32:esp32
+      - name: Compile HFMConnect.ino
+        run: |
+          set -o pipefail
+          mkdir -p build
+          arduino-cli compile --fqbn esp32:esp32:esp32s3:PartitionScheme=default,CDCOnBoot=cdc \
+            --warnings default --build-path build/fw firmware/HFMConnect 2>&1 | tee build/compile.log
+      - name: Upload firmware binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: HFMConnect-esp32s3
+          path: |
+            build/fw/HFMConnect.ino.bin
+            build/fw/HFMConnect.ino.bootloader.bin
+            build/fw/HFMConnect.ino.partitions.bin
+            build/compile.log

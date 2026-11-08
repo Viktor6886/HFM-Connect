@@ -1,0 +1,23 @@
+name: Трасса / проверка на реальном ЭБУ
+description: Результат испытания на автомобиле или стенде (основа для статуса VAL)
+labels: ["hardware-verification"]
+body:
+  - type: input
+    id: ecu
+    attributes: {label: "ЭБУ: номер, производитель, diag index, RAW F0", placeholder: "013 545 13 32 · BOSCH · 41/00 · 2C 42 ..."}
+    validations: {required: true}
+  - type: input
+    id: vehicle
+    attributes: {label: "Автомобиль: кузов, двигатель, дата выпуска", placeholder: "W124.032 · 104.992 · 05/1994"}
+  - type: input
+    id: hw
+    attributes: {label: "Аппаратура: плата ESP32-S3, трансивер, разъём", placeholder: "DevKitC-1 · L9637D · X11/4-16"}
+  - type: textarea
+    id: op
+    attributes: {label: "Операция и условия (зажигание, двигатель, напряжение)"}
+  - type: textarea
+    id: trace
+    attributes: {label: "Трасса JSONL (/api/trace.jsonl) и осциллограммы", render: json}
+  - type: textarea
+    id: result
+    attributes: {label: "Результат и сверка (HHT / другой прибор)"}
