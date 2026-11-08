@@ -1,5 +1,7 @@
 #include "HfmDtc.h"
 
+#include <stddef.h>
+
 namespace dtc {
 
 namespace {

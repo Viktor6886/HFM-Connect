@@ -434,7 +434,12 @@ static void hJob() {
     for (uint8_t o = 0; o < (uint8_t)guard::Op::Count; o++)
       if (op == guard::opCode((guard::Op)o)) arg = o;
   }
-  String text = server.hasArg("token") ? server.arg("token") + "|" + server.arg("phrase") : String("");
+  String text;
+  if (server.hasArg("token")) {
+    text = server.arg("token");
+    text += "|";
+    text += server.arg("phrase");
+  }
   uint32_t id = Engine.submit(job, arg, text.c_str());
   JsonWriter w;
   w.beginObject().kv("ok", id != 0).kv("id", id);
