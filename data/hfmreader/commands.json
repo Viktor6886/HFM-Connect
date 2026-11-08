@@ -1,0 +1,1043 @@
+{
+ "meta": {
+  "product": "HFMreader 1.1.1-public.1 (Windows x64, PyInstaller onedir, CPython 3.12)",
+  "exe": "HFMreader.exe",
+  "exe_sha256": "b5aa7e0ea27761802f2fcec41a197923502faf2dbc6722e3ede694ac0b31a2ed",
+  "pyz_member": {
+   "name": "PYZ.pyz",
+   "file_offset": 326376,
+   "sha256": "daaed7fa0e2d0511e55e07dc9a1a008122e9b56e4028e5db5b580e4a5d89db74"
+  },
+  "resources": {
+   "dtc_catalog.json": "921c23ba9d3f679eca4c747822cae7d343e8239ef9a6a2d8f6aee7b035dba47e",
+   "hht_experimental/candidates.json": "57bef9ad06f4021e3fb80d1570c911bd865fd24bc3879a924f0fd081437abde6"
+  },
+  "status_legend": {
+   "CS": "CONFIRMED_STATIC (read directly from bytecode constants/logic)",
+   "CD": "CONFIRMED_DATA (read directly from shipped JSON resource)",
+   "AV": "APP_FIELD_VERIFIED (author's registry marks VERIFIED on ECU 013 545 13 32; not re-tested here)",
+   "AH": "APP_HIGHLY_LIKELY (author's evidence level; not vehicle-proven)",
+   "AC": "APP_CANDIDATE (author marks candidate/conditional/unvalidated)",
+   "IN": "INFERENCE (analyst interpretation, see protocol.md)"
+  },
+  "note": "Bytecode locations are '<code object> L<source line> @bc+<offset>' inside the PYZ module; exe_offset_of_module_blob is the zlib blob position in HFMreader.exe."
+ },
+ "physical_layer": {
+  "baud": 9600,
+  "data_bits": 8,
+  "stop_bits": 1,
+  "parity_modes": {
+   "none": "Windows NOPARITY (8N1, 10-bit frame). Used for prefix/opcode bytes. ECU in 9-bit UART mode samples the stop bit as 9th bit = 1 (inference).",
+   "space": "Windows SPACEPARITY (8S1, 11-bit frame, parity bit = 0). Used for selector/index/argument bytes (9th bit = 0)."
+  },
+  "parity_switch": "GetCommState/SetCommState before EVERY byte (set_parity called in every exchange).",
+  "dcb_flags": "fBinary | fParity(when space); no flow control, no abort-on-error",
+  "timeouts_ms": {
+   "ReadIntervalTimeout": 50,
+   "ReadTotalTimeoutMultiplier": 0,
+   "ReadTotalTimeoutConstant": 100,
+   "WriteTotalTimeoutMultiplier": 0,
+   "WriteTotalTimeoutConstant": 100
+  },
+  "read_exact_deadline_s": 0.75,
+  "purge_flags": "PurgeComm(TXABORT|RXABORT|TXCLEAR|RXCLEAR = 0x0F)",
+  "echo": "Half-duplex K-line: each transmitted byte is read back as echo; echo must equal TX else 'echo mismatch' (session aborted).",
+  "evidence": [
+   {
+    "file": "HFMreader.exe!PYZ.pyz!hfmreader.winserial",
+    "exe_sha256": "b5aa7e0ea27761802f2fcec41a197923502faf2dbc6722e3ede694ac0b31a2ed",
+    "module_code_sha256": "24819ec2c1b40462c495e349bea8d70f78523fba649b17ef486285213b7c0ea0",
+    "exe_offset_of_module_blob": 1028602,
+    "location": "configure_dcb L42-51 @bc+98..188",
+    "status": "CS"
+   },
+   {
+    "file": "HFMreader.exe!PYZ.pyz!hfmreader.winserial",
+    "exe_sha256": "b5aa7e0ea27761802f2fcec41a197923502faf2dbc6722e3ede694ac0b31a2ed",
+    "module_code_sha256": "24819ec2c1b40462c495e349bea8d70f78523fba649b17ef486285213b7c0ea0",
+    "exe_offset_of_module_blob": 1028602,
+    "location": "Win32SerialBackend._set_timeouts L115 @bc+2..22",
+    "status": "CS"
+   },
+   {
+    "file": "HFMreader.exe!PYZ.pyz!hfmreader.winserial",
+    "exe_sha256": "b5aa7e0ea27761802f2fcec41a197923502faf2dbc6722e3ede694ac0b31a2ed",
+    "module_code_sha256": "24819ec2c1b40462c495e349bea8d70f78523fba649b17ef486285213b7c0ea0",
+    "exe_offset_of_module_blob": 1028602,
+    "location": "Win32SerialBackend class body L64 @bc+12 (read_timeout_s=0.75)",
+    "status": "CS"
+   },
+   {
+    "file": "HFMreader.exe!PYZ.pyz!hfmreader.winserial",
+    "exe_sha256": "b5aa7e0ea27761802f2fcec41a197923502faf2dbc6722e3ede694ac0b31a2ed",
+    "module_code_sha256": "24819ec2c1b40462c495e349bea8d70f78523fba649b17ef486285213b7c0ea0",
+    "exe_offset_of_module_blob": 1028602,
+    "location": "Win32SerialBackend.purge L126 @bc+88 (15)",
+    "status": "CS"
+   },
+   {
+    "file": "HFMreader.exe!PYZ.pyz!hfmreader.serial_transport",
+    "exe_sha256": "b5aa7e0ea27761802f2fcec41a197923502faf2dbc6722e3ede694ac0b31a2ed",
+    "module_code_sha256": "75563255c6842f31ceaa4dc411355fafc1f10d94dd341beca02c7f1820f25b91",
+    "exe_offset_of_module_blob": 957593,
+    "location": "HFMSerialTransport.exchange L53-61",
+    "status": "CS"
+   }
+  ]
+ },
+ "initialization": {
+  "id": "INIT_BREAK_SYNC",
+  "steps": [
+   {
+    "step": 1,
+    "action": "set_parity",
+    "value": "none"
+   },
+   {
+    "step": 2,
+    "action": "purge"
+   },
+   {
+    "step": 3,
+    "action": "BREAK on (K-line held low)",
+    "duration_s": 0.177
+   },
+   {
+    "step": 4,
+    "action": "BREAK off"
+   },
+   {
+    "step": 5,
+    "action": "wait",
+    "duration_s": 0.214
+   },
+   {
+    "step": 6,
+    "action": "purge"
+   },
+   {
+    "step": 7,
+    "action": "set_parity",
+    "value": "space"
+   },
+   {
+    "step": 8,
+    "action": "write",
+    "tx": "AA"
+   },
+   {
+    "step": 9,
+    "action": "read 2 bytes",
+    "expect": "AA 55",
+    "meaning": "AA = adapter echo, 55 = ECU sync reply"
+   }
+  ],
+  "on_failure": "TransportError 'expected AA 55 synchronization'; host retries initialize up to 3 times with 1.0 s pause (live reader) / control sessions: 1 retry after 2.0 s.",
+  "evidence": [
+   {
+    "file": "HFMreader.exe!PYZ.pyz!hfmreader.serial_transport",
+    "exe_sha256": "b5aa7e0ea27761802f2fcec41a197923502faf2dbc6722e3ede694ac0b31a2ed",
+    "module_code_sha256": "75563255c6842f31ceaa4dc411355fafc1f10d94dd341beca02c7f1820f25b91",
+    "exe_offset_of_module_blob": 957593,
+    "location": "HFMSerialTransport body L23-24 @bc+10,14 (0.177/0.214)",
+    "status": "CS"
+   },
+   {
+    "file": "HFMreader.exe!PYZ.pyz!hfmreader.serial_transport",
+    "exe_sha256": "b5aa7e0ea27761802f2fcec41a197923502faf2dbc6722e3ede694ac0b31a2ed",
+    "module_code_sha256": "75563255c6842f31ceaa4dc411355fafc1f10d94dd341beca02c7f1820f25b91",
+    "exe_offset_of_module_blob": 957593,
+    "location": "HFMSerialTransport.initialize L35-51 @bc+2..634",
+    "status": "CS"
+   },
+   {
+    "file": "HFMreader.exe!PYZ.pyz!hfmreader.reader_service",
+    "exe_sha256": "b5aa7e0ea27761802f2fcec41a197923502faf2dbc6722e3ede694ac0b31a2ed",
+    "module_code_sha256": "5224f92575b76d13ecc60628f85ff2eb20886331a377932bd9cdcb190544fc4a",
+    "exe_offset_of_module_blob": 941175,
+    "location": "ReaderService class body L174-177 @bc+30..36 (poll 0.1 s, attempts 3, retry 1.0 s)",
+    "status": "CS"
+   },
+   {
+    "file": "HFMreader.exe!PYZ.pyz!hfmreader.reader_service",
+    "exe_sha256": "b5aa7e0ea27761802f2fcec41a197923502faf2dbc6722e3ede694ac0b31a2ed",
+    "module_code_sha256": "5224f92575b76d13ecc60628f85ff2eb20886331a377932bd9cdcb190544fc4a",
+    "exe_offset_of_module_blob": 941175,
+    "location": "ReaderService._initialize L435-446",
+    "status": "CS"
+   },
+   {
+    "file": "HFMreader.exe!PYZ.pyz!hfmreader.hht_control.session",
+    "exe_sha256": "b5aa7e0ea27761802f2fcec41a197923502faf2dbc6722e3ede694ac0b31a2ed",
+    "module_code_sha256": "2ac61a65d89b4f0496999f2c0fef1cf03f880e3ac6109a79573c16ee6a5e94d4",
+    "exe_offset_of_module_blob": 865739,
+    "location": "ControlSession body L29-32 (CONFIRM 20 s, ON_LIMIT 30 s, GAP 1.0 s, INIT_RETRY 2.0 s)",
+    "status": "CS"
+   }
+  ],
+  "status": "CS"
+ },
+ "transaction_rules": {
+  "prefix": "byte sent with parity none; ECU answers with bitwise complement (tx XOR FF); mismatch => abort",
+  "selector": "byte sent with parity space after a read prefix (20/21/24/27/F0/F1); ECU answers with one data byte",
+  "write_argument": "byte sent with parity space after a control/clear prefix; ECU answers with complement of the argument (FF->00, FC->03, 00->FF) [inference from expected values]",
+  "context": "the ECU keeps the last read prefix as context: selector-only recipes (e.g. B9 B7, 96) rely on the previous prefix",
+  "echo": "every TX byte is first read back (adapter echo) and must match",
+  "evidence": [
+   {
+    "file": "HFMreader.exe!PYZ.pyz!hfmreader.hht_experimental.recipe_executor",
+    "exe_sha256": "b5aa7e0ea27761802f2fcec41a197923502faf2dbc6722e3ede694ac0b31a2ed",
+    "module_code_sha256": "482d1b4e49704da12d913d1f7e8fb3c55e3042a1b14958a0e9aae6c7b32e3825",
+    "exe_offset_of_module_blob": 891299,
+    "location": "_exchange L61-78; _validate_plans L94-99",
+    "status": "CS"
+   },
+   {
+    "file": "HFMreader.exe!PYZ.pyz!hfmreader.dtc_protocol",
+    "exe_sha256": "b5aa7e0ea27761802f2fcec41a197923502faf2dbc6722e3ede694ac0b31a2ed",
+    "module_code_sha256": "3b70802e69eed71141fd24406e164dfc4e1d2093a70aa00423d596cdb99b44f1",
+    "exe_offset_of_module_blob": 829232,
+    "location": "_CLEAR_TRANSACTIONS L94",
+    "status": "IN"
+   }
+  ]
+ },
+ "groups": [
+  {
+   "name": "rpm_low",
+   "prefix": "20",
+   "prefix_ack": "DF",
+   "selectors": [
+    "54"
+   ],
+   "parameter_keys": []
+  },
+  {
+   "name": "rpm_high_context",
+   "prefix": "20",
+   "prefix_ack": "DF",
+   "selectors": [
+    "55",
+    "C4",
+    "B9"
+   ],
+   "parameter_keys": [
+    "ignition_angle"
+   ]
+  },
+  {
+   "name": "mixture_iat",
+   "prefix": "20",
+   "prefix_ack": "DF",
+   "selectors": [
+    "23",
+    "99",
+    "68"
+   ],
+   "parameter_keys": [
+    "o2_sensor_voltage"
+   ]
+  },
+  {
+   "name": "airflow",
+   "prefix": "20",
+   "prefix_ack": "DF",
+   "selectors": [
+    "49",
+    "BD",
+    "B7",
+    "C2",
+    "C4",
+    "B9"
+   ],
+   "parameter_keys": [
+    "throttle_angle",
+    "engine_speed",
+    "engine_load",
+    "ignition_angle"
+   ]
+  },
+  {
+   "name": "coolant",
+   "prefix": "21",
+   "prefix_ack": "DE",
+   "selectors": [
+    "D7",
+    "BF",
+    "B7",
+    "BE",
+    "69",
+    "67"
+   ],
+   "parameter_keys": [
+    "coolant_temperature",
+    "intake_air_temperature"
+   ]
+  },
+  {
+   "name": "air_mass_low_candidate",
+   "prefix": "20",
+   "prefix_ack": "DF",
+   "selectors": [
+    "48"
+   ],
+   "parameter_keys": [
+    "air_mass"
+   ]
+  },
+  {
+   "name": "air_mass_high_candidate",
+   "prefix": "20",
+   "prefix_ack": "DF",
+   "selectors": [
+    "49"
+   ],
+   "parameter_keys": [
+    "air_mass"
+   ]
+  }
+ ],
+ "profiles": {
+  "rpm": [
+   "airflow"
+  ],
+  "full7": [
+   "rpm_low",
+   "rpm_high_context",
+   "mixture_iat",
+   "airflow",
+   "coolant"
+  ],
+  "full8": [
+   "rpm_low",
+   "rpm_high_context",
+   "mixture_iat",
+   "airflow",
+   "coolant",
+   "air_mass_low_candidate",
+   "air_mass_high_candidate"
+  ],
+  "validation": [
+   "rpm_low",
+   "rpm_high_context",
+   "mixture_iat",
+   "airflow",
+   "coolant",
+   "air_mass_low_candidate",
+   "air_mass_high_candidate"
+  ]
+ },
+ "selectors": [
+  {
+   "page": "20",
+   "selector": "23",
+   "meaning": "Upstream O2 sensor voltage (native ×4 mV; HHT formula 5.1102·raw−192.83 mV)",
+   "used_by": "mixture_iat; HFM_R008/R044",
+   "status": "APP_HIGHLY_LIKELY (author's evidence level; not vehicle-proven)"
+  },
+  {
+   "page": "20",
+   "selector": "25",
+   "meaning": "Downstream O2 sensor voltage (HHT R046)",
+   "used_by": "HFM_R046",
+   "status": "APP_CANDIDATE (author marks candidate/conditional/unvalidated)"
+  },
+  {
+   "page": "20",
+   "selector": "47",
+   "meaning": "Vehicle speed raw (1.2·raw km/h)",
+   "used_by": "HFM_R043/R172",
+   "status": "APP_CANDIDATE (author marks candidate/conditional/unvalidated)"
+  },
+  {
+   "page": "20",
+   "selector": "48",
+   "meaning": "Air-mass low byte (W, little-endian with 0x49)",
+   "used_by": "air_mass_low_candidate; HFM_R007",
+   "status": "APP_FIELD_VERIFIED (author's registry marks VERIFIED on ECU 013 545 13 32; not re-tested here)"
+  },
+  {
+   "page": "20",
+   "selector": "49",
+   "meaning": "Air-mass high byte",
+   "used_by": "air_mass_high_candidate; airflow[0]; HFM_R007",
+   "status": "APP_FIELD_VERIFIED (author's registry marks VERIFIED on ECU 013 545 13 32; not re-tested here)"
+  },
+  {
+   "page": "20",
+   "selector": "54",
+   "meaning": "Injection time low byte (with 0x55: ((lo+256·hi)//50)/10 ms); NOT rpm (app: disproven_as_rpm)",
+   "used_by": "rpm_low; hht_control injection",
+   "status": "APP_CANDIDATE (author marks candidate/conditional/unvalidated)"
+  },
+  {
+   "page": "20",
+   "selector": "55",
+   "meaning": "Injection time high byte",
+   "used_by": "rpm_high_context; hht_control injection",
+   "status": "APP_CANDIDATE (author marks candidate/conditional/unvalidated)"
+  },
+  {
+   "page": "20",
+   "selector": "67",
+   "meaning": "Idle target speed raw (25·raw rpm) when read after PREFIX 20 (HHT llupm, I6A≥0x41)",
+   "used_by": "HFM_R002/R028",
+   "status": "APP_CANDIDATE (author marks candidate/conditional/unvalidated)"
+  },
+  {
+   "page": "20",
+   "selector": "68",
+   "meaning": "Status bits: deceleration fuel cut-off (mask 0x04) [HHT context mixture_iat]",
+   "used_by": "HFM_R026",
+   "status": "APP_CANDIDATE (author marks candidate/conditional/unvalidated)"
+  },
+  {
+   "page": "20",
+   "selector": "98",
+   "meaning": "Status bits: starter T50 (mask 0x80), idle contact (mask 0x80, guessed), P/N vs D/R candidate (mask 0x20)",
+   "used_by": "HFM_R015/R022; pn_candidate",
+   "status": "APP_CANDIDATE (author marks candidate/conditional/unvalidated)"
+  },
+  {
+   "page": "20",
+   "selector": "99",
+   "meaning": "Status bits: A/C compressor (mask 0x01); NOT IAT (app: disproven_selector_99_as_iat)",
+   "used_by": "mixture_iat[1]; HFM_R021",
+   "status": "APP_CANDIDATE (author marks candidate/conditional/unvalidated)"
+  },
+  {
+   "page": "20",
+   "selector": "B7",
+   "meaning": "Engine speed (25·raw rpm)",
+   "used_by": "airflow[2]; HFM_R006/R031/R168; validity gate",
+   "status": "APP_FIELD_VERIFIED (author's registry marks VERIFIED on ECU 013 545 13 32; not re-tested here)"
+  },
+  {
+   "page": "20",
+   "selector": "B9",
+   "meaning": "Lambda control (0.390625·raw − 50 %), read after B9 B7 recipe",
+   "used_by": "airflow[5]; rpm_high_context; hht_control lambda",
+   "status": "APP_CANDIDATE (author marks candidate/conditional/unvalidated)"
+  },
+  {
+   "page": "20",
+   "selector": "BD",
+   "meaning": "Throttle angle (raw·90/256 °)",
+   "used_by": "airflow[1]; HFM_R005/R039",
+   "status": "APP_HIGHLY_LIKELY (author's evidence level; not vehicle-proven)"
+  },
+  {
+   "page": "20",
+   "selector": "C2",
+   "meaning": "Engine load (raw/2 %)",
+   "used_by": "airflow[3]",
+   "status": "APP_HIGHLY_LIKELY (author's evidence level; not vehicle-proven)"
+  },
+  {
+   "page": "20",
+   "selector": "C4",
+   "meaning": "Ignition angle (55 − raw·90/256 °CA)",
+   "used_by": "airflow[4]; HFM_R012",
+   "status": "APP_HIGHLY_LIKELY (author's evidence level; not vehicle-proven)"
+  },
+  {
+   "page": "21",
+   "selector": "B7",
+   "meaning": "Engine speed (same value as 20:B7 observed)",
+   "used_by": "coolant[2]",
+   "status": "APP_HIGHLY_LIKELY (author's evidence level; not vehicle-proven)"
+  },
+  {
+   "page": "21",
+   "selector": "BE",
+   "meaning": "Intake-air temperature (8-point candidate / HHT 256-entry table)",
+   "used_by": "coolant[3]; HFM_R013",
+   "status": "APP_HIGHLY_LIKELY (author's evidence level; not vehicle-proven)"
+  },
+  {
+   "page": "21",
+   "selector": "BF",
+   "meaning": "Coolant temperature (14-point piecewise / HHT 256-entry table)",
+   "used_by": "coolant[1]; HFM_R001/R045/R062",
+   "status": "APP_FIELD_VERIFIED (author's registry marks VERIFIED on ECU 013 545 13 32; not re-tested here)"
+  },
+  {
+   "page": "21",
+   "selector": "D7",
+   "meaning": "Idle target alternative (llupm when I6A<0x41); unknown otherwise",
+   "used_by": "coolant[0]; HFM_R002/R028",
+   "status": "APP_CANDIDATE (author marks candidate/conditional/unvalidated)"
+  },
+  {
+   "page": "21",
+   "selector": "67",
+   "meaning": "Status bits: intake preheating 0x08, secondary air 0x02, camshaft 0x10, resonance flap 0x04 [HHT context coolant]",
+   "used_by": "coolant[5]; HFM_R018/R019/R024/R025",
+   "status": "APP_CANDIDATE (author marks candidate/conditional/unvalidated)"
+  },
+  {
+   "page": "21",
+   "selector": "69",
+   "meaning": "Status bits: post-start enrichment 0x08, warm-up 0x04, full-load contact 0x40 [HHT context coolant]",
+   "used_by": "coolant[4]; HFM_R016/R017/R023",
+   "status": "APP_CANDIDATE (author marks candidate/conditional/unvalidated)"
+  },
+  {
+   "page": "24",
+   "selector": "90",
+   "meaning": "Idle mixture adaptation (trunc((275·raw−35000)/1000)/10 kg/h)",
+   "used_by": "hht_control idle",
+   "status": "APP_CANDIDATE (author marks candidate/conditional/unvalidated)"
+  },
+  {
+   "page": "24",
+   "selector": "92",
+   "meaning": "Lower part-load mixture adaptation factor",
+   "used_by": "hht_control lower",
+   "status": "APP_CANDIDATE (author marks candidate/conditional/unvalidated)"
+  },
+  {
+   "page": "24",
+   "selector": "93",
+   "meaning": "Upper part-load mixture adaptation factor",
+   "used_by": "hht_control upper",
+   "status": "APP_CANDIDATE (author marks candidate/conditional/unvalidated)"
+  },
+  {
+   "page": "24",
+   "selector": "F0",
+   "meaning": "Configuration 'not-applicable' mask byte m",
+   "used_by": "hht_control configuration",
+   "status": "APP_CANDIDATE (author marks candidate/conditional/unvalidated)"
+  },
+  {
+   "page": "27",
+   "selector": "02",
+   "meaning": "Configuration/coding byte c",
+   "used_by": "hht_control configuration",
+   "status": "APP_CANDIDATE (author marks candidate/conditional/unvalidated)"
+  }
+ ],
+ "commands": [
+  {
+   "id": "PREFIX_READ_PAGE_20",
+   "tx": "20",
+   "parity": "none",
+   "role": "prefix/opcode",
+   "ecu_ack": "DF (= 20 XOR FF)",
+   "then": "N × selector bytes (parity space), each answered by one data byte",
+   "evidence": [
+    {
+     "file": "HFMreader.exe!PYZ.pyz!hfmreader.field_protocol",
+     "exe_sha256": "b5aa7e0ea27761802f2fcec41a197923502faf2dbc6722e3ede694ac0b31a2ed",
+     "module_code_sha256": "a2e3c624552c880509aa26111a80aadbd0686fa7f58e00e0e77b399516fd1fb1",
+     "exe_offset_of_module_blob": 850812,
+     "location": "FieldHFMProtocol.read_group L38-61 @bc+72..512",
+     "status": "CS"
+    },
+    {
+     "file": "HFMreader.exe!PYZ.pyz!hfmreader.protocol",
+     "exe_sha256": "b5aa7e0ea27761802f2fcec41a197923502faf2dbc6722e3ede694ac0b31a2ed",
+     "module_code_sha256": "d5cfec162ce817ecbd5ce5ea37daa22672bfecd3ff7c91c67d99e724ff4fed9f",
+     "exe_offset_of_module_blob": 935921,
+     "location": "HFMProtocol.read_parameter L60-73 @bc+168..546",
+     "status": "CS"
+    }
+   ],
+   "status": "CS"
+  },
+  {
+   "id": "PREFIX_READ_PAGE_21",
+   "tx": "21",
+   "parity": "none",
+   "role": "prefix/opcode",
+   "ecu_ack": "DE",
+   "then": "selectors (space)",
+   "evidence": [
+    {
+     "file": "HFMreader.exe!PYZ.pyz!hfmreader.field_profiles",
+     "exe_sha256": "b5aa7e0ea27761802f2fcec41a197923502faf2dbc6722e3ede694ac0b31a2ed",
+     "module_code_sha256": "94a28e47b0c589944130a93bd0cba35078d68a781c413b1537b0ae440a28dcc3",
+     "exe_offset_of_module_blob": 845192,
+     "location": "<module> L72-127 @bc+172..366 (OBSERVED_GROUPS, PROFILES)",
+     "status": "CS"
+    }
+   ],
+   "status": "CS"
+  },
+  {
+   "id": "PREFIX_PAGE_24",
+   "tx": "24",
+   "parity": "none",
+   "role": "prefix (adaptation/config page)",
+   "ecu_ack": "DB",
+   "then": "90 / 92 / 93 / F0",
+   "evidence": [
+    {
+     "file": "HFMreader.exe!PYZ.pyz!hfmreader.hht_control.recipes",
+     "exe_sha256": "b5aa7e0ea27761802f2fcec41a197923502faf2dbc6722e3ede694ac0b31a2ed",
+     "module_code_sha256": "41bfd32555e37d755e5752baa10fb9b891f306f18392011e6c5aaa61f86c86e5",
+     "exe_offset_of_module_blob": 863847,
+     "location": "<module> L11-24 @bc+20..44",
+     "status": "CS"
+    },
+    {
+     "file": "HFMreader.exe!PYZ.pyz!hfmreader.hht_control.configuration",
+     "exe_sha256": "b5aa7e0ea27761802f2fcec41a197923502faf2dbc6722e3ede694ac0b31a2ed",
+     "module_code_sha256": "09e580c42120566a40159fd11ceafde6934212a9bd70f79631c443dbfe8b476b",
+     "exe_offset_of_module_blob": 858539,
+     "location": "decode_configuration L17 @bc+88..118 (216,219)",
+     "status": "CS"
+    }
+   ],
+   "status": "CS"
+  },
+  {
+   "id": "PREFIX_PAGE_27",
+   "tx": "27",
+   "parity": "none",
+   "role": "prefix (coding page)",
+   "ecu_ack": "D8",
+   "then": "02",
+   "evidence": [
+    {
+     "file": "HFMreader.exe!PYZ.pyz!hfmreader.hht_control.configuration",
+     "exe_sha256": "b5aa7e0ea27761802f2fcec41a197923502faf2dbc6722e3ede694ac0b31a2ed",
+     "module_code_sha256": "09e580c42120566a40159fd11ceafde6934212a9bd70f79631c443dbfe8b476b",
+     "exe_offset_of_module_blob": 858539,
+     "location": "decode_configuration L17 @bc+88..118",
+     "status": "CS"
+    }
+   ],
+   "status": "CS"
+  },
+  {
+   "id": "ECU_IDENTIFICATION",
+   "sequence": "28 × [F0 (none) -> ack 0F ; index 00..1B (space) -> data byte]",
+   "response_layout": {
+    "0..1": "manufacturer code (2C 42 = BOSCH)",
+    "2..11": "ASCII ident (10 chars)",
+    "12..21": "ASCII ECU part number (10 digits)",
+    "22..23": "HW date week/year BCD",
+    "24..25": "SW date week/year BCD",
+    "26..27": "diagnosis index (e.g. 41/00)"
+   },
+   "evidence": [
+    {
+     "file": "HFMreader.exe!PYZ.pyz!hfmreader.ecu_identification_protocol",
+     "exe_sha256": "b5aa7e0ea27761802f2fcec41a197923502faf2dbc6722e3ede694ac0b31a2ed",
+     "module_code_sha256": "c888aca8bc338d974218bd67af1f3835d823e18730575765132efde651bffa0d",
+     "exe_offset_of_module_blob": 838621,
+     "location": "EcuIdentificationProtocol.read L23-33 @bc+10..318",
+     "status": "CS"
+    },
+    {
+     "file": "HFMreader.exe!PYZ.pyz!hfmreader.ecu_identification",
+     "exe_sha256": "b5aa7e0ea27761802f2fcec41a197923502faf2dbc6722e3ede694ac0b31a2ed",
+     "module_code_sha256": "8a595594c768a14861b3e487ec354b3abdd89e876801903f3dadfd7a1624061e",
+     "exe_offset_of_module_blob": 836016,
+     "location": "parse_ecu_identification L56-70",
+     "status": "CS"
+    },
+    {
+     "file": "HFMreader.exe!PYZ.pyz!hfmreader.ecu_identification_simulator",
+     "exe_sha256": "b5aa7e0ea27761802f2fcec41a197923502faf2dbc6722e3ede694ac0b31a2ed",
+     "module_code_sha256": "a86a3d5ee037427f504ddbdc69e60840bc04f9e7964a2018403c409970462f07",
+     "exe_offset_of_module_blob": 840322,
+     "location": "<module> L4-5 @bc+26 GOLDEN_RAW",
+     "status": "CS"
+    }
+   ],
+   "status": "CS"
+  },
+  {
+   "id": "DTC_READ",
+   "sequence": "for index in 00..1F: F1 (none) -> ack 0E ; index (space) -> fault bitmap byte",
+   "banks": {
+    "00..0F": "stored (memory) bank",
+    "10..1F": "current bank (normalized index = index-16)"
+   },
+   "evidence": [
+    {
+     "file": "HFMreader.exe!PYZ.pyz!hfmreader.dtc_protocol",
+     "exe_sha256": "b5aa7e0ea27761802f2fcec41a197923502faf2dbc6722e3ede694ac0b31a2ed",
+     "module_code_sha256": "3b70802e69eed71141fd24406e164dfc4e1d2093a70aa00423d596cdb99b44f1",
+     "exe_offset_of_module_blob": 829232,
+     "location": "DtcReadOnlyProtocol L41-43 @bc+12..70; scan_indexes L63-79",
+     "status": "CS"
+    },
+    {
+     "file": "HFMreader.exe!PYZ.pyz!hfmreader.dtc",
+     "exe_sha256": "b5aa7e0ea27761802f2fcec41a197923502faf2dbc6722e3ede694ac0b31a2ed",
+     "module_code_sha256": "af10e4920f7183bdeff49166cea74347ff3651852741543e58572fdde697dd2d",
+     "exe_offset_of_module_blob": 820924,
+     "location": "_status_and_normalized_index L131-136",
+     "status": "CS"
+    }
+   ],
+   "status": "CS"
+  },
+  {
+   "id": "DTC_CLEAR",
+   "pre_delay_s": 0.2,
+   "transactions": [
+    {
+     "opcode": "10",
+     "ack": "EF",
+     "argument": "00",
+     "response": "FF",
+     "delay_after_s": 0.2
+    },
+    {
+     "opcode": "F3",
+     "ack": "0C",
+     "argument": "FF",
+     "response": "00",
+     "delay_after_s": 0.05
+    },
+    {
+     "opcode": "10",
+     "ack": "EF",
+     "argument": "00",
+     "response": "FF",
+     "delay_after_s": 0.5
+    },
+    {
+     "opcode": "10",
+     "ack": "EF",
+     "argument": "00",
+     "response": "FF",
+     "delay_after_s": 0.2
+    },
+    {
+     "opcode": "F3",
+     "ack": "0C",
+     "argument": "FF",
+     "response": "00",
+     "delay_after_s": 0.05
+    },
+    {
+     "opcode": "10",
+     "ack": "EF",
+     "argument": "00",
+     "response": "FF",
+     "delay_after_s": 0.5
+    },
+    {
+     "opcode": "10",
+     "ack": "EF",
+     "argument": "00",
+     "response": "FF",
+     "delay_after_s": null
+    }
+   ],
+   "preconditions": "complete stored scan 00..0F first; skip if all zero; app restricts to ECU 0135451332 with typed confirmation",
+   "verification": "full scan 00..1F afterwards; verified only if all 32 bytes == 00",
+   "parity": "opcode none, argument space",
+   "evidence": [
+    {
+     "file": "HFMreader.exe!PYZ.pyz!hfmreader.dtc_protocol",
+     "exe_sha256": "b5aa7e0ea27761802f2fcec41a197923502faf2dbc6722e3ede694ac0b31a2ed",
+     "module_code_sha256": "3b70802e69eed71141fd24406e164dfc4e1d2093a70aa00423d596cdb99b44f1",
+     "exe_offset_of_module_blob": 829232,
+     "location": "DtcClearProtocol body L91-94 @bc+12..26 (_CLEAR_TRANSACTIONS)",
+     "status": "CS"
+    },
+    {
+     "file": "HFMreader.exe!PYZ.pyz!hfmreader.dtc_protocol",
+     "exe_sha256": "b5aa7e0ea27761802f2fcec41a197923502faf2dbc6722e3ede694ac0b31a2ed",
+     "module_code_sha256": "3b70802e69eed71141fd24406e164dfc4e1d2093a70aa00423d596cdb99b44f1",
+     "exe_offset_of_module_blob": 829232,
+     "location": "DtcClearProtocol.clear_and_verify L116-132; _transaction L141-149",
+     "status": "CS"
+    }
+   ],
+   "status": "CS"
+  },
+  {
+   "id": "CONFIG_READ",
+   "recipe": "27* 02 24* F0",
+   "responses": "[D8, c, DB, m]",
+   "evidence": [
+    {
+     "file": "HFMreader.exe!PYZ.pyz!hfmreader.hht_control.recipes",
+     "exe_sha256": "b5aa7e0ea27761802f2fcec41a197923502faf2dbc6722e3ede694ac0b31a2ed",
+     "module_code_sha256": "41bfd32555e37d755e5752baa10fb9b891f306f18392011e6c5aaa61f86c86e5",
+     "exe_offset_of_module_blob": 863847,
+     "location": "RECIPES['configuration'] L12",
+     "status": "CS"
+    },
+    {
+     "file": "HFMreader.exe!PYZ.pyz!hfmreader.hht_control.configuration",
+     "exe_sha256": "b5aa7e0ea27761802f2fcec41a197923502faf2dbc6722e3ede694ac0b31a2ed",
+     "module_code_sha256": "09e580c42120566a40159fd11ceafde6934212a9bd70f79631c443dbfe8b476b",
+     "exe_offset_of_module_blob": 858539,
+     "location": "decode_configuration L14-32",
+     "status": "CS"
+    }
+   ],
+   "status": "CS"
+  },
+  {
+   "id": "ADAPT_READ_IDLE",
+   "recipe": "24* 90",
+   "responses": "[DB, raw]",
+   "evidence": [
+    {
+     "file": "HFMreader.exe!PYZ.pyz!hfmreader.hht_control.recipes",
+     "exe_sha256": "b5aa7e0ea27761802f2fcec41a197923502faf2dbc6722e3ede694ac0b31a2ed",
+     "module_code_sha256": "41bfd32555e37d755e5752baa10fb9b891f306f18392011e6c5aaa61f86c86e5",
+     "exe_offset_of_module_blob": 863847,
+     "location": "RECIPES['idle'] L15",
+     "status": "CS"
+    }
+   ],
+   "status": "CS"
+  },
+  {
+   "id": "ADAPT_READ_LOWER",
+   "recipe": "24* 92",
+   "responses": "[DB, raw]",
+   "evidence": [
+    {
+     "file": "HFMreader.exe!PYZ.pyz!hfmreader.hht_control.recipes",
+     "exe_sha256": "b5aa7e0ea27761802f2fcec41a197923502faf2dbc6722e3ede694ac0b31a2ed",
+     "module_code_sha256": "41bfd32555e37d755e5752baa10fb9b891f306f18392011e6c5aaa61f86c86e5",
+     "exe_offset_of_module_blob": 863847,
+     "location": "RECIPES['lower'] L16",
+     "status": "CS"
+    }
+   ],
+   "status": "CS"
+  },
+  {
+   "id": "ADAPT_READ_UPPER",
+   "recipe": "24* 93",
+   "responses": "[DB, raw]",
+   "evidence": [
+    {
+     "file": "HFMreader.exe!PYZ.pyz!hfmreader.hht_control.recipes",
+     "exe_sha256": "b5aa7e0ea27761802f2fcec41a197923502faf2dbc6722e3ede694ac0b31a2ed",
+     "module_code_sha256": "41bfd32555e37d755e5752baa10fb9b891f306f18392011e6c5aaa61f86c86e5",
+     "exe_offset_of_module_blob": 863847,
+     "location": "RECIPES['upper'] L17",
+     "status": "CS"
+    }
+   ],
+   "status": "CS"
+  },
+  {
+   "id": "READ_INJECTION_TIME",
+   "recipe": "20* 54 20* 55 B7",
+   "responses": "[DF, lo, DF, hi, rpm]",
+   "evidence": [
+    {
+     "file": "HFMreader.exe!PYZ.pyz!hfmreader.hht_control.recipes",
+     "exe_sha256": "b5aa7e0ea27761802f2fcec41a197923502faf2dbc6722e3ede694ac0b31a2ed",
+     "module_code_sha256": "41bfd32555e37d755e5752baa10fb9b891f306f18392011e6c5aaa61f86c86e5",
+     "exe_offset_of_module_blob": 863847,
+     "location": "RECIPES['injection'] L13",
+     "status": "CS"
+    }
+   ],
+   "status": "CS"
+  },
+  {
+   "id": "READ_LAMBDA_CONTROL",
+   "recipe": "B9 B7 (selector-only, needs PREFIX 20 context)",
+   "responses": "[lambda, rpm]",
+   "evidence": [
+    {
+     "file": "HFMreader.exe!PYZ.pyz!hfmreader.hht_control.recipes",
+     "exe_sha256": "b5aa7e0ea27761802f2fcec41a197923502faf2dbc6722e3ede694ac0b31a2ed",
+     "module_code_sha256": "41bfd32555e37d755e5752baa10fb9b891f306f18392011e6c5aaa61f86c86e5",
+     "exe_offset_of_module_blob": 863847,
+     "location": "RECIPES['lambda'] L14",
+     "status": "CS"
+    }
+   ],
+   "status": "CS"
+  },
+  {
+   "id": "ADAPT_RESET",
+   "recipe": "CF* FF C1* FC E0* 00 CF* 00 C0* FC",
+   "entry_check": "responses[1] == 00 (FF->00) and responses[3] == 03 (FC->03) else abort",
+   "preconditions": "ignition ON, engine stopped (rpm byte 20:B7 == 0); identity BOSCH 0135451332 41/00; prior DTC scan + snapshot; 20 s confirmation window",
+   "after": "ignition key cycle required; erasure/relearn NOT verified by the app",
+   "evidence": [
+    {
+     "file": "HFMreader.exe!PYZ.pyz!hfmreader.hht_control.recipes",
+     "exe_sha256": "b5aa7e0ea27761802f2fcec41a197923502faf2dbc6722e3ede694ac0b31a2ed",
+     "module_code_sha256": "41bfd32555e37d755e5752baa10fb9b891f306f18392011e6c5aaa61f86c86e5",
+     "exe_offset_of_module_blob": 863847,
+     "location": "RECIPES['reset'] L24",
+     "status": "CS"
+    },
+    {
+     "file": "HFMreader.exe!PYZ.pyz!hfmreader.hht_control.session",
+     "exe_sha256": "b5aa7e0ea27761802f2fcec41a197923502faf2dbc6722e3ede694ac0b31a2ed",
+     "module_code_sha256": "2ac61a65d89b4f0496999f2c0fef1cf03f880e3ac6109a79573c16ee6a5e94d4",
+     "exe_offset_of_module_blob": 865739,
+     "location": "ControlSession._recipe L164-168; _entry_status L304-306; _conditions L260-261; confirm L319-322",
+     "status": "CS"
+    }
+   ],
+   "status": "CS",
+   "risk": "state-changing (adaptation reset)"
+  },
+  {
+   "id": "CTRL_REMOTE_ENTRY",
+   "recipe": "CF* FF C1* FC",
+   "entry_check": "FF->00, FC->03",
+   "evidence": [
+    {
+     "file": "HFMreader.exe!PYZ.pyz!hfmreader.hht_control.recipes",
+     "exe_sha256": "b5aa7e0ea27761802f2fcec41a197923502faf2dbc6722e3ede694ac0b31a2ed",
+     "module_code_sha256": "41bfd32555e37d755e5752baa10fb9b891f306f18392011e6c5aaa61f86c86e5",
+     "exe_offset_of_module_blob": 863847,
+     "location": "RECIPES['remote'] L18",
+     "status": "CS"
+    },
+    {
+     "file": "HFMreader.exe!PYZ.pyz!hfmreader.hht_control.session",
+     "exe_sha256": "b5aa7e0ea27761802f2fcec41a197923502faf2dbc6722e3ede694ac0b31a2ed",
+     "module_code_sha256": "2ac61a65d89b4f0496999f2c0fef1cf03f880e3ac6109a79573c16ee6a5e94d4",
+     "exe_offset_of_module_blob": 865739,
+     "location": "confirm L324-325",
+     "status": "CS"
+    }
+   ],
+   "status": "CS",
+   "risk": "enters control mode"
+  },
+  {
+   "id": "CTRL_READY_STATUS",
+   "recipe": "96 (selector-only)",
+   "accept": "response & 0x40 != 0",
+   "evidence": [
+    {
+     "file": "HFMreader.exe!PYZ.pyz!hfmreader.hht_control.recipes",
+     "exe_sha256": "b5aa7e0ea27761802f2fcec41a197923502faf2dbc6722e3ede694ac0b31a2ed",
+     "module_code_sha256": "41bfd32555e37d755e5752baa10fb9b891f306f18392011e6c5aaa61f86c86e5",
+     "exe_offset_of_module_blob": 863847,
+     "location": "RECIPES['ready'] L19",
+     "status": "CS"
+    },
+    {
+     "file": "HFMreader.exe!PYZ.pyz!hfmreader.hht_control.session",
+     "exe_sha256": "b5aa7e0ea27761802f2fcec41a197923502faf2dbc6722e3ede694ac0b31a2ed",
+     "module_code_sha256": "2ac61a65d89b4f0496999f2c0fef1cf03f880e3ac6109a79573c16ee6a5e94d4",
+     "exe_offset_of_module_blob": 865739,
+     "location": "_ready L294-301",
+     "status": "CS"
+    }
+   ],
+   "status": "CS"
+  },
+  {
+   "id": "CTRL_SONDE",
+   "recipe": "D0* 0F",
+   "evidence": [
+    {
+     "file": "HFMreader.exe!PYZ.pyz!hfmreader.hht_control.recipes",
+     "exe_sha256": "b5aa7e0ea27761802f2fcec41a197923502faf2dbc6722e3ede694ac0b31a2ed",
+     "module_code_sha256": "41bfd32555e37d755e5752baa10fb9b891f306f18392011e6c5aaa61f86c86e5",
+     "exe_offset_of_module_blob": 863847,
+     "location": "RECIPES['sonde'] L20",
+     "status": "CS"
+    }
+   ],
+   "status": "CS",
+   "risk": "actuator/control"
+  },
+  {
+   "id": "CTRL_PURGE_ON",
+   "recipe": "D4* 1A",
+   "preconditions": "400..1500 rpm, HHT coolant 80..110 °C, ready bit 0x40; local ON limit 30 s then restore",
+   "evidence": [
+    {
+     "file": "HFMreader.exe!PYZ.pyz!hfmreader.hht_control.recipes",
+     "exe_sha256": "b5aa7e0ea27761802f2fcec41a197923502faf2dbc6722e3ede694ac0b31a2ed",
+     "module_code_sha256": "41bfd32555e37d755e5752baa10fb9b891f306f18392011e6c5aaa61f86c86e5",
+     "exe_offset_of_module_blob": 863847,
+     "location": "RECIPES['purge_on'] L21",
+     "status": "CS"
+    },
+    {
+     "file": "HFMreader.exe!PYZ.pyz!hfmreader.hht_control.session",
+     "exe_sha256": "b5aa7e0ea27761802f2fcec41a197923502faf2dbc6722e3ede694ac0b31a2ed",
+     "module_code_sha256": "2ac61a65d89b4f0496999f2c0fef1cf03f880e3ac6109a79573c16ee6a5e94d4",
+     "exe_offset_of_module_blob": 865739,
+     "location": "_conditions L262-263; purge L333-340; tick L352-355",
+     "status": "CS"
+    }
+   ],
+   "status": "CS",
+   "risk": "actuator (canister purge valve)"
+  },
+  {
+   "id": "CTRL_PURGE_OFF",
+   "recipe": "D4* 00",
+   "evidence": [
+    {
+     "file": "HFMreader.exe!PYZ.pyz!hfmreader.hht_control.recipes",
+     "exe_sha256": "b5aa7e0ea27761802f2fcec41a197923502faf2dbc6722e3ede694ac0b31a2ed",
+     "module_code_sha256": "41bfd32555e37d755e5752baa10fb9b891f306f18392011e6c5aaa61f86c86e5",
+     "exe_offset_of_module_blob": 863847,
+     "location": "RECIPES['purge_off'] L22",
+     "status": "CS"
+    }
+   ],
+   "status": "CS",
+   "risk": "actuator"
+  },
+  {
+   "id": "CTRL_RESTORE",
+   "recipe": "D0* 0B D1* 00 D2* 00 D3* 40 D4* 00 (+ D0* 0F again if sonde was sent)",
+   "evidence": [
+    {
+     "file": "HFMreader.exe!PYZ.pyz!hfmreader.hht_control.recipes",
+     "exe_sha256": "b5aa7e0ea27761802f2fcec41a197923502faf2dbc6722e3ede694ac0b31a2ed",
+     "module_code_sha256": "41bfd32555e37d755e5752baa10fb9b891f306f18392011e6c5aaa61f86c86e5",
+     "exe_offset_of_module_blob": 863847,
+     "location": "RECIPES['restore'] L23",
+     "status": "CS"
+    },
+    {
+     "file": "HFMreader.exe!PYZ.pyz!hfmreader.hht_control.session",
+     "exe_sha256": "b5aa7e0ea27761802f2fcec41a197923502faf2dbc6722e3ede694ac0b31a2ed",
+     "module_code_sha256": "2ac61a65d89b4f0496999f2c0fef1cf03f880e3ac6109a79573c16ee6a5e94d4",
+     "exe_offset_of_module_blob": 865739,
+     "location": "restore L342-350",
+     "status": "CS"
+    }
+   ],
+   "status": "CS",
+   "risk": "returns actuators to default"
+  },
+  {
+   "id": "PN_CANDIDATE_READ",
+   "recipe": "20* 23 99 68 21* D7 BF 69 98 67",
+   "decode": "responses[8] = raw 0x98 (index counts prefix acks); 0x98 & 0x20 -> 'P/N' else 'D/R' (candidate)",
+   "evidence": [
+    {
+     "file": "HFMreader.exe!PYZ.pyz!hfmreader.pn_candidate",
+     "exe_sha256": "b5aa7e0ea27761802f2fcec41a197923502faf2dbc6722e3ede694ac0b31a2ed",
+     "module_code_sha256": "172a7f9912bc68f064b705be69489477e08cd23ea1d264d24fdfb603cb3ee1ce",
+     "exe_offset_of_module_blob": 933424,
+     "location": "<module> L10 @bc+24 RECIPE; read_candidate L15-25",
+     "status": "CS"
+    }
+   ],
+   "status": "AC"
+  }
+ ],
+ "groups_evidence": {
+  "file": "HFMreader.exe!PYZ.pyz!hfmreader.field_profiles",
+  "exe_sha256": "b5aa7e0ea27761802f2fcec41a197923502faf2dbc6722e3ede694ac0b31a2ed",
+  "module_code_sha256": "94a28e47b0c589944130a93bd0cba35078d68a781c413b1537b0ae440a28dcc3",
+  "exe_offset_of_module_blob": 845192,
+  "location": "<module> L72-127 @bc+172..366 (OBSERVED_GROUPS, PROFILES)",
+  "status": "CS"
+ }
+}

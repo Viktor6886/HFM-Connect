@@ -1,0 +1,522 @@
+{
+ "meta": {
+  "product": "HFMreader 1.1.1-public.1 (Windows x64, PyInstaller onedir, CPython 3.12)",
+  "exe": "HFMreader.exe",
+  "exe_sha256": "b5aa7e0ea27761802f2fcec41a197923502faf2dbc6722e3ede694ac0b31a2ed",
+  "pyz_member": {
+   "name": "PYZ.pyz",
+   "file_offset": 326376,
+   "sha256": "daaed7fa0e2d0511e55e07dc9a1a008122e9b56e4028e5db5b580e4a5d89db74"
+  },
+  "resources": {
+   "dtc_catalog.json": "921c23ba9d3f679eca4c747822cae7d343e8239ef9a6a2d8f6aee7b035dba47e",
+   "hht_experimental/candidates.json": "57bef9ad06f4021e3fb80d1570c911bd865fd24bc3879a924f0fd081437abde6"
+  },
+  "status_legend": {
+   "CS": "CONFIRMED_STATIC (read directly from bytecode constants/logic)",
+   "CD": "CONFIRMED_DATA (read directly from shipped JSON resource)",
+   "AV": "APP_FIELD_VERIFIED (author's registry marks VERIFIED on ECU 013 545 13 32; not re-tested here)",
+   "AH": "APP_HIGHLY_LIKELY (author's evidence level; not vehicle-proven)",
+   "AC": "APP_CANDIDATE (author marks candidate/conditional/unvalidated)",
+   "IN": "INFERENCE (analyst interpretation, see protocol.md)"
+  },
+  "note": "Bytecode locations are '<code object> L<source line> @bc+<offset>' inside the PYZ module; exe_offset_of_module_blob is the zlib blob position in HFMreader.exe."
+ },
+ "formulas": {
+  "multiply_25": {
+   "param": "engine_speed",
+   "expr": "rpm = 25 * raw",
+   "unit": "rpm",
+   "input": "20:B7 (1 byte)",
+   "evidence": [
+    {
+     "file": "HFMreader.exe!PYZ.pyz!hfmreader.parameter_registry",
+     "exe_sha256": "b5aa7e0ea27761802f2fcec41a197923502faf2dbc6722e3ede694ac0b31a2ed",
+     "module_code_sha256": "e8a7e11679245775db7e88d61ba472dba5904fc5fb87d9cdd14f5e8c296d6b79",
+     "exe_offset_of_module_blob": 922047,
+     "location": "<lambda> L232 @bc+2..10",
+     "status": "CS"
+    },
+    {
+     "file": "HFMreader.exe!PYZ.pyz!hfmreader.parameter_registry",
+     "exe_sha256": "b5aa7e0ea27761802f2fcec41a197923502faf2dbc6722e3ede694ac0b31a2ed",
+     "module_code_sha256": "e8a7e11679245775db7e88d61ba472dba5904fc5fb87d9cdd14f5e8c296d6b79",
+     "exe_offset_of_module_blob": 922047,
+     "location": "engine_speed def L200-232",
+     "status": "CS"
+    }
+   ],
+   "status": "AV"
+  },
+  "hfmscan_coolant_piecewise_14_point": {
+   "param": "coolant_temperature",
+   "expr": "linear interpolation over COOLANT_POINTS, clamped at ends",
+   "points": [
+    [
+     0,
+     -59.0
+    ],
+    [
+     4,
+     -35.0
+    ],
+    [
+     16,
+     -17.0
+    ],
+    [
+     32,
+     -3.0
+    ],
+    [
+     48,
+     8.0
+    ],
+    [
+     128,
+     45.0
+    ],
+    [
+     160,
+     61.0
+    ],
+    [
+     176,
+     70.0
+    ],
+    [
+     192,
+     80.0
+    ],
+    [
+     208,
+     93.0
+    ],
+    [
+     224,
+     112.0
+    ],
+    [
+     240,
+     147.0
+    ],
+    [
+     252,
+     207.0
+    ],
+    [
+     256,
+     300.0
+    ]
+   ],
+   "unit": "°C",
+   "input": "21:BF (1 byte)",
+   "evidence": [
+    {
+     "file": "HFMreader.exe!PYZ.pyz!hfmreader.parameter_registry",
+     "exe_sha256": "b5aa7e0ea27761802f2fcec41a197923502faf2dbc6722e3ede694ac0b31a2ed",
+     "module_code_sha256": "e8a7e11679245775db7e88d61ba472dba5904fc5fb87d9cdd14f5e8c296d6b79",
+     "exe_offset_of_module_blob": 922047,
+     "location": "COOLANT_POINTS L169 @bc+368",
+     "status": "CS"
+    },
+    {
+     "file": "HFMreader.exe!PYZ.pyz!hfmreader.parameter_registry",
+     "exe_sha256": "b5aa7e0ea27761802f2fcec41a197923502faf2dbc6722e3ede694ac0b31a2ed",
+     "module_code_sha256": "e8a7e11679245775db7e88d61ba472dba5904fc5fb87d9cdd14f5e8c296d6b79",
+     "exe_offset_of_module_blob": 922047,
+     "location": "_piecewise.convert L142-150",
+     "status": "CS"
+    }
+   ],
+   "status": "AV"
+  },
+  "multiply_4": {
+   "param": "o2_sensor_voltage",
+   "expr": "mV = 4 * raw",
+   "unit": "mV",
+   "input": "20:23",
+   "evidence": [
+    {
+     "file": "HFMreader.exe!PYZ.pyz!hfmreader.parameter_registry",
+     "exe_sha256": "b5aa7e0ea27761802f2fcec41a197923502faf2dbc6722e3ede694ac0b31a2ed",
+     "module_code_sha256": "e8a7e11679245775db7e88d61ba472dba5904fc5fb87d9cdd14f5e8c296d6b79",
+     "exe_offset_of_module_blob": 922047,
+     "location": "<lambda> L294",
+     "status": "CS"
+    }
+   ],
+   "status": "AH"
+  },
+  "scale_90_over_256": {
+   "param": "throttle_angle",
+   "expr": "deg = raw * 90 / 256",
+   "unit": "°",
+   "input": "20:BD",
+   "evidence": [
+    {
+     "file": "HFMreader.exe!PYZ.pyz!hfmreader.parameter_registry",
+     "exe_sha256": "b5aa7e0ea27761802f2fcec41a197923502faf2dbc6722e3ede694ac0b31a2ed",
+     "module_code_sha256": "e8a7e11679245775db7e88d61ba472dba5904fc5fb87d9cdd14f5e8c296d6b79",
+     "exe_offset_of_module_blob": 922047,
+     "location": "<lambda> L324",
+     "status": "CS"
+    }
+   ],
+   "status": "AH"
+  },
+  "divide_2": {
+   "param": "engine_load",
+   "expr": "% = raw / 2",
+   "unit": "%",
+   "input": "20:C2",
+   "evidence": [
+    {
+     "file": "HFMreader.exe!PYZ.pyz!hfmreader.parameter_registry",
+     "exe_sha256": "b5aa7e0ea27761802f2fcec41a197923502faf2dbc6722e3ede694ac0b31a2ed",
+     "module_code_sha256": "e8a7e11679245775db7e88d61ba472dba5904fc5fb87d9cdd14f5e8c296d6b79",
+     "exe_offset_of_module_blob": 922047,
+     "location": "<lambda> L354",
+     "status": "CS"
+    }
+   ],
+   "status": "AH"
+  },
+  "linear_55_to_minus_35": {
+   "param": "ignition_angle",
+   "expr": "deg = 55 - raw * 90 / 256  (piecewise (0,55)->(256,-35))",
+   "unit": "°CA",
+   "input": "20:C4",
+   "evidence": [
+    {
+     "file": "HFMreader.exe!PYZ.pyz!hfmreader.parameter_registry",
+     "exe_sha256": "b5aa7e0ea27761802f2fcec41a197923502faf2dbc6722e3ede694ac0b31a2ed",
+     "module_code_sha256": "e8a7e11679245775db7e88d61ba472dba5904fc5fb87d9cdd14f5e8c296d6b79",
+     "exe_offset_of_module_blob": 922047,
+     "location": "ignition_angle converter L384 @bc+2622..2628",
+     "status": "CS"
+    }
+   ],
+   "status": "AH"
+  },
+  "divide_10": {
+   "param": "air_mass",
+   "expr": "kg/h = (lo | hi << 8) / 10 ; lo = 20:48, hi = 20:49 (little-endian)",
+   "unit": "kg/h",
+   "input": "20:48 + 20:49",
+   "evidence": [
+    {
+     "file": "HFMreader.exe!PYZ.pyz!hfmreader.parameter_registry",
+     "exe_sha256": "b5aa7e0ea27761802f2fcec41a197923502faf2dbc6722e3ede694ac0b31a2ed",
+     "module_code_sha256": "e8a7e11679245775db7e88d61ba472dba5904fc5fb87d9cdd14f5e8c296d6b79",
+     "exe_offset_of_module_blob": 922047,
+     "location": "<lambda> L436; air_mass def L386-436",
+     "status": "CS"
+    },
+    {
+     "file": "HFMreader.exe!PYZ.pyz!hfmreader.field_profiles",
+     "exe_sha256": "b5aa7e0ea27761802f2fcec41a197923502faf2dbc6722e3ede694ac0b31a2ed",
+     "module_code_sha256": "94a28e47b0c589944130a93bd0cba35078d68a781c413b1537b0ae440a28dcc3",
+     "exe_offset_of_module_blob": 845192,
+     "location": "decode_snapshot L215-225",
+     "status": "CS"
+    }
+   ],
+   "status": "AV"
+  },
+  "mercedes_b17_adc_piecewise_8_point_candidate": {
+   "param": "intake_air_temperature",
+   "expr": "linear interpolation over IAT_POINTS; raw outside [92.16, 230.4] -> no value",
+   "points": [
+    [
+     92.16,
+     10.0
+    ],
+    [
+     122.88,
+     20.0
+    ],
+    [
+     148.48,
+     30.0
+    ],
+    [
+     174.08,
+     40.0
+    ],
+    [
+     194.56,
+     50.0
+    ],
+    [
+     209.92,
+     60.0
+    ],
+    [
+     220.16,
+     70.0
+    ],
+    [
+     230.4,
+     80.0
+    ]
+   ],
+   "unit": "°C",
+   "input": "21:BE",
+   "evidence": [
+    {
+     "file": "HFMreader.exe!PYZ.pyz!hfmreader.parameter_registry",
+     "exe_sha256": "b5aa7e0ea27761802f2fcec41a197923502faf2dbc6722e3ede694ac0b31a2ed",
+     "module_code_sha256": "e8a7e11679245775db7e88d61ba472dba5904fc5fb87d9cdd14f5e8c296d6b79",
+     "exe_offset_of_module_blob": 922047,
+     "location": "IAT_CANDIDATE_POINTS L187 @bc+372; _bounded_piecewise L155-164",
+     "status": "CS"
+    }
+   ],
+   "status": "AH"
+  },
+  "hht_tkm": {
+   "expr": "°C = TABLES.coolant[d0]",
+   "unit": "°C",
+   "evidence": [
+    {
+     "file": "HFMreader.exe!PYZ.pyz!hfmreader.hht_experimental.decoder",
+     "exe_sha256": "b5aa7e0ea27761802f2fcec41a197923502faf2dbc6722e3ede694ac0b31a2ed",
+     "module_code_sha256": "5efe66ba196565f56a63b255195a91d91a8b99b40a2a01a1b67d87c7d1eaef8f",
+     "exe_offset_of_module_blob": 883280,
+     "location": "_words L43-44",
+     "status": "CS"
+    }
+   ],
+   "status": "AC"
+  },
+  "hht_tal": {
+   "expr": "°C = TABLES.intake_air[d0]",
+   "unit": "°C",
+   "evidence": [
+    {
+     "file": "HFMreader.exe!PYZ.pyz!hfmreader.hht_experimental.decoder",
+     "exe_sha256": "b5aa7e0ea27761802f2fcec41a197923502faf2dbc6722e3ede694ac0b31a2ed",
+     "module_code_sha256": "5efe66ba196565f56a63b255195a91d91a8b99b40a2a01a1b67d87c7d1eaef8f",
+     "exe_offset_of_module_blob": 883280,
+     "location": "_words L45-46",
+     "status": "CS"
+    }
+   ],
+   "status": "AC"
+  },
+  "hht_upm": {
+   "expr": "rpm = 25 * d0",
+   "unit": "rpm",
+   "evidence": [
+    {
+     "file": "HFMreader.exe!PYZ.pyz!hfmreader.hht_experimental.decoder",
+     "exe_sha256": "b5aa7e0ea27761802f2fcec41a197923502faf2dbc6722e3ede694ac0b31a2ed",
+     "module_code_sha256": "5efe66ba196565f56a63b255195a91d91a8b99b40a2a01a1b67d87c7d1eaef8f",
+     "exe_offset_of_module_blob": 883280,
+     "location": "_words L47-48",
+     "status": "CS"
+    }
+   ],
+   "status": "AC"
+  },
+  "hht_llupm": {
+   "expr": "word0 = (25 * (d2 if I6A < 0x41 else d6)) if d8 else 0 ; word1 = 25 * d8",
+   "unit": "rpm",
+   "evidence": [
+    {
+     "file": "HFMreader.exe!PYZ.pyz!hfmreader.hht_experimental.decoder",
+     "exe_sha256": "b5aa7e0ea27761802f2fcec41a197923502faf2dbc6722e3ede694ac0b31a2ed",
+     "module_code_sha256": "5efe66ba196565f56a63b255195a91d91a8b99b40a2a01a1b67d87c7d1eaef8f",
+     "exe_offset_of_module_blob": 883280,
+     "location": "_words L49-51",
+     "status": "CS"
+    }
+   ],
+   "status": "AC"
+  },
+  "hht_dkw": {
+   "expr": "word = 3515625 * d0 // 1000000 ; deg = word / 10",
+   "unit": "°",
+   "evidence": [
+    {
+     "file": "HFMreader.exe!PYZ.pyz!hfmreader.hht_experimental.decoder",
+     "exe_sha256": "b5aa7e0ea27761802f2fcec41a197923502faf2dbc6722e3ede694ac0b31a2ed",
+     "module_code_sha256": "5efe66ba196565f56a63b255195a91d91a8b99b40a2a01a1b67d87c7d1eaef8f",
+     "exe_offset_of_module_blob": 883280,
+     "location": "_words L52-53",
+     "status": "CS"
+    }
+   ],
+   "status": "AC"
+  },
+  "hht_luma": {
+   "expr": "kg/h = (d2 + 256 * d6) // 10",
+   "unit": "kg/h",
+   "evidence": [
+    {
+     "file": "HFMreader.exe!PYZ.pyz!hfmreader.hht_experimental.decoder",
+     "exe_sha256": "b5aa7e0ea27761802f2fcec41a197923502faf2dbc6722e3ede694ac0b31a2ed",
+     "module_code_sha256": "5efe66ba196565f56a63b255195a91d91a8b99b40a2a01a1b67d87c7d1eaef8f",
+     "exe_offset_of_module_blob": 883280,
+     "location": "_words L54-55",
+     "status": "CS"
+    }
+   ],
+   "status": "AC"
+  },
+  "hht_o2": {
+   "expr": "mV = trunc0(51102 * d2 - 1928300, 10000)",
+   "unit": "mV",
+   "evidence": [
+    {
+     "file": "HFMreader.exe!PYZ.pyz!hfmreader.hht_experimental.decoder",
+     "exe_sha256": "b5aa7e0ea27761802f2fcec41a197923502faf2dbc6722e3ede694ac0b31a2ed",
+     "module_code_sha256": "5efe66ba196565f56a63b255195a91d91a8b99b40a2a01a1b67d87c7d1eaef8f",
+     "exe_offset_of_module_blob": 883280,
+     "location": "_words L56-57",
+     "status": "CS"
+    }
+   ],
+   "status": "AC"
+  },
+  "hht_zuendw": {
+   "expr": "0 if 25 * d2 < 100 else trunc0(5500000 - 35157 * d0, 100000)",
+   "unit": "°CA",
+   "evidence": [
+    {
+     "file": "HFMreader.exe!PYZ.pyz!hfmreader.hht_experimental.decoder",
+     "exe_sha256": "b5aa7e0ea27761802f2fcec41a197923502faf2dbc6722e3ede694ac0b31a2ed",
+     "module_code_sha256": "5efe66ba196565f56a63b255195a91d91a8b99b40a2a01a1b67d87c7d1eaef8f",
+     "exe_offset_of_module_blob": 883280,
+     "location": "_words L58-59",
+     "status": "CS"
+    }
+   ],
+   "status": "AC"
+  },
+  "hht_kmh": {
+   "expr": "km/h = 12 * d2 // 10",
+   "unit": "km/h",
+   "evidence": [
+    {
+     "file": "HFMreader.exe!PYZ.pyz!hfmreader.hht_experimental.decoder",
+     "exe_sha256": "b5aa7e0ea27761802f2fcec41a197923502faf2dbc6722e3ede694ac0b31a2ed",
+     "module_code_sha256": "5efe66ba196565f56a63b255195a91d91a8b99b40a2a01a1b67d87c7d1eaef8f",
+     "exe_offset_of_module_blob": 883280,
+     "location": "_words L60-61",
+     "status": "CS"
+    }
+   ],
+   "status": "AC"
+  },
+  "hht_bit": {
+   "expr": "active = (d0 & bit_v1_old[q & 0xFF]) != 0 ; if (q >> 8) & 2: active = not active ; word = 2 (ON) if active else 1 (OFF)",
+   "unit": "ON/OFF",
+   "evidence": [
+    {
+     "file": "HFMreader.exe!PYZ.pyz!hfmreader.hht_experimental.decoder",
+     "exe_sha256": "b5aa7e0ea27761802f2fcec41a197923502faf2dbc6722e3ede694ac0b31a2ed",
+     "module_code_sha256": "5efe66ba196565f56a63b255195a91d91a8b99b40a2a01a1b67d87c7d1eaef8f",
+     "exe_offset_of_module_blob": 883280,
+     "location": "_words L62-67",
+     "status": "CS"
+    }
+   ],
+   "status": "AC"
+  },
+  "trunc0": {
+   "expr": "trunc0(n, d) = sign(n) * (abs(n) // d)  (truncate toward zero)",
+   "evidence": [
+    {
+     "file": "HFMreader.exe!PYZ.pyz!hfmreader.hht_experimental.decoder",
+     "exe_sha256": "b5aa7e0ea27761802f2fcec41a197923502faf2dbc6722e3ede694ac0b31a2ed",
+     "module_code_sha256": "5efe66ba196565f56a63b255195a91d91a8b99b40a2a01a1b67d87c7d1eaef8f",
+     "exe_offset_of_module_blob": 883280,
+     "location": "trunc0 L37-38",
+     "status": "CS"
+    }
+   ],
+   "status": "CS"
+  },
+  "fuel_injection": {
+   "expr": "ms = ((r1 + 256 * r3) // 50) / 10 ; invalid if r4 (B7) == 0",
+   "unit": "ms",
+   "input": "20*54 20*55 B7 responses",
+   "evidence": [
+    {
+     "file": "HFMreader.exe!PYZ.pyz!hfmreader.hht_control.recipes",
+     "exe_sha256": "b5aa7e0ea27761802f2fcec41a197923502faf2dbc6722e3ede694ac0b31a2ed",
+     "module_code_sha256": "41bfd32555e37d755e5752baa10fb9b891f306f18392011e6c5aaa61f86c86e5",
+     "exe_offset_of_module_blob": 863847,
+     "location": "decode_values L41-43",
+     "status": "CS"
+    }
+   ],
+   "status": "AC"
+  },
+  "fuel_lambda": {
+   "expr": "% = 390625 * r0 // 1000000 - 50 ; invalid if r1 (B7) == 0",
+   "unit": "%",
+   "input": "B9 B7 responses",
+   "evidence": [
+    {
+     "file": "HFMreader.exe!PYZ.pyz!hfmreader.hht_control.recipes",
+     "exe_sha256": "b5aa7e0ea27761802f2fcec41a197923502faf2dbc6722e3ede694ac0b31a2ed",
+     "module_code_sha256": "41bfd32555e37d755e5752baa10fb9b891f306f18392011e6c5aaa61f86c86e5",
+     "exe_offset_of_module_blob": 863847,
+     "location": "decode_values L44",
+     "status": "CS"
+    }
+   ],
+   "status": "AC"
+  },
+  "adapt_idle": {
+   "expr": "kg/h = trunc0(275 * r1 - 35000, 1000) / 10",
+   "unit": "kg/h",
+   "input": "24* 90",
+   "evidence": [
+    {
+     "file": "HFMreader.exe!PYZ.pyz!hfmreader.hht_control.recipes",
+     "exe_sha256": "b5aa7e0ea27761802f2fcec41a197923502faf2dbc6722e3ede694ac0b31a2ed",
+     "module_code_sha256": "41bfd32555e37d755e5752baa10fb9b891f306f18392011e6c5aaa61f86c86e5",
+     "exe_offset_of_module_blob": 863847,
+     "location": "decode_values L45",
+     "status": "CS"
+    }
+   ],
+   "status": "AC"
+  },
+  "adapt_partload": {
+   "expr": "factor = (trunc0(390625 * r1 - 50000000, 1000000) + 100) / 100",
+   "unit": "factor",
+   "input": "24* 92 / 24* 93",
+   "evidence": [
+    {
+     "file": "HFMreader.exe!PYZ.pyz!hfmreader.hht_control.recipes",
+     "exe_sha256": "b5aa7e0ea27761802f2fcec41a197923502faf2dbc6722e3ede694ac0b31a2ed",
+     "module_code_sha256": "41bfd32555e37d755e5752baa10fb9b891f306f18392011e6c5aaa61f86c86e5",
+     "exe_offset_of_module_blob": 863847,
+     "location": "decode_values L46",
+     "status": "CS"
+    }
+   ],
+   "status": "AC"
+  },
+  "coolant_plausibility": {
+   "expr": "suspect if v < -40 or v > 130 or (|v - last| > 15 within 0..5 s)",
+   "unit": "°C",
+   "evidence": [
+    {
+     "file": "HFMreader.exe!PYZ.pyz!hfmreader.data_quality",
+     "exe_sha256": "b5aa7e0ea27761802f2fcec41a197923502faf2dbc6722e3ede694ac0b31a2ed",
+     "module_code_sha256": "704096caa32adfc9fb9a9d44598ef5621764d6e090379950e5c753e5172c163c",
+     "exe_offset_of_module_blob": 820320,
+     "location": "CoolantQuality.check L5-11",
+     "status": "CS"
+    }
+   ],
+   "status": "CS"
+  }
+ }
+}

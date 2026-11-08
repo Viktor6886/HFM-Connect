@@ -1,0 +1,10 @@
+build/
+*.o
+*.exe
+*.elf
+*.bin
+__pycache__/
+.vscode/
+.idea/
+*.log
+/firmware/HFMConnect/build/
