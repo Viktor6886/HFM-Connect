@@ -94,6 +94,7 @@ uint32_t DiagEngine::submit(Job j, uint32_t arg, const char* text) {
   pendingArg_ = arg;
   strlcpy(pendingText_, text ? text : "", sizeof pendingText_);
   uint32_t id = nextJobId_++;
+  pendingId_ = id;
   if (st_.job.state != JobState::Running) {
     st_.job = JobInfo();
     st_.job.id = id;
@@ -626,7 +627,10 @@ void DiagEngine::run() {
       arg = pendingArg_;
       strlcpy(text, pendingText_, sizeof text);
       pending_ = Job::None;
+      st_.job = JobInfo();
+      st_.job.id = pendingId_;
       st_.job.job = j;
+      st_.job.state = JobState::Queued;
     }
     bool liveOn = st_.liveActive;
     unlock();

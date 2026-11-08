@@ -17,7 +17,7 @@
 | Плата | ESP32S3 Dev Module |
 | USB CDC On Boot | Enabled (лог в Serial Monitor по USB) |
 | Flash Size | 4MB (или фактический размер) |
-| Partition Scheme | Default 4MB with spiffs (1.2MB APP/1.5MB SPIFFS) |
+| Partition Scheme | Default 4MB with spiffs (1.2MB APP/1.5MB SPIFFS) — прошивка занимает ~1,11 МБ (85 %). При росте прошивки: *Huge APP (3MB No OTA/1MB SPIFFS)* |
 | PSRAM | любой (не требуется) |
 | Upload Speed | 921600 |
 

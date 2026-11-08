@@ -135,6 +135,7 @@ class DiagEngine {
   EngineState st_;
   volatile Job pending_ = Job::None;
   uint32_t pendingArg_ = 0;
+  uint32_t pendingId_ = 0;
   char pendingText_[64] = {0};
   uint32_t nextJobId_ = 1;
   uint32_t lastKeepAliveMs_ = 0;

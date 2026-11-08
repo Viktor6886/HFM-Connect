@@ -196,7 +196,7 @@ static void setCap(EcuProfile& p, uint8_t f, bool allowed, Confidence c, const c
 }
 
 void resolve(const EcuIdent& id, const ResolveOptions& opt, EcuProfile& p) {
-  memset(&p, 0, sizeof p);
+  p = EcuProfile();
   p.variant = dtc::Variant();
   p.bankMapping = dtc::BankMapping::Unknown;
   p.bankMappingConf = Confidence::GIP;
