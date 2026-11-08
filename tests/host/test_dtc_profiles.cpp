@@ -8,7 +8,7 @@ static const uint8_t kGolden[28] = {0x2C, 0x42, 0x4D, 0x32, 0x32, 0x38, 0x33, 0x
                                     0x33, 0x32, 0x35, 0x92, 0x46, 0x92, 0x41, 0x00};
 
 TEST(dtc_simulator_scenarios_decode) {
-  // HFMreader protocol.md 5.2: maf-stored index 00 = 0x40 -> pos 7 -> DTC 10.
+  // Bank A index 00 = 0x40 -> pos 7 -> DTC 10 (REV 1.1 s.11).
   uint8_t bank[16] = {0};
   bank[0] = 0x40;
   bank[2] = 0x08;
@@ -111,7 +111,8 @@ TEST(profile_generic_bosch_blocks_writes_even_in_engineer_mode) {
   CHECK(p.caps[prof::F_DTC_READ].allowed);
   CHECK(!p.caps[prof::F_DTC_CLEAR].allowed);
   CHECK(p.caps[prof::F_DTC_CLEAR].conf == Confidence::BLOCK);
-  CHECK(p.bankMapping == dtc::BankMapping::Unknown);
+  CHECK(p.bankMapping == dtc::BankMapping::AStoredBCurrent);
+  CHECK(p.bankMappingConf == Confidence::GIP);
   CHECK_EQ(p.variant.diagIndex, 45);
 }
 
@@ -163,4 +164,32 @@ TEST(vehicle_db_and_norms) {
   CHECK(prof::normFor("rpm", prof::NormGroup::None, false) == nullptr);
   const prof::ConnectorProfile* c = prof::connectorById("W124_X11_4_16");
   CHECK(c && c->pins == 16 && c->conf == Confidence::ZAV);
+}
+
+TEST(bank_mapping_inferred_from_intermittent_rule) {
+  // DTC 005 (ECT intermittent) sits at position 121 = index 0x0F bit 0.
+  uint8_t a[16] = {0}, b[16] = {0};
+  a[0x0F] = 0x01;
+  b[0x00] = 0x40;  // DTC 010 (MAF open) - not intermittent, no evidence
+  dtc::Decoded items[8];
+  dtc::Variant v;
+  uint16_t n = dtc::decodeBank(a, 0x00, v, items, 8);
+  n += dtc::decodeBank(b, 0x10, v, items + n, (uint16_t)(8 - n));
+  CHECK_EQ(items[0].code, 5);
+  CHECK(dtc::inferBankMapping(items, n) == dtc::BankMapping::AStoredBCurrent);
+  uint8_t a2[16] = {0}, b2[16] = {0};
+  b2[0x0F] = 0x02;  // DTC 008 (IAT intermittent) in bank B -> B stored
+  n = dtc::decodeBank(a2, 0x00, v, items, 8);
+  n += dtc::decodeBank(b2, 0x10, v, items + n, (uint16_t)(8 - n));
+  CHECK(dtc::inferBankMapping(items, n) == dtc::BankMapping::ACurrentBStored);
+  b2[0x0F] = 0;
+  n = dtc::decodeBank(a2, 0x00, v, items, 8);
+  CHECK(dtc::inferBankMapping(items, n) == dtc::BankMapping::Unknown);
+}
+
+TEST(m111_texts_override_cylinder_mapping) {
+  CHECK(dtc::m111Text(55) != nullptr);
+  CHECK(strstr(dtc::m111Text(55), "цилиндре 1") != nullptr);
+  CHECK(dtc::m111Text(45) != nullptr);
+  CHECK(dtc::m111Text(10) == nullptr);
 }

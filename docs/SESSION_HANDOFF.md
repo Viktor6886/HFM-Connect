@@ -1,80 +1,75 @@
 # Передача состояния следующей сессии
 
-**Дата:** 2026-11-08 · **Сессия:** 1 (создание проекта с нуля) · **Ветка:** `main`
-**Последний зелёный CI:** run 42505821360 — host-тесты и компиляция ESP32-S3 успешны,
-0 предупреждений компилятора.
+**Дата:** 2026-11-08 · **Сессия:** 2 · **Ветка:** `main` · **Прошивка:** 0.2.0
 
-## 1. Что сделано
+## 1. Что сделано в сессии 2
 
-- Изучены: REV 1.1 (357 с.), REV 1.3/1.4, `HFM_PROTOCOL_FULL_GPT.md`, отчёты HFMreader
-  (protocol.md, dtc, live_data, hht_recipes, байткод `apply_variant_remaps`), HFMScan
-  (keep-alive 10 00, F9, F1 30–32/40–42, обратная трактовка банков), HHTwin, заводские
-  PDF I03–I10, E111, WIS, Test & Adjustment Data, инструкции импульсных считывателей.
-- Создан репозиторий с нуля (был только README): прошивка, WebUI, тесты, CI, документация.
-- Прошивка `firmware/HFMConnect/HFMConnect.ino` + 19 модулей; внешних библиотек нет.
-- 14 GitHub Issues (#1–#14), метки hardware-verification / protocol / enhancement / blocked-by-source.
+- По требованию владельца **удалён режим симулятора**: прошивка и WebUI работают только с
+  реальной K-Line (адаптер собран). `SimEcu` перенесён в `tests/host/` (только тесты),
+  `tools/dev_server.py` удалён, настройки `source/sim_scenario` удалены.
+- Реальный режим усилен: UART-драйвер ставится при старте и не удаляется (TX в «1»),
+  синхронизация ищет `AA 55` среди первых 4 байт, тайминги BREAK/пауза/тайм-аут
+  настраиваются в WebUI (NVS, по умолчанию 177/214/750 мс).
+- Из документов добавлено: чтение F0:26/27; автоопределение банков DTC по правилу OEM 11/3
+  («перемежающиеся — только сохранённые»); заводская таблица импульсных кодов N→A для
+  M104/M111; тексты кодов M111 (цилиндры/катушки); пометка замещающих значений ОЖ/IAT/HFM;
+  справочник проверок датчиков ОЖ B11/3 и IAT B17 (OEM 23/4–23/5); подсказка о текущих
+  кодах при работающем двигателе.
+- По требованию владельца из текстов репозитория убраны упоминания сторонних программ как
+  основы ПО: ссылки — на спецификацию REV 1.1–1.4 и заводские документы (D-017). Данные —
+  в `data/protocol/` без служебных ссылок; `docs/specs/` удалён из репозитория (хранится
+  локально). Идентификаторы в коде переименованы (`o2AltMv`, `coolantTableC`, …).
+- Обновлены README, CLAUDE.md, PROTOCOL, SOURCES, DECISIONS (D-016…D-020), CHANGELOG
+  (0.2.0), DIAGNOSTIC_FUNCTIONS, ECU_COMPATIBILITY, HARDWARE, BUILD, ARCHITECTURE,
+  ROADMAP, TESTING, PROGRESS.
 
-## 2. Ключевые файлы
+## 2. Изменённые файлы (основное)
 
-| Файл | Роль |
-|---|---|
-| `firmware/HFMConnect/HfmSession.*` | транзакции, политика команд (`classifyPrefix`) |
-| `firmware/HFMConnect/HfmProfiles.*` | автомобили, разъёмы, профили ЭБУ, capability, нормы |
-| `firmware/HFMConnect/HfmLive.*`, `HfmDecode.*` | Live Data, формулы, LUT |
-| `firmware/HFMConnect/HfmDtc.*`, `DtcCatalog.h` (генерир.) | DTC |
-| `firmware/HFMConnect/HfmServices.*`, `ServiceGuard.*` | чтение/запись, защита |
-| `firmware/HFMConnect/KLineUart.*` | UART ESP32-S3 (Arduino) |
-| `firmware/HFMConnect/DiagEngine.*` | задача-владелец K-Line, задания |
-| `firmware/HFMConnect/WebApi.*`, `NetManager.*`, `Settings.*` | HTTP API, Wi-Fi, NVS |
-| `firmware/HFMConnect/WebUiAssets.h` (генерир.) | WebUI gzip |
-| `webui/index.html, app.css, app.js` | исходники WebUI |
-| `tests/host/*.cpp`, `tests/traces/sim_*.jsonl` | host-тесты, синтетическая трасса |
-| `tools/*.py` | run_host_tests, check_tables, build_webui, gen_dtc_catalog, dev_server |
+`firmware/HFMConnect/`: KLineUart.*, DiagEngine.*, WebApi.cpp, Settings.*, HFMConnect.ino,
+HfmDtc.* (inferBankMapping, m111Text), ImpulseDecoder.* (таблица N→A), HfmIdent.h,
+HfmProfiles.cpp, HfmDecode.*, HfmLive.*, HfmServices.*, HfmSession.cpp, HfmTypes.h,
+ByteLink.h, Config.h, DtcCatalog.h, WebUiAssets.h; `webui/app.js`; `tests/host/*`
+(SimEcu перенесён, новые тесты); `tools/*`; `data/protocol/*`; документы.
 
 ## 3. Что проверено
 
 | Проверка | Результат |
 |---|---|
-| Host-тесты (Windows zig c++ и Linux g++ в CI) | 39 тестов, 471 проверка, 0 ошибок |
-| check_tables.py | LUT/маски/базовые коды/ремапы/каталог = данные анализа |
-| Компиляция ESP32-S3 (CI, esp32 core latest) | успешно, 0 предупреждений: 1 114 301 Б (85 % APP 1,25 МБ), RAM 78 КБ |
-| Компиляция локально (esp32 3.3.8, Windows) | первая — ошибка `size_t` (исправлена); повторная — см. `build/compile_local.log` |
-| WebUI на mock-сервере в браузере | все разделы открываются; исправлены гонки рендера при смене раздела |
-| **На устройстве ESP32-S3** | **не запускалось** (нет платы в сессии) |
+| Host-тесты (Windows, zig c++) | 42 теста, 591 проверка, 0 ошибок |
+| check_tables.py | все таблицы = `data/protocol/` |
+| build_webui.py --check, node --check | OK |
+| Компиляция ESP32-S3 | см. раздел 6 |
+| **На устройстве ESP32-S3** | **не запускалось** |
 | **На реальном ЭБУ** | **не проводилось** |
 
 ## 4. Известные проблемы и риски
 
-1. Схема трансивера (docs/HARDWARE.md) — проектная: уровни L9637D 5 В ↔ 3,3 В требуют
-   проверки по даташиту; не изготовлена.
-2. Эмуляция SPACE (EVEN/ODD) и BREAK через инверсию TXD не проверены осциллографом (D-003).
-3. Приём ответов ЭБУ в режиме EVEN — гипотеза; если ЭБУ отвечает иначе, возможны
-   ошибки кадра — они считаются (`parity_errors/frame_errors` в /api/status).
-4. Синхронный WebServer: долгие chunked-ответы (`/api/report`, `/api/trace.jsonl`)
-   блокируют другие запросы на время передачи.
-5. (исправлено в конце сессии) id вытесняющего задания STOP теперь отражается в /api/status.
-6. Прошивка занимает 85 % раздела APP по умолчанию — при росте переключиться на Huge APP.
-7. Записи базы автомобилей с меткой ГИП (W124 E220 111.960, W202 C230 111.974) требуют
-   сверки с документацией.
+1. Уровни трансивера и тайминги не измерены (D-003, issue #1). Если «Подключить» даёт
+   NO_SYNC: смотреть RAW-журнал (какие байты пришли), подобрать BREAK/паузу в Настройках,
+   проверить инверсию TX/RX в `Config.h` (`HFM_KLINE_TX_INVERTED/RX_INVERTED`) и пины.
+2. Приём ответов ЭБУ в режиме EVEN — гипотеза; ошибки паритета/кадра видны в /api/status.
+3. Синхронный WebServer: chunked-ответы блокируют другие запросы на время передачи.
+4. Прошивка ~85 % раздела APP по умолчанию — при росте переключиться на Huge APP.
+5. История git содержит прежние тексты и удалённые файлы (спецификации, старая папка данных);
+   переписывание истории не выполнялось.
 
 ## 5. Следующие шаги (по приоритету)
 
-1. Проверить CI последнего коммита (`gh run list`), локальный лог `build/compile_local.log`.
-2. Залить прошивку на ESP32-S3, проверить WebUI в режиме «Симулятор» на телефоне (iOS/Android),
-   память (`heap` в /api/status), captive portal.
-3. Issue #1: собрать адаптер, осциллограммы BREAK/AA/паритета.
-4. Issue #2: первая реальная трасса F0 → `tests/traces/ecu_*.jsonl` + replay-тест.
-5. Issue #3 (C-01), #4 (сверка Live Data), #5 (сбор ID ЭБУ) → профили уровня VAL.
-6. Только после трасс: расширение capability (ROADMAP этап C).
+1. Залить прошивку, подключить адаптер к X11/4, «Подключить»; сохранить `/api/trace.jsonl`
+   первого сеанса в `tests/traces/ecu_<номер>.jsonl` и добавить replay-тест (#2).
+2. Осциллограммы BREAK/AA/паритета (#1); при необходимости поправить тайминги/инверсию.
+3. Сверка Live Data и адаптаций с другим прибором (#4); сбор ID ЭБУ (#5).
+4. C-01: проверить автоопределение банков на реальной перемежающейся неисправности (#3).
+5. Только после трасс: расширение capability (ROADMAP этап C).
 
-## 6. Как продолжить (команды)
+## 6. Как продолжить (команды) и результат сборки
 
 ```bash
 cd C:/Users/pvpwm/Desktop/HFM-Connect/repo
 git pull && git log --oneline -10
 python tools/run_host_tests.py && python tools/check_tables.py
-python tools/dev_server.py 8080          # WebUI без устройства (mock)
 C:/Users/pvpwm/tools/arduino-cli/arduino-cli.exe compile --fqbn esp32:esp32:esp32s3:PartitionScheme=default,CDCOnBoot=cdc --build-path build/fw firmware/HFMConnect
 ```
 
-Диск C: почти заполнен (~2–4 ГБ свободно) — не устанавливать дополнительные ядра.
+Результат компиляции сессии 2 — последний run GitHub Actions (`gh run list`), детали —
+в PROGRESS.md. Диск C: почти заполнен — не устанавливать дополнительные ядра.

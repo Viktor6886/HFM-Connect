@@ -1,9 +1,9 @@
-// HfmDtc.h - HFM fault-memory bitmap decoding (REV 1.1 s.11-14, HFMreader dtc.py).
+// HfmDtc.h - HFM fault-memory bitmap decoding (REV 1.1 s.11-14).
 //
 // F1 index 00..0F = bank A, 10..1F = bank B. Which bank is "stored" and which
-// is "current" is the open question C-01 (HFMreader: A=stored, B=current;
-// HFMScan: A=current, B=stored). The decoder keeps the raw bank and only
-// names it when the selected ECU profile asserts a mapping.
+// is "current" is the open question C-01 (sources disagree). The decoder
+// keeps the raw bank and names it from the profile or, better, from the
+// factory intermittent-fault rule observed in the readout.
 #pragma once
 #include <stdint.h>
 
@@ -12,7 +12,7 @@
 namespace dtc {
 
 struct Variant {
-  uint8_t manufacturer = 1;  // 1 = Bosch (HFMreader default)
+  uint8_t manufacturer = 1;  // 1 = Bosch (default)
   char engineGroup = 'h';    // 'h' (HFM default) / 'o'
   int16_t diagIndex = 41;    // BCD-decoded diagnostic index
 };
@@ -29,7 +29,7 @@ inline const char* bankMappingCode(BankMapping m) {
 
 // Base DTC number for bit position 1..152 (0 if out of range).
 uint16_t baseForPosition(uint16_t pos);
-// Sequential remap exactly as HFMreader apply_variant_remaps (value = map.get(value, value)).
+// Sequential remap (REV 1.1 s.14): value = map.get(value, value) for each table in order.
 uint16_t applyRemaps(uint16_t base, const Variant& v);
 // Catalog lookup (nullptr if not in the 163-entry catalog).
 const DtcCatalogEntry* lookup(uint16_t code);
@@ -51,5 +51,16 @@ uint16_t decodeBank(const uint8_t* bytes16, uint8_t index0, const Variant& v, De
 
 // Status label for a raw bank under a mapping: "stored", "current" or "bank_a"/"bank_b".
 const char* bankLabel(uint8_t bank, BankMapping m);
+
+// Factory rule (Engine 104/111 Diagnostic Manual 11/3): intermittent-contact
+// faults are stored only after repeated occurrence and "can appear only as
+// Stored DTC's and never as Current DTC's". If set intermittent codes are
+// found in exactly one bank, that bank is the stored one.
+// Returns Unknown when the readout gives no evidence (or contradicts itself).
+BankMapping inferBankMapping(const Decoded* items, uint16_t n);
+
+// Engine-specific factory wording for codes whose meaning differs on M111
+// (4 cylinders, coil pairs 1/4 and 2/3). nullptr = use the catalog text.
+const char* m111Text(uint16_t code);
 
 }  // namespace dtc

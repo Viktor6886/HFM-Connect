@@ -20,4 +20,4 @@ body:
     attributes: {label: "Трасса JSONL (/api/trace.jsonl) и осциллограммы", render: json}
   - type: textarea
     id: result
-    attributes: {label: "Результат и сверка (HHT / другой прибор)"}
+    attributes: {label: "Результат и сверка (заводской тестер / другой прибор)"}

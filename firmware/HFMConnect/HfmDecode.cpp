@@ -8,11 +8,11 @@ struct Pt {
   float x, y;
 };
 
-// HFMScan coolant 14-point table (REV 1.1 s.7, HFMreader COOLANT_POINTS).
+// Coolant 14-point table (REV 1.1 s.7).
 const Pt kCoolantPts[14] = {{0, -59},   {4, -35},   {16, -17},  {32, -3},   {48, 8},
                             {128, 45},  {160, 61},  {176, 70},  {192, 80},  {208, 93},
                             {224, 112}, {240, 147}, {252, 207}, {256, 300}};
-// Mercedes B17 ADC 8-point candidate (HFMreader IAT_CANDIDATE_POINTS).
+// Intake air B17 ADC 8-point candidate (REV 1.1 s.7).
 const Pt kIatPts[8] = {{92.16f, 10},  {122.88f, 20}, {148.48f, 30}, {174.08f, 40},
                        {194.56f, 50}, {209.92f, 60}, {220.16f, 70}, {230.4f, 80}};
 
@@ -24,8 +24,8 @@ float interp(const Pt* p, int n, float raw) {
   return p[n - 1].y;
 }
 
-// HHT 256-entry tables (candidates.json lookup_tables, REV 1.1 s.7.2).
-const int16_t kCoolantHht[256] = {
+// 256-entry temperature tables (REV 1.1 s.7.2).
+const int16_t kCoolantTable[256] = {
     -59, -52, -46, -42, -39, -36, -34, -31, -29, -27, -26, -24, -23, -21, -20, -19, -17, -16, -15, -14, -13, -12,
     -11, -10, -9,  -8,  -7,  -7,  -6,  -5,  -4,  -3,  -3,  -2,  -1,  -1,  0,   1,   2,   2,   3,   4,   4,   5,
     5,   6,   7,   7,   8,   8,   9,   9,   10,  11,  11,  12,  12,  13,  13,  14,  14,  15,  15,  16,  16,  17,
@@ -39,7 +39,7 @@ const int16_t kCoolantHht[256] = {
     107, 108, 109, 111, 112, 114, 115, 117, 119, 120, 122, 124, 126, 128, 131, 133, 135, 138, 141, 144, 147, 151,
     154, 159, 163, 168, 174, 181, 189, 198, 210, 232, 255, 277, 300, 300};
 
-const int16_t kIatHht[256] = {
+const int16_t kIatTable[256] = {
     -40, -40, -40, -40, -40, -40, -40, -40, -40, -39, -37, -36, -34, -33, -31, -30, -29, -28, -27, -26, -26, -25,
     -24, -23, -22, -21, -20, -19, -19, -18, -18, -17, -16, -16, -15, -14, -14, -13, -13, -12, -11, -11, -10, -10,
     -9,  -9,  -8,  -8,  -7,  -7,  -7,  -6,  -6,  -5,  -5,  -4,  -4,  -4,  -3,  -3,  -2,  -2,  -1,  -1,  0,   0,
@@ -66,18 +66,18 @@ bool iatNativeC(uint8_t be, float* out) {
   return true;
 }
 
-int16_t coolantHhtC(uint8_t raw) { return kCoolantHht[raw]; }
-int16_t iatHhtC(uint8_t raw) { return kIatHht[raw]; }
+int16_t coolantTableC(uint8_t raw) { return kCoolantTable[raw]; }
+int16_t iatTableC(uint8_t raw) { return kIatTable[raw]; }
 
-void idleTargetHht(uint8_t d2, uint8_t d6, uint8_t d8, uint8_t i6a, uint16_t* target, uint16_t* rpmOut) {
+void idleTarget(uint8_t d2, uint8_t d6, uint8_t d8, uint8_t i6a, uint16_t* target, uint16_t* rpmOut) {
   *target = d8 ? (uint16_t)(25 * (i6a < 0x41 ? d2 : d6)) : 0;
   *rpmOut = (uint16_t)(25 * d8);
 }
 
-uint8_t statusMaskHht(uint16_t q) { return kBitV1Old[(q & 0xFF) & 31]; }
+uint8_t statusMask(uint16_t q) { return kBitV1Old[(q & 0xFF) & 31]; }
 
-bool statusBitHht(uint8_t d0, uint16_t q) {
-  bool active = (d0 & statusMaskHht(q)) != 0;
+bool statusBit(uint8_t d0, uint16_t q) {
+  bool active = (d0 & statusMask(q)) != 0;
   if ((q >> 8) & 2) active = !active;
   return active;
 }
@@ -95,7 +95,7 @@ bool lambdaPct(uint8_t b9, uint8_t rpmByte, int32_t* out) {
 }
 
 CodingInfo decodeCoding(uint8_t c, uint8_t m) {
-  // HFMreader hht_control/configuration L14-32 (AC: "conditional HHT variant1 legacy").
+  // REV 1.1 s.8 configuration decode (candidate interpretation).
   CodingInfo r;
   r.valid = true;
   r.coding = c;

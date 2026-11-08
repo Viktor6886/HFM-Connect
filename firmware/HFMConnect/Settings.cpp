@@ -11,8 +11,9 @@ static Preferences prefs;
 
 void Settings::load() {
   prefs.begin("hfm", true);
-  source = prefs.getUChar("src", 0);
-  simScenario = prefs.getUChar("simsc", 0);
+  breakMs = prefs.getUShort("brk", 177);
+  postBreakMs = prefs.getUShort("pbrk", 214);
+  byteTimeoutMs = prefs.getUShort("bto", 750);
   experimentalReads = prefs.getBool("exp", false);
   engineerMode = prefs.getBool("eng", false);
   keepAlive = prefs.getBool("ka", true);
@@ -34,8 +35,9 @@ void Settings::load() {
 
 void Settings::save() {
   prefs.begin("hfm", false);
-  prefs.putUChar("src", source);
-  prefs.putUChar("simsc", simScenario);
+  prefs.putUShort("brk", breakMs);
+  prefs.putUShort("pbrk", postBreakMs);
+  prefs.putUShort("bto", byteTimeoutMs);
   prefs.putBool("exp", experimentalReads);
   prefs.putBool("eng", engineerMode);
   prefs.putBool("ka", keepAlive);

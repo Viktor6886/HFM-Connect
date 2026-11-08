@@ -2,7 +2,7 @@
 
 PrefixClass classifyPrefix(uint8_t op) {
   switch (op) {
-    // Read pages confirmed in HFMreader/HFMScan code (REV 1.1 s.5, CS):
+    // Read pages (REV 1.1 s.5):
     case 0x20:  // live data page 1
     case 0x21:  // live data page 2 (temperatures, status bits)
     case 0x24:  // adaptations 90/92/93 and configuration mask F0
@@ -10,7 +10,7 @@ PrefixClass classifyPrefix(uint8_t op) {
     case 0xF0:  // identification 00..1B
     case 0xF1:  // fault memory 00..1F
       return PrefixClass::Read;
-    // HFMScan-only reads; gated (REV 1.4 s.7: VIN F9 feature-gated):
+    // Gated reads (REV 1.4 s.7: VIN F9 feature-gated):
     case 0xF9:  // VIN bytes 00..0D
       return PrefixClass::ExperimentalRead;
     // State-changing prefixes (REV 1.1 s.5.2/16): never sent without a token.

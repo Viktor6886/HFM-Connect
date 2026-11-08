@@ -10,7 +10,7 @@ namespace prof {
 //  I05 24072001.pdf W124 ETM I                       I07 Test and Adjustment Data
 //  I08 Engine Test, Adjustment.pdf (HFM p.49-56)     I09/I10 DM 8.5/8.6 manuals
 //  WIS Описание по годам.docx (GF07.51-P-3017D)      E111 Engine 111 OEM 11/x
-//  SNAP DTC_Connector_Pinouts_38-16-8.pdf (secondary) HR HFMreader 1.1.1 analysis
+//  SNAP DTC_Connector_Pinouts_38-16-8.pdf (secondary)   R11 REV 1.1 protocol spec
 
 const char* generationCode(Generation g) {
   switch (g) {
@@ -26,7 +26,7 @@ const char* generationName(Generation g) {
   switch (g) {
     case Generation::EarlyAuto: return "HFM 3.4 ранний (до 02/1994, автораспознавание комплектации)";
     case Generation::Transition: return "Переходный период 01–02/1994 (определять по ID ЭБУ)";
-    case Generation::Coded: return "HFM 3.4 кодируемый (с 03/1994, 9-значный код HHT)";
+    case Generation::Coded: return "HFM 3.4 кодируемый (с 03/1994, 9-значный код заводского тестера)";
     case Generation::Hfm41: return "HFM-SFI 4.1 (M104.995)";
     default: return "Не определено";
   }
@@ -170,7 +170,7 @@ static const char* const kFeatureNames[F_COUNT] = {
     "Чтение памяти неисправностей (F1 00–1F)",
     "Расширенные биты DTC 129–152 (F1 30–32/40–42)",
     "Live Data — нативные группы (full8)",
-    "Live Data — расширенные HHT-рецепты",
+    "Live Data — расширенные рецепты",
     "Чтение самоадаптаций смеси (24* 90/92/93)",
     "Чтение кодировки комплектации (27* 02 24* F0)",
     "Чтение VIN (F9 00–0D)",
@@ -203,12 +203,12 @@ void resolve(const EcuIdent& id, const ResolveOptions& opt, EcuProfile& p) {
 
   // Commands for which no transaction is known at all: always blocked.
   setCap(p, F_VERSION_CODING_WRITE, false, Confidence::BLOCK,
-         "Команда HHT «Version coding» не восстановлена; только ручной ввод/архив кода");
+         "Команда «Version coding» заводского тестера не восстановлена; только ручной ввод/архив кода");
   setCap(p, F_THROTTLE_LEARN, false, Confidence::BLOCK,
          "Команда обучения не известна; доступна только визуальная проверка CTP/WOT/угла");
   setCap(p, F_IDENT, true, Confidence::REK, "");
   setCap(p, F_IMPULSE_READ, true, Confidence::ZAV,
-         "Заводская процедура для HHT diag version ≤46; не для W210; требует аппаратного ключа");
+         "Заводская процедура для diagnosis version ≤46; не для W210; требует аппаратного ключа");
   setCap(p, F_IMPULSE_CLEAR, false, Confidence::BLOCK,
          "Импульсное стирание отключено по умолчанию (REV 1.4 M14-07)");
 
@@ -222,18 +222,23 @@ void resolve(const EcuIdent& id, const ResolveOptions& opt, EcuProfile& p) {
     snprintf(p.name, sizeof p.name, "ЭБУ не идентифицирован");
   } else if (bosch && id.partValid && strcmp(id.partNumber, "0135451332") == 0 && id.diagIndexRaw == 0x41 &&
              id.diagSubRaw == 0x00 && id.raw[2] == 'M' && id.raw[4] == '2' && id.raw[5] == '8') {
-    // HFMreader is_validated_clear_target L74-77: the only ECU on which the
-    // HFMreader author marked reads VERIFIED. Not re-tested by this project.
+    // Reference ECU of the REV 1.1 specification (field observations exist for
+    // reads). Not re-tested by this project.
     p.resolved = true;
     p.referenceEcu = true;
     snprintf(p.id, sizeof p.id, "BOSCH_0135451332_41");
-    snprintf(p.name, sizeof p.name, "Bosch HFM-SFI 013 545 13 32, diag 41/00 (эталон HFMreader)");
+    snprintf(p.name, sizeof p.name, "Bosch HFM-SFI 013 545 13 32, diag 41/00 (эталонный ЭБУ)");
     p.bankMapping = dtc::BankMapping::AStoredBCurrent;
     p.bankMappingConf = Confidence::REK;
   } else if (bosch && hfmRange) {
     p.resolved = true;
     snprintf(p.id, sizeof p.id, "GENERIC_BOSCH_HFM_%d", di);
     snprintf(p.name, sizeof p.name, "Bosch HFM-SFI, diag %s (общий профиль)", id.diagDisplay);
+    // Probable orientation (reference profile + factory tester order: it reads
+    // 10..1F, erases, then verifies 00..0F). Confirmed per readout by the
+    // intermittent-fault rule (dtc::inferBankMapping).
+    p.bankMapping = dtc::BankMapping::AStoredBCurrent;
+    p.bankMappingConf = Confidence::GIP;
   } else if (pmsRange) {
     snprintf(p.id, sizeof p.id, "PMS_%d", di);
     snprintf(p.name, sizeof p.name, "Система PMS (diag %s) — вне области проекта", id.diagDisplay);
@@ -254,7 +259,7 @@ void resolve(const EcuIdent& id, const ResolveOptions& opt, EcuProfile& p) {
   setCap(p, F_ADAPT_READ, readOk, Confidence::REK, readReason);
   setCap(p, F_CODING_READ, readOk, Confidence::REK, readReason);
   bool expOk = readOk && opt.experimentalReads;
-  const char* expReason = readOk ? "Включите «Экспериментальное чтение» (рецепты HHT, статус AC)" : readReason;
+  const char* expReason = readOk ? "Включите «Экспериментальное чтение» (статус AC)" : readReason;
   setCap(p, F_LIVE_EXTENDED, expOk, Confidence::GIP, expOk ? "" : expReason);
   setCap(p, F_DTC_EXTENDED, expOk, Confidence::GIP, expOk ? "" : expReason);
   setCap(p, F_VIN_READ, expOk, Confidence::GIP, expOk ? "" : expReason);
@@ -267,7 +272,7 @@ void resolve(const EcuIdent& id, const ResolveOptions& opt, EcuProfile& p) {
   if (!p.referenceEcu) {
     wrReason = "Заблокировано: нет проверенной трассы для этого ЭБУ (REV 1.4 s.2 БЛОК)";
   } else if (!opt.engineerMode) {
-    wrReason = "Рецепт РЕК (HFMreader) для эталонного ЭБУ: требуется «Режим инженера»";
+    wrReason = "Рецепт РЕК для эталонного ЭБУ: требуется «Режим инженера»";
   } else {
     wr = true;
     wrReason = "РЕК: только при ключе WRITE-EN, выполненных условиях и подтверждении";

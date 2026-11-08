@@ -16,10 +16,10 @@ static const GroupDef kGroups[G_COUNT] = {
 
 // Extended reads with an explicit prefix (no reliance on a remembered page).
 static const GroupDef kExt[X_COUNT] = {
-    {"speed", 0x20, 1, {0x47}},        // HFM_R043  km/h = 12*d//10        AC
-    {"o2_rear", 0x20, 1, {0x25}},      // HFM_R046  HHT o2 formula         AC
-    {"idle_target", 0x20, 1, {0x67}},  // HFM_R002  25*raw (I6A >= 0x41)    AC
-    {"status98", 0x20, 1, {0x98}},     // HFM_R015/R022 status bits        AC
+    {"speed", 0x20, 1, {0x47}},        // km/h = 12*d//10                  AC
+    {"o2_rear", 0x20, 1, {0x25}},      // alt O2 formula                   AC
+    {"idle_target", 0x20, 1, {0x67}},  // 25*raw (variant I6A >= 0x41)      AC
+    {"status98", 0x20, 1, {0x98}},     // status bits                      AC
 };
 
 const GroupDef& group(uint8_t g) { return kGroups[g < G_COUNT ? g : 0]; }
@@ -60,14 +60,14 @@ LinkStatus pollExtended(HfmSession& s, Snapshot& snap) {
 // ---- registry -----------------------------------------------------------------
 static const ParamDef kParams[P_COUNT] = {
     {"rpm", "Обороты двигателя", "об/мин", Category::Base, "20:B7", "25 × raw", Confidence::REK, "AV", 0, 7000, 0, false},
-    {"ect", "Температура ОЖ", "°C", Category::Base, "21:BF", "14-точечная интерполяция (HFMScan)", Confidence::REK, "AV", -40, 130, 1, false},
+    {"ect", "Температура ОЖ", "°C", Category::Base, "21:BF", "14-точечная интерполяция", Confidence::REK, "AV", -40, 130, 1, false},
     {"iat", "Температура всасываемого воздуха", "°C", Category::Base, "21:BE", "8-точечная интерполяция, вне 92..230 — нет значения", Confidence::REK, "AH", -40, 100, 1, false},
     {"maf", "Расход воздуха (HFM)", "кг/ч", Category::Base, "20:48 lo + 20:49 hi", "(lo + 256·hi) / 10, один цикл", Confidence::REK, "AV/AH", 0, 600, 1, false},
     {"throttle", "Угол дроссельной заслонки", "°", Category::Throttle, "20:BD", "raw × 90 / 256", Confidence::REK, "AH", 0, 90, 2, false},
     {"load", "Нагрузка двигателя", "%", Category::Base, "20:C2", "raw / 2", Confidence::REK, "AH", 0, 100, 1, false},
     {"ign_deg", "Угол опережения зажигания", "°ПКВ", Category::Ignition, "20:C4", "55 − raw × 90 / 256", Confidence::REK, "AH", -35, 55, 1, false},
     {"o2_mv", "Лямбда-зонд (верхний)", "мВ", Category::Mixture, "20:23", "4 × raw (native)", Confidence::REK, "AH", -200, 1100, 0, false},
-    {"o2_hht", "Лямбда-зонд (формула HHT)", "мВ", Category::Mixture, "20:23", "trunc0(51102·raw − 1928300, 10000)", Confidence::GIP, "AC", -200, 1100, 0, false},
+    {"o2_alt", "Лямбда-зонд (альтернативная формула)", "мВ", Category::Mixture, "20:23", "trunc0(51102·raw − 1928300, 10000)", Confidence::GIP, "AC", -200, 1100, 0, false},
     {"lambda", "Лямбда-регулирование", "%", Category::Mixture, "20:B9", "390625·raw // 10⁶ − 50; нет данных при n=0", Confidence::GIP, "AC", -50, 50, 0, false},
     {"inj_ms", "Время впрыска", "мс", Category::Mixture, "20:54 lo + 20:55 hi", "((lo + 256·hi) // 50) / 10; нет данных при n=0", Confidence::GIP, "AC", 0, 20, 1, false},
     {"ac", "Компрессор кондиционера", "", Category::Status, "20:99 & 0x01", "бит", Confidence::GIP, "AC", 0, 1, 0, true},
@@ -82,8 +82,8 @@ static const ParamDef kParams[P_COUNT] = {
     {"speed", "Скорость автомобиля", "км/ч", Category::Extended, "20:47", "12 × raw // 10", Confidence::GIP, "AC", 0, 250, 0, false},
     {"o2_rear", "Лямбда-зонд (нижний)", "мВ", Category::Extended, "20:25", "trunc0(51102·raw − 1928300, 10000)", Confidence::GIP, "AC", -200, 1100, 0, false},
     {"idle_target", "Заданные обороты ХХ", "об/мин", Category::Extended, "20:67", "25 × raw (I6A ≥ 0x41)", Confidence::GIP, "AC", 0, 2000, 0, false},
-    {"idle_contact", "Контакт ХХ (CTP)", "", Category::Extended, "20:98 & 0x80", "бит (HHT q=0); native: T50?", Confidence::GIP, "AC", 0, 1, 0, true},
-    {"starter", "Стартер (клемма 50)", "", Category::Extended, "20:98 & 0x40", "бит (HHT q=1); native: 0x80?", Confidence::GIP, "AC", 0, 1, 0, true},
+    {"idle_contact", "Контакт ХХ (CTP)", "", Category::Extended, "20:98 & 0x80", "бит (вариант таблицы q=0); альтернатива: T50", Confidence::GIP, "AC", 0, 1, 0, true},
+    {"starter", "Стартер (клемма 50)", "", Category::Extended, "20:98 & 0x40", "бит (вариант таблицы q=1); альтернатива: 0x80", Confidence::GIP, "AC", 0, 1, 0, true},
 };
 
 const ParamDef& param(uint8_t p) { return kParams[p < P_COUNT ? p : 0]; }
@@ -171,7 +171,7 @@ void decode(const Snapshot& s, prof::NormGroup ng, bool vdo, const Decoded* prev
   }
   if (mx) {
     setVal(d.v[P_O2], hfm::o2NativeMv(M[0]), M[0]);
-    setVal(d.v[P_O2_HHT], (float)hfm::o2HhtMv(M[0]), M[0]);
+    setVal(d.v[P_O2_ALT], (float)hfm::o2AltMv(M[0]), M[0]);
     setBit(d.v[P_AC], M[1], 0x01);
     setBit(d.v[P_DECEL_CUT], M[2], 0x04);
   }
@@ -183,7 +183,7 @@ void decode(const Snapshot& s, prof::NormGroup ng, bool vdo, const Decoded* prev
   }
   if (s.extRead) {
     if (s.extOk[X_SPEED]) setVal(d.v[P_SPEED], (float)hfm::speedKmh(s.ext[X_SPEED]), s.ext[X_SPEED]);
-    if (s.extOk[X_O2_REAR]) setVal(d.v[P_O2_REAR], (float)hfm::o2HhtMv(s.ext[X_O2_REAR]), s.ext[X_O2_REAR]);
+    if (s.extOk[X_O2_REAR]) setVal(d.v[P_O2_REAR], (float)hfm::o2AltMv(s.ext[X_O2_REAR]), s.ext[X_O2_REAR]);
     if (s.extOk[X_IDLE_TARGET]) setVal(d.v[P_IDLE_TARGET], 25.0f * s.ext[X_IDLE_TARGET], s.ext[X_IDLE_TARGET]);
     if (s.extOk[X_STATUS98]) {
       setBit(d.v[P_IDLE_CONTACT], s.ext[X_STATUS98], 0x80);

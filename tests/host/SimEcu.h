@@ -1,9 +1,8 @@
 // SimEcu.h - software model of an HFM-SFI ECU implementing ByteLink.
 //
-// SYNTHETIC DATA ONLY. Behaviour follows the HFMreader reference simulator
-// (complement ACKs, echo, page-scoped selectors). Identification bytes are
-// HFMreader ecu_identification_simulator.GOLDEN_RAW - not a vehicle capture.
-// Used by host tests and by the on-device "Simulator" source (WebUI banner).
+// SYNTHETIC DATA ONLY, host tests only. Behaviour follows REV 1.1 (complement
+// ACKs, echo, page-scoped selectors). Identification bytes are synthetic - not
+// a vehicle capture.
 #pragma once
 #include "ByteLink.h"
 

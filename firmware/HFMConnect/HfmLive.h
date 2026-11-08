@@ -15,9 +15,9 @@
 namespace live {
 
 // ---- polling plan ------------------------------------------------------------
-// Native groups: HFMreader field_profiles OBSERVED_GROUPS / profile full8 (CS).
+// Native groups: polling profile full8 (REV 1.1 s.6).
 enum GroupId : uint8_t { G_RPM_LOW, G_RPM_HIGH, G_MIXTURE, G_AIRFLOW, G_COOLANT, G_MAF_LO, G_MAF_HI, G_COUNT };
-// Extended HHT reads (AC, gated by F_LIVE_EXTENDED).
+// Extended reads (AC, gated by F_LIVE_EXTENDED).
 enum ExtId : uint8_t { X_SPEED, X_O2_REAR, X_IDLE_TARGET, X_STATUS98, X_COUNT };
 
 struct GroupDef {
@@ -42,7 +42,7 @@ struct Snapshot {
 };
 
 // Reads the native groups (full8: 7 prefixes, 21 selectors). MAF low/high are
-// sampled in the same cycle as required by HFMreader decode_snapshot.
+// sampled in the same cycle (REV 1.1 s.6).
 LinkStatus pollNative(HfmSession& s, Snapshot& snap);
 LinkStatus pollExtended(HfmSession& s, Snapshot& snap);
 
@@ -55,7 +55,7 @@ const char* qualityCode(Quality q);
 const char* normStateCode(NormState n);
 
 enum ParamId : uint8_t {
-  P_RPM, P_ECT, P_IAT, P_MAF, P_THROTTLE, P_LOAD, P_IGN, P_O2, P_O2_HHT, P_LAMBDA, P_INJ,
+  P_RPM, P_ECT, P_IAT, P_MAF, P_THROTTLE, P_LOAD, P_IGN, P_O2, P_O2_ALT, P_LAMBDA, P_INJ,
   P_AC, P_DECEL_CUT, P_POSTSTART, P_WARMUP, P_FULL_LOAD, P_PREHEAT, P_AIR_PUMP, P_CAMSHAFT, P_RESONANCE,
   P_SPEED, P_O2_REAR, P_IDLE_TARGET, P_IDLE_CONTACT, P_STARTER,
   P_COUNT
@@ -69,7 +69,7 @@ struct ParamDef {
   const char* source;    // "20:B7"
   const char* formula;
   Confidence conf;
-  const char* evidence;  // AV / AH / AC (HFMreader evidence classes)
+  const char* evidence;  // AV / AH / AC evidence classes (REV 1.1)
   float chartMin, chartMax;
   uint8_t decimals;
   bool isBool;

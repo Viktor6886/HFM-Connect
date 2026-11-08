@@ -69,12 +69,12 @@ Generation generationFor(const char* engine, uint32_t yyyymm);
 enum Feature : uint8_t {
   F_IDENT = 0,
   F_DTC_READ,
-  F_DTC_EXTENDED,   // F1 30..32 / 40..42 (HFMScan)
+  F_DTC_EXTENDED,   // F1 30..32 / 40..42 (REV 1.1, experimental)
   F_LIVE_NATIVE,    // full8 groups
-  F_LIVE_EXTENDED,  // HHT recipes (speed, O2 rear, idle target, status 98)
+  F_LIVE_EXTENDED,  // extended recipes (speed, O2 rear, idle target, status 98)
   F_ADAPT_READ,
   F_CODING_READ,
-  F_VIN_READ,       // F9 00..0D (HFMScan)
+  F_VIN_READ,       // F9 00..0D (REV 1.1, experimental)
   F_DTC_CLEAR,
   F_ADAPT_RESET,
   F_PURGE_TEST,
@@ -98,7 +98,7 @@ struct EcuProfile {
   char id[32];            // "BOSCH_0135451332_41" / "GENERIC_HFM_45_59" / "UNRESOLVED"
   char name[112];
   bool resolved;          // identified as HFM-SFI
-  bool referenceEcu;      // HFMreader author's field-verified ECU 013 545 13 32 / 41-00
+  bool referenceEcu;      // reference ECU 013 545 13 32 / 41-00
   dtc::Variant variant;
   dtc::BankMapping bankMapping;
   Confidence bankMappingConf;

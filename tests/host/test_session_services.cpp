@@ -1,6 +1,7 @@
 // Session/service tests against SimEcu (software model, synthetic data).
 // These are SOFTWARE tests: they prove internal consistency with the
 // reconstructed protocol, not behaviour of a real ECU.
+#include "HfmDtc.h"
 #include "HfmLive.h"
 #include "HfmServices.h"
 #include "HfmSession.h"
@@ -304,4 +305,21 @@ TEST(impulse_decoder_counts_pulses) {
   CHECK_EQ(r.glitches, 1);
   ImpulseEdge e2[] = {{0, 500}, {1, 500}};
   CHECK(!decodeImpulses(e2, 2, cfg).complete);
+}
+
+TEST(impulse_factory_table_lookup) {
+  const ImpulseCodeEntry* e[2];
+  CHECK_EQ(impulseLookup(2, IMP_M104, e, 2), 1);
+  CHECK_EQ(e[0]->count, 4);
+  CHECK_EQ(e[0]->a[0], 2);
+  CHECK_EQ(impulseLookup(18, IMP_M111, e, 2), 0);   // injectors 5/6: M104 only
+  CHECK_EQ(impulseLookup(18, IMP_M104, e, 2), 1);
+  CHECK_EQ(impulseLookup(42, IMP_M111, e, 2), 1);
+  CHECK_EQ(e[0]->count, 1);
+  CHECK_EQ(e[0]->a[0], 100);
+  CHECK_EQ(impulseLookup(42, IMP_BOTH, e, 2), 2);
+  uint16_t n = 0;
+  const ImpulseCodeEntry* t = impulseTable(&n);
+  for (uint16_t i = 0; i < n; i++)
+    for (uint8_t c = 0; c < t[i].count; c++) CHECK(dtc::lookup(t[i].a[c]) != nullptr);
 }

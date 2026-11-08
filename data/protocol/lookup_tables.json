@@ -1,10 +1,5 @@
 {
- "source": {
-  "file": "_internal/hfmreader/hht_experimental/candidates.json",
-  "sha256": "57bef9ad06f4021e3fb80d1570c911bd865fd24bc3879a924f0fd081437abde6",
-  "location": "lookup_tables",
-  "status": "CD"
- },
+ "description": "Temperature and status-bit tables (REV 1.1 s.7.2-7.3).",
  "tables": {
   "coolant": [
    -59,
@@ -718,7 +713,7 @@
     300.0
    ]
   ],
-  "IAT_CANDIDATE_POINTS": [
+  "IAT_POINTS": [
    [
     92.16,
     10.0

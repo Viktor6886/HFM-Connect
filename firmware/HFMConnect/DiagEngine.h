@@ -12,11 +12,10 @@
 #include "Settings.h"
 
 class KLineUart;
-class SimEcu;
 
 enum class Job : uint8_t {
   None, Connect, Disconnect, Identify, ReadDtc, ReadAdapt, ReadCoding, ReadVin,
-  LiveStart, LiveStop, SvcPrepare, SvcExecute, PurgeOn, PurgeOff, Stop, ImpulseRead, AckFault, ApplySource
+  LiveStart, LiveStop, SvcPrepare, SvcExecute, PurgeOn, PurgeOff, Stop, ImpulseRead, AckFault
 };
 const char* jobCode(Job j);
 
@@ -36,6 +35,7 @@ struct DtcView {
   svc::FaultMemory fm;
   dtc::Decoded items[48];
   uint16_t count = 0;
+  dtc::BankMapping inferred = dtc::BankMapping::Unknown;  // OEM intermittent rule
   uint32_t tMs = 0;
 };
 
@@ -55,7 +55,6 @@ struct EngineState {
   LinkStatus lastError = LinkStatus::Ok;
   uint32_t connectedAtMs = 0;
   uint32_t txCount = 0, errCount = 0;
-  bool simulator = false;
   // identification/profile
   EcuIdent ident;
   prof::EcuProfile profile;
@@ -121,7 +120,7 @@ class DiagEngine {
   void finishJob(bool ok, const char* msg);
   void readHardware();
   void recordRow();
-  void selectLink();
+  void applySettings();
   bool can(uint8_t feature, char* msg, size_t n);
 
   Settings* settings_ = nullptr;
@@ -129,7 +128,6 @@ class DiagEngine {
   TraceLog trace_;
   ByteLink* link_ = nullptr;
   KLineUart* kline_ = nullptr;
-  SimEcu* sim_ = nullptr;
   HfmSession* session_ = nullptr;
   guard::ServiceGuard guard_;
   EngineState st_;

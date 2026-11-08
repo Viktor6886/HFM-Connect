@@ -60,7 +60,7 @@ LinkStatus readCoding(HfmSession& s, Coding& c) {
 
 LinkStatus readVin(HfmSession& s, Vin& v) {
   v = Vin();
-  s.link().sleepMs(100);  // HFMScan: 100 ms pause precedes (F9,00)
+  s.link().sleepMs(100);  // REV 1.1: 100 ms pause precedes (F9,00)
   for (uint8_t i = 0; i < 14; i++) {
     LinkStatus st = s.prefix(0xF9);
     if (st != LinkStatus::Ok) return st;
@@ -80,7 +80,7 @@ LinkStatus readVin(HfmSession& s, Vin& v) {
 
 LinkStatus dtcClear(HfmSession& s, bool& verified, FaultMemory& after) {
   verified = false;
-  // HFMreader dtc_protocol.DtcClearProtocol L91-94 / clear_and_verify L116-132.
+  // REV 1.1 s.16 DTC clear sequence and verification.
   static const RecipeStep steps[] = {
       {0x10, StepKind::Prefix, -1, 0}, {0x00, StepKind::Argument, 0xFF, 200},
       {0xF3, StepKind::Prefix, -1, 0}, {0xFF, StepKind::Argument, 0x00, 50},
@@ -103,7 +103,7 @@ LinkStatus dtcClear(HfmSession& s, bool& verified, FaultMemory& after) {
 }
 
 LinkStatus adaptationReset(HfmSession& s, uint8_t* r) {
-  // HFMreader hht_control.session._recipe L164-168, _entry_status L304-306.
+  // REV 1.1 s.16 adaptation reset with entry check.
   static const RecipeStep entry[] = {
       {0xCF, StepKind::Prefix, -1, 0}, {0xFF, StepKind::Argument, 0x00, 0},
       {0xC1, StepKind::Prefix, -1, 0}, {0xFC, StepKind::Argument, 0x03, 0},

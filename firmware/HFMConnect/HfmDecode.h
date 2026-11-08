@@ -1,9 +1,8 @@
 // HfmDecode.h - conversion formulas for HFM-SFI raw bytes.
 //
-// Every formula is reconstructed (REV 1.1 s.7, HFMreader parameter_registry and
-// hht_experimental/decoder). Integer paths reproduce the original truncating
-// arithmetic exactly; trunc0 rounds toward zero (REV 1.4 s.11.1).
-// Evidence classes: AV = author field-verified on ECU 013 545 13 32,
+// Every formula is reconstructed (REV 1.1 s.7). Integer paths reproduce the
+// specified truncating arithmetic exactly; trunc0 rounds toward zero (REV 1.4 s.11.1).
+// Evidence classes: AV = field-observed on reference ECU 013 545 13 32,
 // AH = highly likely, AC = candidate. None is factory data.
 #pragma once
 #include <stdint.h>
@@ -24,21 +23,21 @@ inline float mafKgH(uint8_t lo48, uint8_t hi49) {                               
   return (float)(lo48 | (hi49 << 8)) / 10.0f;
 }
 
-// ---- HHT callbacks (AC) ------------------------------------------------------
-int16_t coolantHhtC(uint8_t raw);    // TABLES.coolant[raw]
-int16_t iatHhtC(uint8_t raw);        // TABLES.intake_air[raw]
-inline int32_t o2HhtMv(uint8_t d) { return trunc0(51102 * (int32_t)d - 1928300, 10000); }
-inline int32_t throttleHhtTenths(uint8_t d) { return (int32_t)((3515625ull * d) / 1000000ull); }
-inline int32_t mafHhtKgH(uint8_t lo, uint8_t hi) { return (lo + 256 * hi) / 10; }
+// ---- alternative table/integer formulas (AC) ------------------------------------------------------
+int16_t coolantTableC(uint8_t raw);    // TABLES.coolant[raw]
+int16_t iatTableC(uint8_t raw);        // TABLES.intake_air[raw]
+inline int32_t o2AltMv(uint8_t d) { return trunc0(51102 * (int32_t)d - 1928300, 10000); }
+inline int32_t throttleTenths(uint8_t d) { return (int32_t)((3515625ull * d) / 1000000ull); }
+inline int32_t mafIntKgH(uint8_t lo, uint8_t hi) { return (lo + 256 * hi) / 10; }
 inline int32_t speedKmh(uint8_t d) { return 12 * d / 10; }
-inline int32_t ignitionHhtDeg(uint8_t d0, uint8_t rpmByte) {
+inline int32_t ignitionGatedDeg(uint8_t d0, uint8_t rpmByte) {
   return (25 * rpmByte < 100) ? 0 : trunc0(5500000 - 35157 * (int32_t)d0, 100000);
 }
 // llupm: word0 = idle target, word1 = rpm (0 when engine stopped)
-void idleTargetHht(uint8_t d2, uint8_t d6, uint8_t d8, uint8_t i6a, uint16_t* target, uint16_t* rpmOut);
+void idleTarget(uint8_t d2, uint8_t d6, uint8_t d8, uint8_t i6a, uint16_t* target, uint16_t* rpmOut);
 // Status bit via bit_v1_old[q & 0xFF], inverted when (q >> 8) & 2.
-bool statusBitHht(uint8_t d0, uint16_t q);
-uint8_t statusMaskHht(uint16_t q);
+bool statusBit(uint8_t d0, uint16_t q);
+uint8_t statusMask(uint16_t q);
 
 // ---- fuel / adaptation page (AC) -----------------------------------------
 // Returns false when the gating rpm byte is 0 (engine stopped -> no data).
@@ -60,11 +59,11 @@ struct CodingInfo {
   int8_t efp = -1;            // EFP/TPM flag
   int8_t diagModule = -1;     // DM present flag
   int8_t throttleTaught = -1; // 1 taught, 0 not taught
-  int16_t screen = -1;        // HHT screen candidate 103/104/107/108/109
+  int16_t screen = -1;        // display screen candidate 103/104/107/108/109
 };
 CodingInfo decodeCoding(uint8_t c, uint8_t m);
 
-// Coolant plausibility (HFMreader data_quality, CS).
+// Coolant plausibility check (REV 1.1 s.7).
 bool coolantPlausible(float v, float last, uint32_t dtMs, bool haveLast);
 
 }  // namespace hfm

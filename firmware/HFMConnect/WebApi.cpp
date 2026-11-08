@@ -10,6 +10,7 @@
 #include "JsonWriter.h"
 #include "NetManager.h"
 #include "Settings.h"
+#include "ImpulseDecoder.h"
 #include "WebUiAssets.h"
 
 static WebServer server(HFM_HTTP_PORT);
@@ -62,6 +63,8 @@ static void writeIdent(JsonWriter& w, const EngineState& s) {
     w.kv("diag_index", id.diagDisplay);
     w.kv("diag_index_bcd", (int)id.diagIndexBcd);
     w.kv("fingerprint", id.fingerprint);
+    w.kv("ext_present", id.extPresent);
+    if (id.extPresent) w.key("rom_page").hex(id.romPage).key("desc_addr").hex(id.descAddr);
   }
   w.endObject();
   const prof::EcuProfile& p = s.profile;
@@ -111,12 +114,31 @@ static void writeAdaptCoding(JsonWriter& w, const EngineState& s) {
   w.endObject();
 }
 
+static bool vehicleIsM111() {
+  int16_t vi = AppSettings.vehicleIdx;
+  const prof::VehicleEntry* ve = vi >= 0 ? prof::vehicleByIndex((uint16_t)vi) : nullptr;
+  return ve && strncmp(ve->engine, "111", 3) == 0;
+}
+
 static void writeDtc(JsonWriter& w, const EngineState& s) {
   const DtcView& d = s.dtc;
+  // Effective bank orientation: the factory intermittent-fault rule observed
+  // in this readout wins over the profile assumption.
+  bool byRule = d.inferred != dtc::BankMapping::Unknown;
+  dtc::BankMapping eff = byRule ? d.inferred : s.profile.bankMapping;
+  const char* effConf = byRule ? "ZAV" : conf(s.profile.bankMappingConf);
+  const char* effBasis =
+      byRule ? "Определено по этому чтению: перемежающиеся неисправности бывают только в сохранённых (OEM 11/3)"
+             : (s.profile.bankMapping == dtc::BankMapping::Unknown
+                    ? "Назначение банков не определено"
+                    : "Предположение профиля; подтверждается автоматически при появлении перемежающейся неисправности");
+  bool m111 = vehicleIsM111();
   w.key("dtc").beginObject();
   w.kv("valid", d.valid);
-  w.kv("bank_mapping", dtc::bankMappingCode(s.profile.bankMapping));
-  w.kv("bank_mapping_conf", conf(s.profile.bankMappingConf));
+  w.kv("bank_mapping", dtc::bankMappingCode(eff));
+  w.kv("bank_mapping_conf", effConf);
+  w.kv("bank_mapping_basis", effBasis);
+  w.kv("m111_texts", m111);
   if (d.valid) {
     w.kv("age_ms", (uint32_t)(millis() - d.tMs));
     w.key("bank_a").hexBytes(d.fm.bankA, 16);
@@ -127,14 +149,15 @@ static void writeDtc(JsonWriter& w, const EngineState& s) {
     for (uint16_t i = 0; i < d.count; i++) {
       const dtc::Decoded& x = d.items[i];
       w.beginObject();
-      w.kv("bank", dtc::bankLabel(x.bank, s.profile.bankMapping));
+      w.kv("bank", dtc::bankLabel(x.bank, eff));
       w.key("index").hex(x.index);
       w.kv("bit", (unsigned)x.bit).kv("pos", (unsigned)x.position);
       w.kv("base", (unsigned)x.baseCode).kv("code", (unsigned)x.code).kv("remapped", x.remapped);
+      const char* alt = m111 ? dtc::m111Text(x.code) : nullptr;
       if (x.entry) {
         static const char* const srcNames[] = {"oem", "reference", "reconcile", "unverified", "app_label"};
-        w.kv("text", x.entry->ru).kv("text_en", x.entry->en);
-        w.kv("source", srcNames[x.entry->source < 5 ? x.entry->source : 3]);
+        w.kv("text", alt ? alt : x.entry->ru).kv("text_en", x.entry->en);
+        w.kv("source", alt ? "oem_m111" : srcNames[x.entry->source < 5 ? x.entry->source : 3]);
         w.kv("intermittent", (x.entry->flags & DTC_F_INTERMITTENT) != 0);
         w.kv("not_w124", (x.entry->flags & DTC_F_NOT_W124) != 0);
       } else {
@@ -146,6 +169,35 @@ static void writeDtc(JsonWriter& w, const EngineState& s) {
     w.endArray();
   }
   w.endObject();
+}
+
+static void writeImpulse(JsonWriter& w, const EngineState& s) {
+  uint8_t mask = AppSettings.vehicleIdx < 0 ? (uint8_t)IMP_BOTH : (vehicleIsM111() ? (uint8_t)IMP_M111 : (uint8_t)IMP_M104);
+  w.key("impulse").beginObject().kv("valid", s.impulse.valid);
+  if (s.impulse.valid) {
+    w.kv("last_n", (unsigned)s.impulse.result.pulses).kv("complete", s.impulse.result.complete);
+    w.kv("glitches", (unsigned)s.impulse.result.glitches).kv("edges", (unsigned)s.impulse.edgeCount);
+  }
+  w.key("codes").beginArray();
+  for (uint8_t i = 0; i < s.impulse.codeCount; i++) {
+    uint8_t n = s.impulse.codes[i];
+    w.beginObject().kv("n", (unsigned)n);
+    w.key("a").beginArray();
+    if (n == 1) {
+      w.beginObject().kv("code", 1u).kv("text", "Неисправностей не обнаружено").endObject();
+    } else {
+      const ImpulseCodeEntry* e[2];
+      uint8_t k = impulseLookup(n, mask, e, 2);
+      for (uint8_t j = 0; j < k; j++)
+        for (uint8_t c = 0; c < e[j]->count; c++) {
+          const DtcCatalogEntry* ce = dtc::lookup(e[j]->a[c]);
+          const char* alt = (mask == IMP_M111) ? dtc::m111Text(e[j]->a[c]) : nullptr;
+          w.beginObject().kv("code", (unsigned)e[j]->a[c]).kv("text", alt ? alt : (ce ? ce->ru : "—")).endObject();
+        }
+    }
+    w.endArray().endObject();
+  }
+  w.endArray().endObject();
 }
 
 static void writeLive(JsonWriter& w, const EngineState& s, bool withDefs) {
@@ -229,8 +281,7 @@ static void writeServices(JsonWriter& w, const EngineState& s) {
 static void writeStatus(JsonWriter& w, const EngineState& s) {
   w.kv("fw", HFM_FW_VERSION).kv("uptime_s", (uint32_t)(millis() / 1000));
   w.kv("session_id", Engine.sessionId());
-  w.kv("source", s.simulator ? "simulator" : "kline").kv("transport", Engine.transportName());
-  w.kv("sim_scenario", (int)AppSettings.simScenario);
+  w.kv("transport", Engine.transportName());
   w.kv("session", sessionStateCode(s.session)).kv("last_error", linkStatusCode(s.lastError));
   w.kv("connected_s", s.session == SessionState::Ready ? (uint32_t)((millis() - s.connectedAtMs) / 1000) : 0u);
   w.kv("tx", s.txCount).kv("errors", s.errCount);
@@ -405,10 +456,7 @@ static void hReport() {
   writeDtc(w, s);
   writeLive(w, s, true);
   writeServices(w, s);
-  w.key("impulse").beginObject().kv("valid", s.impulse.valid);
-  w.key("codes").beginArray();
-  for (uint8_t i = 0; i < s.impulse.codeCount; i++) w.value((unsigned)s.impulse.codes[i]);
-  w.endArray().endObject();
+  writeImpulse(w, s);
   w.endObject();
   Engine.unlock();
   endChunked(w);
@@ -452,7 +500,8 @@ static void hSettingsGet() {
   JsonWriter w(1024);
   const Settings& s = AppSettings;
   w.beginObject();
-  w.kv("source", (int)s.source).kv("sim_scenario", (int)s.simScenario);
+  w.kv("break_ms", (unsigned)s.breakMs).kv("post_break_ms", (unsigned)s.postBreakMs);
+  w.kv("byte_timeout_ms", (unsigned)s.byteTimeoutMs);
   w.kv("experimental_reads", s.experimentalReads).kv("engineer_mode", s.engineerMode);
   w.kv("keep_alive", s.keepAlive).kv("impulse_enabled", s.impulseEnabled).kv("trace_capture", s.traceCapture);
   w.kv("battery_manual_confirm", s.batteryManualConfirm);
@@ -476,9 +525,9 @@ static bool argBool(const char* k, bool cur) {
 
 static void hSettingsPost() {
   Settings& s = AppSettings;
-  uint8_t oldSource = s.source, oldScen = s.simScenario;
-  if (server.hasArg("source")) s.source = (uint8_t)(server.arg("source").toInt() == 1 ? 1 : 0);
-  if (server.hasArg("sim_scenario")) s.simScenario = (uint8_t)(server.arg("sim_scenario").toInt() % 4);
+  if (server.hasArg("break_ms")) s.breakMs = (uint16_t)constrain(server.arg("break_ms").toInt(), 25, 500);
+  if (server.hasArg("post_break_ms")) s.postBreakMs = (uint16_t)constrain(server.arg("post_break_ms").toInt(), 25, 2000);
+  if (server.hasArg("byte_timeout_ms")) s.byteTimeoutMs = (uint16_t)constrain(server.arg("byte_timeout_ms").toInt(), 100, 3000);
   s.experimentalReads = argBool("experimental_reads", s.experimentalReads);
   s.engineerMode = argBool("engineer_mode", s.engineerMode);
   s.keepAlive = argBool("keep_alive", s.keepAlive);
@@ -499,7 +548,6 @@ static void hSettingsPost() {
   if (server.hasArg("sta_ssid")) { strlcpy(s.staSsid, server.arg("sta_ssid").c_str(), sizeof s.staSsid); netChanged = true; }
   if (server.hasArg("sta_pass")) { strlcpy(s.staPass, server.arg("sta_pass").c_str(), sizeof s.staPass); netChanged = true; }
   s.save();
-  if (s.source != oldSource || s.simScenario != oldScen) Engine.submit(Job::ApplySource);
   Engine.reresolveProfile();
   JsonWriter w;
   w.beginObject().kv("ok", true).kv("net_restart", netChanged).endObject();

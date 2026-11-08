@@ -1,4 +1,4 @@
-// Decoder tests. Expected values come from data/hfmreader/test_vectors.json
+// Decoder tests. Expected values come from data/protocol/test_vectors.json
 // (hand-computed from the recovered formulas; SYNTH_SIM / FORMULA provenance).
 #include "HfmDecode.h"
 #include "HfmIdent.h"
@@ -27,26 +27,26 @@ TEST(native_formulas_match_test_vectors) {
   CHECK_NEAR(mafKgH(200, 0), 20.0, 1e-6);
 }
 
-TEST(hht_formulas_match_test_vectors) {
-  CHECK_EQ(o2HhtMv(128), 461);
-  CHECK_EQ(o2HhtMv(0), -192);  // trunc0 toward zero, not floor (-193)
-  CHECK_EQ(throttleHhtTenths(255), 896);
-  CHECK_EQ(throttleHhtTenths(6), 21);
-  CHECK_EQ(mafHhtKgH(200, 0), 20);
-  CHECK_EQ(ignitionHhtDeg(100, 3), 0);
-  CHECK_EQ(ignitionHhtDeg(100, 30), 19);
+TEST(alt_formulas_match_test_vectors) {
+  CHECK_EQ(o2AltMv(128), 461);
+  CHECK_EQ(o2AltMv(0), -192);  // trunc0 toward zero, not floor (-193)
+  CHECK_EQ(throttleTenths(255), 896);
+  CHECK_EQ(throttleTenths(6), 21);
+  CHECK_EQ(mafIntKgH(200, 0), 20);
+  CHECK_EQ(ignitionGatedDeg(100, 3), 0);
+  CHECK_EQ(ignitionGatedDeg(100, 30), 19);
   CHECK_EQ(speedKmh(50), 60);
   uint16_t tgt, r;
-  idleTargetHht(0, 30, 32, 0x41, &tgt, &r);
+  idleTarget(0, 30, 32, 0x41, &tgt, &r);
   CHECK_EQ(tgt, 750);
   CHECK_EQ(r, 800);
-  idleTargetHht(0, 30, 0, 0x41, &tgt, &r);
+  idleTarget(0, 30, 0, 0x41, &tgt, &r);
   CHECK_EQ(tgt, 0);
   CHECK_EQ(r, 0);
-  CHECK(statusBitHht(0x01, 8));     // R021 A/C
-  CHECK(statusBitHht(0x08, 258));   // R016 post-start
-  CHECK(!statusBitHht(0x7F, 0));    // R015 q=0 mask 0x80
-  CHECK_EQ(coolantHhtC(190), 79);
+  CHECK(statusBit(0x01, 8));     // R021 A/C
+  CHECK(statusBit(0x08, 258));   // R016 post-start
+  CHECK(!statusBit(0x7F, 0));    // R015 q=0 mask 0x80
+  CHECK_EQ(coolantTableC(190), 79);
 }
 
 TEST(fuel_and_adaptation_formulas) {

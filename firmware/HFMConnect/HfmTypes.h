@@ -6,7 +6,7 @@
 
 // Evidence / confirmation level of a fact (REV 1.4 section 2).
 //  ZAV   - stated by a Mercedes-Benz factory document
-//  REK   - reconstructed from HFMreader/HFMScan/HHT software (REV 1.1)
+//  REK   - reconstructed protocol data (REV 1.1 specification), not factory data
 //  GIP   - plausible hypothesis, ambiguous
 //  VAL   - full trace + repeatable test on the given HW+SW+diag index
 //  BLOCK - no verification, state-changing risk -> rejected by firmware

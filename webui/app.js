@@ -12,7 +12,7 @@ const LS = {
 };
 const CONF = {ZAV: 'ЗАВ', REK: 'РЕК', GIP: 'ГИП', VAL: 'VAL', BLOCK: 'БЛОК'};
 const CONF_HINT = {
-  ZAV: 'Заводской документ Mercedes-Benz', REK: 'Реконструировано из HFMreader/HFMScan/HHT (REV 1.1)',
+  ZAV: 'Заводской документ Mercedes-Benz', REK: 'Реконструированные данные протокола (REV 1.1), не заводской документ',
   GIP: 'Гипотеза, требует проверки', VAL: 'Проверено трассой на конкретном ЭБУ', BLOCK: 'Заблокировано до аппаратной верификации'
 };
 const badge = c => `<span class="badge b-${esc(c)}" title="${esc(CONF_HINT[c] || '')}">${esc(CONF[c] || c)}</span>`;
@@ -167,13 +167,12 @@ function refreshStatusUi() {
   }
   const map = {ready: ['ok', 'ЭБУ на связи'], connecting: ['warn', 'подключение…'], error: ['err', 'ошибка K-Line'], disconnected: ['', 'не подключено']};
   const m = map[s.session] || ['', s.session];
-  pill.className = 'pill ' + (s.source === 'simulator' && s.session !== 'error' ? 'sim' : m[0]);
+  pill.className = 'pill ' + m[0];
   pill.textContent = (s.live_active ? '● ' : '') + m[1];
   let b = '';
-  if (s.source === 'simulator') b = '<div>СИМУЛЯТОР — синтетические данные, не автомобиль. Источник меняется в «Подключении».</div>';
   if (s.session === 'error') b += `<div>Сеанс прерван: ${esc(s.last_error)}. Повторной отправки команд не будет — переподключитесь.</div>`;
   ban.innerHTML = b;
-  ban.className = 'banner ' + (s.session === 'error' ? 'err' : 'sim') + (b ? '' : ' hidden');
+  ban.className = 'banner err' + (b ? '' : ' hidden');
 }
 
 // ---------------------------------------------------------------- shared fragments
@@ -211,7 +210,7 @@ R.home = () => {
     const v = s.vehicle;
     $('#homeBox').innerHTML = `
       <div class="grid c2">
-        <div class="card pad stat"><div class="k">K-Line</div><div class="n" style="font-size:22px">${esc({ready: 'На связи', error: 'Ошибка', connecting: 'Подключение', disconnected: 'Отключено'}[s.session] || s.session)}</div><div class="small muted">${esc(s.source === 'simulator' ? 'симулятор' : 'K-Line UART')} · TX ${s.tx} · ошибок ${s.errors}</div></div>
+        <div class="card pad stat"><div class="k">K-Line</div><div class="n" style="font-size:22px">${esc({ready: 'На связи', error: 'Ошибка', connecting: 'Подключение', disconnected: 'Отключено'}[s.session] || s.session)}</div><div class="small muted">K-Line UART · TX ${s.tx} · ошибок ${s.errors}</div></div>
         <div class="card pad stat"><div class="k">Память неисправностей</div><div class="n">${dtcN}</div><div class="small muted">${S.dtc && S.dtc.valid ? 'установленных битов' : 'не прочитана'}</div></div>
         <div class="card pad stat"><div class="k">ЭБУ</div><div style="font-weight:600;margin-top:4px">${esc(s.ecu_present ? s.ecu : 'не идентифицирован')}</div></div>
         <div class="card pad stat"><div class="k">Автомобиль</div><div style="font-weight:600;margin-top:4px">${v ? esc(`${v.chassis} ${v.name} · ${v.engine}`) : 'не выбран'}</div>${v ? `<div class="small muted">${esc(v.norms)}</div>` : ''}</div>
@@ -256,6 +255,8 @@ R.vehicles = async () => {
     ${Object.keys(groups).map(ch => `<h2 class="section">${esc(ch)}</h2><div class="list">${groups[ch].map(v => `
       <div class="row tap" data-v="${v.idx}"><div class="grow"><div class="t">${esc(v.name)} <span class="muted small">${esc(v.model)}</span></div>
       <div class="s">M${esc(v.engine)} · ${esc(v.from || '?')}–${esc(v.to || '…')} · ${esc(v.gen)}</div></div>${badge(v.conf)}${v.idx === cur ? '<span style="color:var(--accent);font-weight:700">✓</span>' : ''}</div>`).join('')}</div>`).join('')}
+    <h2 class="section">Справочник проверок датчиков (OEM, Engine 104 23/4–23/5)</h2>
+    <div class="card pad">${sensorTables()}</div>
     <p class="foot">Записи с меткой ГИП (шасси по общим сведениям) требуют сверки с документацией. Бюллетень 659.pdf также перечисляет LH-SFI автомобили — они в профиль HFM не включены.</p>`;
   document.querySelectorAll('[data-v]').forEach(r => r.addEventListener('click', async () => {
     await post('settings', {vehicle_idx: r.dataset.v});
@@ -270,6 +271,14 @@ R.vehicles = async () => {
     toast('Дата сохранена');
   });
 };
+
+function sensorTables() {
+  const ect = [[20, 3.5, 2500], [30, 3.1, 1700], [40, 2.7, 1170], [50, 2.3, 830], [60, 1.9, 600], [70, 1.5, 435], [80, 1.2, 325], [90, 1.0, 245], [100, 0.8, 185]];
+  const iat = [[10, 3.2, 9670], [20, 2.6, 6060], [30, 2.1, 3900], [40, 1.6, 2600], [50, 1.2, 1760], [60, 0.9, 1220], [70, 0.7, 860], [80, 0.5, 620]];
+  const t = (title, rows) => `<div class="small muted mt">${title}</div><table class="kv"><tr><td>°C</td><td>U, В (зажигание ВКЛ) · R, Ом (разъём 2 N3/4 снят)</td></tr>${rows.map(r => `<tr><td>${r[0]}</td><td class="mono">${r[1].toFixed(1)} В · ${r[2]} Ом</td></tr>`).join('')}</table>`;
+  return t('Датчик температуры ОЖ B11/3 (±5 %)', ect) + t('Датчик температуры воздуха B17 (±5 %)', iat) +
+    `<p class="small muted">Внешние измерения мультиметром по заводской программе; это не данные K-Line ${badge('ZAV')}</p>`;
+}
 
 function connectorCard(c) {
   const used = new Set(c.map.map(m => m.pin));
@@ -286,10 +295,7 @@ R.connect = async () => {
   const st = S.settings;
   page('Подключение', `
     <div class="card pad">
-      <div class="small muted mb">Источник данных</div>
-      <div class="seg" id="srcSeg"><button data-s="0" class="${st.source === 0 ? 'on' : ''}">K-Line (автомобиль)</button><button data-s="1" class="${st.source === 1 ? 'on' : ''}">Симулятор</button></div>
-      <div id="scenBox" class="${st.source === 1 ? '' : 'hidden'} mt"><div class="small muted mb">Сценарий симулятора (синтетические данные)</div>
-        <div class="seg" id="scenSeg">${['Прогретый ХХ', 'Двигатель стоит', 'Холодный пуск', 'Неисправности'].map((n, i) => `<button data-c="${i}" class="${st.sim_scenario === i ? 'on' : ''}">${n}</button>`).join('')}</div></div>
+      <div class="small muted">Адаптер K-Line на UART ESP32-S3. Тайминги линии настраиваются в «Настройках» (BREAK, пауза, тайм-аут байта).</div>
       <div class="btns mt2" id="connBtns"></div>
     </div>
     <h2 class="section">Состояние канала</h2><div class="card pad" id="linkBox"></div>
@@ -305,17 +311,6 @@ R.connect = async () => {
       <span class="flex"><button class="btn sm sec" id="trPause">Пауза</button><a class="btn sm sec" href="/api/trace.jsonl" download>JSONL</a></span></div>
       <div class="trace" id="trBox"><table><thead><tr><th>#</th><th>t, мс</th><th>фаза</th><th>пар.</th><th>TX</th><th>эхо</th><th>RX</th><th>статус</th></tr></thead><tbody></tbody></table></div></div>
     <p class="foot">Каждый байт журналируется до декодирования. Ошибки эха/ACK/тайм-аута прерывают сеанс без автоматической повторной отправки.</p>`);
-  document.querySelectorAll('#srcSeg button').forEach(b => b.addEventListener('click', async () => {
-    await post('settings', {source: b.dataset.s});
-    S.settings = null;
-    toast(b.dataset.s === '1' ? 'Источник: симулятор' : 'Источник: K-Line');
-    setTimeout(R.connect, 400);
-  }));
-  document.querySelectorAll('#scenSeg button').forEach(b => b.addEventListener('click', async () => {
-    await post('settings', {sim_scenario: b.dataset.c});
-    S.settings = null;
-    setTimeout(R.connect, 400);
-  }));
   S.traceRows = [];
   S.traceLast = 0;
   S.tracePaused = false;
@@ -366,7 +361,8 @@ R.ecu = async () => {
         <span class="badge ${p.resolved ? 'b-ZAV' : 'b-BLOCK'}">${p.resolved ? 'профиль определён' : 'не распознан'}</span></div>
         ${kvTable([['Производитель', id.vendor + (id.vendor_known ? '' : ' (код не распознан)')], ['Идентификатор', id.identifier],
           ['Дата HW (неделя/год)', id.hw_date || '—'], ['Дата SW (неделя/год)', id.sw_date || '—'], ['Диагностический индекс', id.diag_index],
-          ['Профиль', p.name], ['Банки DTC', `${p.bank_mapping} ${badge(p.bank_mapping_conf)}`, true], ['Отпечаток', id.fingerprint]])}
+          ['Профиль', p.name], ['Банки DTC', `${p.bank_mapping} ${badge(p.bank_mapping_conf)}`, true], ['Отпечаток', id.fingerprint],
+          ['Страница ПЗУ / адрес дескрипторов (F0:26/27)', id.ext_present ? `${id.rom_page} / ${id.desc_addr}` : 'не прочитано']])}
         <div class="small muted mt">RAW F0 00–1B</div><div class="hex">${esc(id.raw)}</div>
       </div>
       <h2 class="section">Кодировка комплектации (27* 02 24* F0)</h2>
@@ -374,7 +370,7 @@ R.ecu = async () => {
         ['АКПП', tri(c.automatic), true], ['Ступеней АКПП', c.gears > 0 ? c.gears : '<span class="muted">нет данных</span>', true],
         ['Катализатор', tri(c.catalyst), true], ['Исполнение USA', tri(c.usa), true], ['EFP/TPM', tri(c.efp), true],
         ['Диагностический модуль', tri(c.diag_module), true], ['Упоры дросселя', c.throttle_taught ? 'обучены' : 'не обучены'],
-        ['Экран HHT (кандидат)', c.screen > 0 ? c.screen : '—']]) + `<p class="small muted">Интерпретация битов — РЕК («conditional HHT variant1 legacy»). Это НЕ 9-значный код HHT.</p>`
+        ['Экран (кандидат)', c.screen > 0 ? c.screen : '—']]) + `<p class="small muted">Интерпретация битов — РЕК (кандидат). Это НЕ 9-значный код комплектации.</p>`
         : '<p class="muted" style="margin:0">Не прочитана.</p>'}
         <div class="btns mt"><button class="btn sec" id="codBtn">Прочитать кодировку</button>
         <button class="btn sec" id="vinBtn">VIN (F9, эксп.)</button></div>
@@ -403,8 +399,9 @@ R.dtc = async () => {
     const bits = hex => hex.split(' ').map(b => parseInt(b, 16));
     const grid = (title, hex) => `<div class="mt"><div class="small muted">${title}</div><div class="hex">${hex}</div></div>`;
     $('#dtcBox').innerHTML = `
-      ${d.bank_mapping === 'UNKNOWN' ? `<div class="note warn">Назначение банков (текущие/сохранённые) для этого ЭБУ не подтверждено (вопрос C-01: HFMreader и HFMScan трактуют банки противоположно). Показаны нейтральные метки «Банк A/B».</div>`
-        : `<div class="note info">Назначение банков: ${esc(d.bank_mapping)} ${badge(d.bank_mapping_conf)} — по данным HFMreader для эталонного ЭБУ.</div>`}
+      <div class="note ${d.bank_mapping === 'UNKNOWN' ? 'warn' : 'info'}">Банки F1: <b>${esc({A_STORED_B_CURRENT: 'A = сохранённые, B = текущие', A_CURRENT_B_STORED: 'A = текущие, B = сохранённые', UNKNOWN: 'не определены (Банк A/B)'}[d.bank_mapping] || d.bank_mapping)}</b> ${badge(d.bank_mapping_conf)}<br><span class="small">${esc(d.bank_mapping_basis || '')}</span></div>
+      ${groups.current ? '<div class="note mt small">Текущие неисправности имеют смысл только при включённом зажигании и <b>работающем</b> двигателе; при неработающем двигателе часть из них появляется закономерно.</div>' : ''}
+      ${d.m111_texts ? '<div class="note mt small">Тексты кодов 045–069/093–096 показаны по заводской таблице Engine 111 (4 цилиндра).</div>' : ''}
       ${d.items.length === 0 ? '<div class="card pad mt"><b style="color:var(--green)">Установленных битов нет.</b><p class="small muted" style="margin:6px 0 0">Отсутствие битов не доказывает исправность системы — проверьте также Live Data и модуль DM (отдельно).</p></div>' : ''}
       ${order.map(k => `<h2 class="section">${names[k]} · ${groups[k].length}</h2><div class="list">${groups[k].map(dtcRow).join('')}</div>`).join('')}
       ${ints.length ? `<p class="foot">Периодические (перемежающийся контакт) отмечены оранжевым: ${ints.length}. По OEM они фиксируются при 5 появлениях за поездку.</p>` : ''}
@@ -430,16 +427,19 @@ async function renderImpulse() {
   const box = $('#impBox');
   if (!box) return;
   if (!S.settings.impulse_enabled) {
-    box.innerHTML = `<h2 class="section">Импульсный считыватель</h2><div class="note">Чтение blink-кодов (заводская процедура для HHT diagnosis ≤ 46, не для W210) включается в «Настройках».</div>`;
+    box.innerHTML = `<h2 class="section">Импульсный считыватель</h2><div class="note">Чтение blink-кодов (заводская процедура для diagnosis version ≤ 46, не для W210) включается в «Настройках».</div>`;
     return;
   }
   let rep = null;
   try { rep = await api('report'); } catch (e) {}
   const codes = rep && rep.impulse ? rep.impulse.codes : [];
+  const imp = rep && rep.impulse ? rep.impulse : {};
   box.innerHTML = `<h2 class="section">Импульсный считыватель (blink-code)</h2><div class="card pad">
-    <p class="small" style="margin-top:0">Устройство замыкает диагностический контакт на ${S.settings.imp_press_ms / 1000} с, затем считает импульсы ЭБУ. Повторяйте, пока первый код не повторится. N=1 — неисправностей нет. Номера N отличаются от трёхзначных кодов HHT.</p>
+    <p class="small" style="margin-top:0">Устройство замыкает диагностический контакт на ${S.settings.imp_press_ms / 1000} с, затем считает импульсы ЭБУ. Повторяйте, пока первый код не повторится. N=1 — неисправностей нет. Номера N отличаются от трёхзначных кодов.</p>
     <div class="btns"><button class="btn" id="impBtn">Считать следующий код</button></div>
-    <p>Считанные коды N: <b class="mono">${codes.length ? codes.join(', ') : '—'}</b></p>
+    ${imp.valid ? `<p class="small muted">Последнее чтение: N = ${imp.last_n} ${imp.complete ? '' : '(не завершено)'} · фронтов ${imp.edges} · помех ${imp.glitches}</p>` : ''}
+    ${codes.length ? `<div class="list">${codes.map(c => `<div class="row"><div class="code mono" style="min-width:48px;font-weight:700">N ${c.n}</div><div class="grow">${c.a.length ? c.a.map(a => `<div class="small"><b class="mono">${String(a.code).padStart(3, '0')}</b> ${esc(a.text)}</div>`).join('') : '<span class="muted small">нет в заводской таблице для выбранного двигателя</span>'}</div></div>`).join('')}</div>` : '<p class="muted">Коды ещё не считаны.</p>'}
+    <p class="small muted">Соответствие N → трёхзначный код — заводские таблицы Engine 104/111 (11/8–11/15); один N покрывает группу кодов. Точный код покажет только цифровое чтение.</p>
     <p class="small muted">Пороговые длительности импульсов в документации не указаны — используются настраиваемые значения; все фронты сохраняются в отчёте.</p></div>`;
   $('#impBtn').addEventListener('click', async e => { await job('impulse_read', {}, e.target); renderImpulse(); });
 }
@@ -455,7 +455,8 @@ R.live = async () => {
     <div class="mt">${cats.map(c => `<button class="chip ${S.cat === c[0] ? 'on' : ''}" data-cat="${c[0]}">${c[1]}</button>`).join('')}</div>
     <div class="grid auto" id="tiles"></div>
     <h2 class="section">RAW группы опроса (full8)</h2><div class="card pad" id="rawBox"></div>
-    <p class="foot">Нормы подсвечиваются только при выполненных условиях (ОЖ > 80 °C, обороты ХХ) и подтверждённом чтении. Нажмите на плитку, чтобы добавить параметр на график (до 4).</p>`);
+    <p class="foot">Нормы подсвечиваются только при выполненных условиях (ОЖ > 80 °C, обороты ХХ) и подтверждённом чтении. При обрыве/КЗ датчиков ОЖ, IAT и HFM ЭБУ подставляет замещающее значение, близкое к реальному, — неисправность видна только в памяти DTC (OEM 11/3). Нажмите на плитку, чтобы добавить параметр на график (до 4).</p>`);
+  try { if (!S.dtc) S.dtc = (await api('dtc')).dtc; } catch (e) {}
   document.querySelectorAll('[data-cat]').forEach(b => b.addEventListener('click', () => { S.cat = b.dataset.cat; R.live(); }));
   $('#lvStart').addEventListener('click', async e => {
     const on = S.status && S.status.live_active;
@@ -484,6 +485,9 @@ async function pollLive() {
   S.live = L;
   const defs = Object.fromEntries(S.defs.map(d => [d.k, d]));
   const now = Date.now();
+  const dcodes = S.dtc && S.dtc.valid ? S.dtc.items.map(x => x.code) : [];
+  S.subst = {ect: [2, 3, 4, 5], iat: [6, 7, 8], maf: [9, 10]};
+  S.substOn = Object.fromEntries(Object.entries(S.subst).map(([k, c]) => [k, c.some(x => dcodes.includes(x))]));
   L.values.forEach(v => {
     if (v.v == null) return;
     const h = S.hist[v.k] = S.hist[v.k] || [];
@@ -517,9 +521,10 @@ function tile(v, d) {
     bar = `<div class="bar"><i style="left:${p(v.lo)}%;width:${p(v.hi) - p(v.lo)}%"></i><b style="left:${p(v.v)}%"></b></div>`;
   }
   const norm = v.lo != null ? `норма ${v.lo}…${v.hi}` : '';
+  const subst = S.substOn && S.substOn[v.k] ? '<div class="small" style="color:var(--orange)">есть DTC датчика — возможно замещающее значение</div>' : '';
   return `<div class="tile ${v.norm} ${S.sel.includes(v.k) ? 'sel' : ''}" data-k="${v.k}" title="${esc(d.src + ': ' + d.formula + (v.nnote ? '\n' + v.nnote + ' [' + v.nsrc + ']' : ''))}">
     <div class="dot ${v.norm}"></div><div class="name">${esc(d.name)}</div>
-    <div class="val">${val}${d.unit && !d.bool ? `<small>${esc(d.unit)}</small>` : ''}</div>${bar}
+    <div class="val">${val}${d.unit && !d.bool ? `<small>${esc(d.unit)}</small>` : ''}</div>${bar}${subst}
     <div class="meta"><span>${qtxt || norm || esc(d.src)}</span><span>${badge(d.conf)}</span></div></div>`;
 }
 
@@ -583,7 +588,7 @@ R.adapt = () => {
         ${card('Частичная нагрузка, нижняя (мульт.)', a.lower, '', 0.85, 1.15, '1.00', a.raw.lower, tend(a.lower, 1, true))}
         ${card('Частичная нагрузка, верхняя (мульт.)', a.upper, '', 0.85, 1.15, '1.00', a.raw.upper, tend(a.upper, 1, true))}
       </div>
-      <div class="note warn mt">Формулы адаптаций — РЕК (HFMreader, «NOT vehicle validated»). Значения корректны для оценки только в замкнутом контуре лямбда-регулирования, на прогретом двигателе с исправными датчиками O2. Коррекция — подсказка, а не диагноз конкретной детали.</div>
+      <div class="note warn mt">Формулы адаптаций — РЕК (не проверены на автомобиле). Значения корректны для оценки только в замкнутом контуре лямбда-регулирования, на прогретом двигателе с исправными датчиками O2. Коррекция — подсказка, а не диагноз конкретной детали.</div>
       <p class="foot">Не складывайте кг/ч (Bosch) и % (VDO). Нижний и верхний множители — разные величины.</p>`;
   };
   $('#adBtn').addEventListener('click', async e => { if (await job('read_adapt', {}, e.target)) render(); });
@@ -598,7 +603,7 @@ async function serviceFlow(op) {
   sheet(`<h3>${esc(o.name)}</h3>
     <div class="flex mb">${badge(o.conf)}<span class="badge ${o.allowed ? 'b-ZAV' : 'b-BLOCK'}">${o.allowed ? 'разрешено профилем' : 'заблокировано'}</span></div>
     ${o.allowed ? '' : `<div class="note danger">${esc(o.reason)}</div>`}
-    <div class="note warn mt">Операция изменяет состояние ЭБУ. Рецепт реконструирован из HFMreader (РЕК) и не проверен этим проектом на автомобиле. При ошибке повторной отправки не будет — устройство перейдёт в режим FAULT_STOP.</div>
+    <div class="note warn mt">Операция изменяет состояние ЭБУ. Рецепт реконструирован по протоколу REV 1.1 (РЕК) и не проверен этим проектом на автомобиле. При ошибке повторной отправки не будет — устройство перейдёт в режим FAULT_STOP.</div>
     ${sv.battery_manual_confirm || S.status.battery_v != null ? '' : `<label class="row" style="padding:12px 0;background:none"><div class="grow small">Я проверил(а) напряжение бортсети ≥ 11 В (АЦП не установлен)</div><span class="switch"><input type="checkbox" id="batCf"><span></span></span></label>`}
     <div id="planBox" class="mt"></div>
     <div class="btns mt"><button class="btn sec" onclick="closeSheet()">Отмена</button><button class="btn" id="prepBtn" ${o.allowed ? '' : 'disabled'}>Проверить условия</button></div>`);
@@ -626,7 +631,7 @@ const ACTUATORS = [
   {id: 'purge_test', name: 'Клапан продувки адсорбера Y58/1', desc: 'D4 1A / D4 00 после входа CF/C1, лимит 30 с, восстановление D0–D4. Условия: 400–1500 об/мин, ОЖ 80–110 °C.'},
   {name: 'Насос вторичного воздуха Y32/Y33', block: 'Активация зависит от температуры и времени после пуска; команда не подтверждена. Только статус (Live: AIR).'},
   {name: 'Клапан EGR Y27', block: 'Команда не подтверждена; P0400/P1400 относятся к модулю DM. Только диагностика.'},
-  {name: 'Регулирование распредвала Y49', block: 'Только чтение статуса (M104.995: <2000 выкл, >2000 вкл, >4000 выкл по HHT).'},
+  {name: 'Регулирование распредвала Y49', block: 'Только чтение статуса (M104.995: <2000 выкл, >2000 вкл, >4000 выкл по заводской таблице).'},
   {name: 'Резонансная заслонка Y22/6', block: 'Только чтение статуса (ХХ выкл / >4000 об/мин вкл).'},
   {name: 'Форсунки Y62 / катушки T1', block: 'Требуется изолированный стенд с имитаторами нагрузки; команда неизвестна.'},
   {name: 'Реле топливного насоса, стартер, EA/CC/ISC', block: 'Запрещено в WebUI общего назначения (топливо/движение).'}
@@ -635,7 +640,7 @@ const ACTUATORS = [
 R.actuators = () => {
   page('Исполнительные тесты', `<div id="actTop"></div><h2 class="section">Компоненты</h2><div class="list" id="actList"></div>
     <h2 class="section">Дроссель / ETA / CTP</h2><div class="card pad" id="thrBox"></div>
-    <p class="foot">Наличие компонента на схеме или статуса в HHT не доказывает существование команды активации (REV 1.4 §16). Неподтверждённые тесты не выдаются за реализованные.</p>`);
+    <p class="foot">Наличие компонента на схеме или статуса в заводском тестере не доказывает существование команды активации (REV 1.4 §16). Неподтверждённые тесты не выдаются за реализованные.</p>`);
   every(async () => {
     const sv = (await api('services')).services;
     if (!$('#actList')) return;
@@ -657,7 +662,7 @@ R.actuators = () => {
     $('#thrBox').innerHTML = `<p class="small" style="margin-top:0">Пошаговая визуальная проверка (без управления приводом): запустите Live Data, затем 1) педаль отпущена — CTP ВКЛ, угол в норме ХХ; 2) плавно нажмите — угол растёт без скачков; 3) полное открытие — контакт WOT ВКЛ.</p>
       ${kvTable([['Угол заслонки', t && t.v != null ? t.v.toFixed(2) + ' °' : '—'], ['Контакт ХХ (CTP, эксп.)', ctp && ctp.v != null ? (ctp.v ? 'ВКЛ' : 'выкл') : 'не опрашивается'],
         ['Контакт полной нагрузки (WOT)', wot && wot.v != null ? (wot.v ? 'ВКЛ' : 'выкл') : '—']])}
-      <div class="note warn mt">Обучение упоров дросселя: команда HHT не восстановлена — ${badge('BLOCK')}. По OEM (M111 11/2) механический упор определяется автоматически и требует повторного распознавания после замены ЭБУ/привода; DTC 133/138 — обучение через HHT.</div>`;
+      <div class="note warn mt">Обучение упоров дросселя: команда заводского тестера не восстановлена — ${badge('BLOCK')}. По OEM (M111 11/2) механический упор определяется автоматически и требует повторного распознавания после замены ЭБУ/привода; DTC 133/138 — обучение заводским тестером.</div>`;
   }, 1500);
 };
 
@@ -676,9 +681,9 @@ R.commission = async () => {
   const rpm = val('rpm'), ect = val('ect');
   const step = (cls, title, body) => `<div class="step ${cls}"><div class="num"></div><div class="grow"><b>${title}</b><div class="small mt">${body}</div></div></div>`;
   const genText = {
-    EARLY_AUTO: 'Ранний HFM 3.4 (до 02/1994, HHT diagnosis ≤ 42): комплектация, катализатор и тип КПП распознаются автоматически. Условия начального распознавания: U ≥ 11 В, скорость 0, двигатель остановлен, P/N, контакт ХХ замкнут; распознавание КПП требует поездки > 5 км/ч (OEM M111 11/2). На стенде процедура не может быть завершена.',
+    EARLY_AUTO: 'Ранний HFM 3.4 (до 02/1994, diagnosis version ≤ 42): комплектация, катализатор и тип КПП распознаются автоматически. Условия начального распознавания: U ≥ 11 В, скорость 0, двигатель остановлен, P/N, контакт ХХ замкнут; распознавание КПП требует поездки > 5 км/ч (OEM M111 11/2). На стенде процедура не может быть завершена.',
     TRANSITION: 'Переходный период 01–02/1994: поколение определяется только по идентификации ЭБУ, не по дате.',
-    CODED: 'Кодируемый HFM 3.4 (с 03/1994, diagnosis ≥ 45): требуется 9-значный код комплектации, который вводится HHT (меню 6 «Version coding»). Некодированный ЭБУ ограничивает обороты 3200 об/мин (MBNA 07.5/1). Перед заменой считайте код старого блока HHT; без него — код по каталогу Gr. 54 и комплектации.',
+    CODED: 'Кодируемый HFM 3.4 (с 03/1994, diagnosis ≥ 45): требуется 9-значный код комплектации, который вводится заводским тестером (меню 6 «Version coding»). Некодированный ЭБУ ограничивает обороты 3200 об/мин (MBNA 07.5/1). Перед заменой считайте код старого блока заводским тестером; без него — код по каталогу Gr. 54 и комплектации.',
     HFM41: 'HFM-SFI 4.1 (M104.995): отдельный состав Live Data и счётчиков; DAS-привязка возможна с MY1996.',
     UNKNOWN: 'Выберите автомобиль в разделе «Автомобили», чтобы получить порядок для поколения.'
   }[gen];
@@ -696,7 +701,7 @@ R.commission = async () => {
       ${step(ecu.ident.present ? 'done' : 'cur', 'Подключение и идентификация', ecu.ident.present ? `${esc(ecu.ident.part)} · diag ${esc(ecu.ident.diag_index)} · ${esc(ecu.profile.name)}` : '<button class="btn sm" onclick="job(\'connect\',{},this).then(()=>R.commission())">Подключить</button>')}
       ${step('', 'Предварительные условия', pre.map(p => `<div class="check"><i class="${p[1] == null ? 'unk' : p[1] ? 'ok' : 'no'}">${p[1] == null ? '?' : p[1] ? '✓' : '✕'}</i><div>${p[0]}</div></div>`).join('') + '<div class="muted">P/N и контакт ХХ проверьте визуально/в Live Data.</div>')}
       ${step('', 'Снимок «до»', `<div class="btns"><button class="btn sm sec" onclick="job('read_dtc',{},this)">DTC</button><button class="btn sm sec" onclick="job('read_adapt',{},this)">Адаптации</button><button class="btn sm sec" onclick="job('read_coding',{},this)">Кодировка</button></div>`)}
-      ${step(gen === 'CODED' ? 'blocked' : '', '9-значный код комплектации', `Чтение/запись кода командой HHT не восстановлены — ${badge('BLOCK')}. Запишите код из HHT/каталога для архива:
+      ${step(gen === 'CODED' ? 'blocked' : '', '9-значный код комплектации', `Чтение/запись кода командой заводского тестера не восстановлены — ${badge('BLOCK')}. Запишите код из заводского тестера/каталога для архива:
         <input class="field mt" id="code9" maxlength="9" inputmode="numeric" placeholder="9 цифр" value="${esc(LS.get('code9', ''))}"><div class="small muted mt">Код хранится только в отчёте/браузере. Генерация кода по чекбоксам недопустима.</div>`)}
       ${step('', 'Дроссель и упоры', 'Визуальная проверка CTP/WOT/угла — раздел «Исполнительные тесты». Автоматическое обучение не выполняется.')}
       ${step('', 'DAS / разрешение запуска', 'С MY1996 возможна постоянная привязка N3/4 к DAS: новый тестовый ЭБУ — не более 40 запусков до необратимой привязки (OEM M111 11/3). Обход и перепривязка не выполняются.')}
@@ -733,7 +738,7 @@ async function buildReport() {
   const code9 = LS.get('code9', '');
   const live = r.live.values.filter(v => v.v != null);
   const html = `<div class="card pad" id="repCard">
-    <div class="flex between"><div><div style="font-size:22px;font-weight:700">Отчёт диагностики HFM-SFI</div><div class="muted small">${new Date().toLocaleString('ru-RU')} · ${esc(r.generator)} · сеанс ${esc(st.session_id)}</div></div>${st.source === 'simulator' ? '<span class="badge b-purple">СИМУЛЯТОР</span>' : ''}</div>
+    <div class="flex between"><div><div style="font-size:22px;font-weight:700">Отчёт диагностики HFM-SFI</div><div class="muted small">${new Date().toLocaleString('ru-RU')} · ${esc(r.generator)} · сеанс ${esc(st.session_id)}</div></div></div>
     <div class="note warn mt small">${esc(r.disclaimer)}</div>
     <h2 class="section" style="margin-left:0">Автомобиль и ЭБУ</h2>
     ${kvTable([['Автомобиль', st.vehicle ? `${st.vehicle.chassis} ${st.vehicle.name} · M${st.vehicle.engine}` : 'не выбран'],
@@ -747,7 +752,7 @@ async function buildReport() {
     ${r.coding.valid ? `<p class="small">Кодировка c=${esc(r.coding.coding_byte)} m=${esc(r.coding.mask_byte)}</p>` : ''}
     <h2 class="section" style="margin-left:0">Live Data (последний снимок)</h2>
     ${live.length ? `<table class="kv">${live.map(v => { const df = r.live.values.find(x => x.k === v.k); return `<tr><td>${esc(df.name)}</td><td>${df.bool ? (v.v ? 'ВКЛ' : 'выкл') : v.v + ' ' + esc(df.unit)} <span class="muted small">${v.norm !== 'NO_NORM' ? v.norm : ''} ${esc(df.conf)}</span></td></tr>`; }).join('')}</table>` : '<p class="muted">Нет данных.</p>'}
-    ${r.impulse.codes.length ? `<p>Импульсные коды N: <b>${r.impulse.codes.join(', ')}</b></p>` : ''}
+    ${r.impulse.codes.length ? `<p>Импульсные коды N: <b>${r.impulse.codes.map(c => c.n).join(', ')}</b></p>` : ''}
     <p class="small muted mt">Канал: ${esc(st.transport)} · TX ${st.tx} · ошибок ${st.errors} · паритет/кадр ${st.parity_errors}/${st.frame_errors}</p>
     </div><div class="btns mt noprint"><button class="btn" onclick="window.print()">Печать / PDF</button><button class="btn sec" id="saveRep">Сохранить на устройстве</button></div>`;
   $('#repBox').innerHTML = html;
@@ -772,8 +777,8 @@ R.settings = async () => {
     <div class="card pad"><div class="seg" id="thSeg">${[['auto', 'Авто'], ['light', 'Светлая'], ['dark', 'Тёмная']].map(t => `<button data-t="${t[0]}" class="${theme === t[0] ? 'on' : ''}">${t[1]}</button>`).join('')}</div></div>
     <h2 class="section">Диагностика</h2>
     <div class="list">
-      ${sw('experimental_reads', 'Экспериментальное чтение', 'Чтение у нераспознанных ЭБУ, HHT-рецепты (скорость, нижний O2, CTP/T50), VIN F9, биты DTC 129–152. Уровень ГИП.')}
-      ${sw('keep_alive', 'Keep-alive (F0:00)', 'Безопасное чтение раз в 1 с при простое вместо «10 00» HFMScan')}
+      ${sw('experimental_reads', 'Экспериментальное чтение', 'Чтение у нераспознанных ЭБУ, расширенные рецепты (скорость, нижний O2, CTP/T50), VIN F9, биты DTC 129–152. Уровень ГИП.')}
+      ${sw('keep_alive', 'Keep-alive (F0:00)', 'Безопасное чтение раз в 1 с при простое вместо «10 00»')}
       ${sw('trace_capture', 'RAW журнал TX/RX', 'Кольцевой буфер в ОЗУ (1536 событий)')}
       ${sw('mask_vin', 'Скрывать VIN в отчётах', '')}
     </div>
@@ -781,10 +786,17 @@ R.settings = async () => {
     <div class="list">
       ${sw('engineer_mode', 'Режим инженера', 'Разрешает карантинные рецепты РЕК только для эталонного ЭБУ 013 545 13 32 / 41-00. Дополнительно нужен ключ WRITE-EN.', true)}
       ${sw('battery_manual_confirm', 'Напряжение ≥ 11 В проверено', 'Для текущего сеанса (если АЦП не установлен). Сбрасывается при перезагрузке.')}
-      ${sw('impulse_enabled', 'Импульсный считыватель', 'Замыкает диагностическую линию на массу на 2–4 с. Только для HHT diagnosis ≤ 46; не для W210.', true)}
+      ${sw('impulse_enabled', 'Импульсный считыватель', 'Замыкает диагностическую линию на массу на 2–4 с. Только для diagnosis version ≤ 46; не для W210.', true)}
     </div>
     <div class="card pad mt"><div class="grid c2"><div><div class="small muted">Нажатие, мс (2000–4000)</div><input class="field" id="impPr" type="number" value="${s.imp_press_ms}"></div>
       <div><div class="small muted">Пауза конца кода, мс</div><input class="field" id="impGap" type="number" value="${s.imp_end_gap_ms}"></div></div></div>
+    <h2 class="section">Тайминги K-Line</h2>
+    <div class="card pad"><div class="grid c3">
+      <div><div class="small muted">BREAK, мс</div><input class="field" id="tBrk" type="number" value="${s.break_ms}"></div>
+      <div><div class="small muted">Пауза после BREAK, мс</div><input class="field" id="tPb" type="number" value="${s.post_break_ms}"></div>
+      <div><div class="small muted">Тайм-аут эхо+ответ, мс</div><input class="field" id="tTo" type="number" value="${s.byte_timeout_ms}"></div></div>
+      <div class="btns mt"><button class="btn sec" id="tSave">Сохранить</button><button class="btn sec" id="tDef">По умолчанию (177/214/750)</button></div>
+      <p class="small muted">Исходный профиль протокола: 177 / 214 / 750 мс. Меняйте, только если синхронизация AA 55 нестабильна на вашем адаптере; результат проверяйте по RAW-журналу.</p></div>
     <h2 class="section">Wi-Fi</h2>
     <div class="card pad">
       <div class="small muted">Точка доступа: <b>${esc(s.ap_ssid)}</b>${s.ap_default_pass ? ' · <span style="color:var(--orange)">используется пароль по умолчанию — смените его</span>' : ''}</div>
@@ -807,6 +819,9 @@ R.settings = async () => {
     toast('Сохранено');
   }));
   ['impPr', 'impGap'].forEach(id => $('#' + id).addEventListener('change', () => post('settings', {imp_press_ms: $('#impPr').value, imp_end_gap_ms: $('#impGap').value}).then(() => toast('Сохранено'))));
+  const saveT = async v => { await post('settings', v); toast('Тайминги сохранены'); R.settings(); };
+  $('#tSave').addEventListener('click', () => saveT({break_ms: $('#tBrk').value, post_break_ms: $('#tPb').value, byte_timeout_ms: $('#tTo').value}));
+  $('#tDef').addEventListener('click', () => saveT({break_ms: 177, post_break_ms: 214, byte_timeout_ms: 750}));
   $('#netSave').addEventListener('click', async () => {
     const p = {sta_ssid: $('#staSsid').value, sta_pass: $('#staPass').value};
     if ($('#apPass').value) {

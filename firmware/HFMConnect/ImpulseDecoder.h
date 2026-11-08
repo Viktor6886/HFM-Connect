@@ -4,7 +4,7 @@
 // the diagnostic contact is grounded for 2-4 s; after release the ECU
 // indicates the code number N by pulling the line low N times (LED of the
 // pulse counter lights). The first code repeats after the last one.
-// Valid only for HHT diagnosis versions <= 46; not for model 210 (WIS).
+// Valid only for diagnosis versions <= 46; not for model 210 (WIS).
 // Pulse widths are not specified in the documents: thresholds below are
 // configurable defaults and every raw edge is kept as evidence.
 #pragma once
@@ -33,3 +33,20 @@ struct ImpulseResult {
 
 // Decodes a sequence of phases recorded after the button release.
 ImpulseResult decodeImpulses(const ImpulseEdge* edges, uint16_t n, const ImpulseConfig& cfg);
+
+// ---- Factory blink-code table N -> three-digit code A -------------------------
+// Diagnostic Manual Engines 09/00: Engine 104 (1.1 HFM-SFI 11/8..11/15) and
+// Engine 111 (1.2 HFM-SFI 11/8..11/15). N exists only up to end of MY1995.
+// N = 1 means "no malfunction stored".
+enum : uint8_t { IMP_M104 = 1, IMP_M111 = 2, IMP_BOTH = 3 };
+
+struct ImpulseCodeEntry {
+  uint8_t n;
+  uint8_t engines;      // IMP_* mask
+  uint8_t count;
+  uint16_t a[6];        // three-digit codes covered by this N
+};
+
+// Returns entries for N (0..2 entries: common and engine specific).
+uint8_t impulseLookup(uint8_t n, uint8_t engineMask, const ImpulseCodeEntry** out, uint8_t max);
+const ImpulseCodeEntry* impulseTable(uint16_t* count);

@@ -27,20 +27,23 @@ ESP32-S3 с внешним трансивером и автономным WebUI.
 
 ## Архитектурные правила
 
-- Платформонезависимое ядро (`Hfm*.cpp`, `TraceLog`, `ServiceGuard`, `SimEcu`,
-  `ImpulseDecoder`) **не включает Arduino.h**; Arduino-код — в `#ifdef ARDUINO`.
+- Платформонезависимое ядро (`Hfm*.cpp`, `TraceLog`, `ServiceGuard`, `ImpulseDecoder`)
+  **не включает Arduino.h**; Arduino-код — в `#ifdef ARDUINO`.
 - Только `DiagEngine` владеет K-Line; HTTP — через `submit(Job)` и снимки под `lock()`.
 - Внешние библиотеки Arduino не добавлять (D-002). JSON — `JsonWriter`.
 - Главный файл прошивки: `firmware/HFMConnect/HFMConnect.ino`; модули — рядом (Arduino IDE).
 - После правки `webui/*` — `python tools/build_webui.py` (CI проверяет актуальность).
-- После правки `data/hfmreader/dtc.csv` — `python tools/gen_dtc_catalog.py`.
+- После правки `data/protocol/dtc.csv` — `python tools/gen_dtc_catalog.py`.
+- Режима симулятора в прошивке нет (D-016): `SimEcu` живёт только в `tests/host/`.
+- В текстах репозитория не упоминать сторонние программы как основу ПО (D-017);
+  ссылаться на спецификацию REV 1.1–1.4 и заводские документы.
 - Новые решения — в `docs/DECISIONS.md` (D-0xx).
 
 ## Статусы функций (`docs/DIAGNOSTIC_FUNCTIONS.md`)
 
 запланирована → разрабатывается → реализована → протестирована программно →
 проверена на реальном ЭБУ. **Не ставить «проверена на ЭБУ» без трассы с реального блока.**
-Симулятор и mock — это программные испытания.
+SimEcu и replay-трассы — это программные испытания.
 
 ## Проверки перед коммитом
 
@@ -67,7 +70,7 @@ arduino-cli compile --fqbn esp32:esp32:esp32s3 firmware/HFMConnect   # если 
 
 - Рабочая копия: `C:\Users\pvpwm\Desktop\HFM-Connect\repo` (клон GitHub).
 - Исходная документация (не в git): `C:\Users\pvpwm\Desktop\HFM-Connect\Documents`,
-  `…\Protocol view` (отчёты HFMreader/HFMScan/HHTwin), спецификации REV 1.1–1.4 в корне.
+  `…\Protocol view` (материалы анализа), спецификации REV 1.1–1.4 в корне.
 - arduino-cli: `C:\Users\pvpwm\tools\arduino-cli\arduino-cli.exe`, ядро esp32 3.3.8.
 - C++ на Windows: `pip install ziglang` (используется `run_host_tests.py` автоматически).
 - Диск C: почти заполнен — не скачивать дополнительные ядра/тулчейны без необходимости.

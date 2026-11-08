@@ -2,19 +2,18 @@
 //
 // Implementations:
 //   KLineUart (ESP32-S3 UART + external transceiver, Arduino only)
-//   SimEcu    (software ECU model for host tests and the on-device simulator)
+//   SimEcu    (software ECU model, host tests only: tests/host/SimEcu.*)
 //   ReplayLink (tests/host: replays a recorded trace)
 #pragma once
 #include "HfmTypes.h"
 
 // Timing profile of the link layer. Defaults are profile "R" from REV 1.1
-// (HFMreader serial_transport: BREAK 177 ms, post-break 214 ms, 2-byte read
-// deadline 750 ms). They are reconstructed values (REK), not factory data.
+// (BREAK 177 ms, post-break 214 ms, 2-byte read deadline 750 ms). They are reconstructed values (REK), not factory data.
 struct LinkTiming {
   uint16_t breakMs = 177;
   uint16_t postBreakMs = 214;
   uint16_t byteDeadlineMs = 750;  // per echo+response pair
-  uint16_t syncRetries = 3;       // HFMreader reader_service: up to 3 inits
+  uint16_t syncRetries = 3;       // up to 3 initialisation attempts
   uint16_t syncRetryPauseMs = 1000;
 };
 

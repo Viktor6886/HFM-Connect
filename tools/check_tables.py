@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Cross-check tables embedded in the firmware against the analysis data.
+"""Cross-check tables embedded in the firmware against the protocol data files.
 
-  * HfmDecode.cpp kCoolantHht / kIatHht / kBitV1Old  vs data/hfmreader/lookup_tables.json
-  * HfmDtc.cpp kBase and remap tables                 vs data/hfmreader/variant_remaps.json
+  * HfmDecode.cpp kCoolantTable / kIatTable / kBitV1Old  vs data/protocol/lookup_tables.json
+  * HfmDtc.cpp kBase and remap tables                 vs data/protocol/variant_remaps.json
   * DtcCatalog.h                                      vs regenerated output of gen_dtc_catalog.py
 
 Exit code 1 on any mismatch (used by CI).
@@ -15,7 +15,7 @@ import sys
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 FW = ROOT / "firmware" / "HFMConnect"
-DATA = ROOT / "data" / "hfmreader"
+DATA = ROOT / "data" / "protocol"
 
 
 def c_array(src: str, name: str):
@@ -34,7 +34,7 @@ def main() -> int:
     bad = 0
     lt = json.loads((DATA / "lookup_tables.json").read_text(encoding="utf-8"))["tables"]
     dec = (FW / "HfmDecode.cpp").read_text(encoding="utf-8")
-    for cname, jname in (("kCoolantHht", "coolant"), ("kIatHht", "intake_air")):
+    for cname, jname in (("kCoolantTable", "coolant"), ("kIatTable", "intake_air")):
         a = c_array(dec, cname)
         if a != lt[jname]:
             print(f"MISMATCH {cname} vs {jname}")

@@ -6,30 +6,14 @@
 
 #include "Config.h"
 #include "KLineUart.h"
-#include "SimEcu.h"
 
 DiagEngine Engine;
-
-// SimEcu driven by the real clock (on-device simulator source).
-class SimEcuRealtime : public SimEcu {
- public:
-  void sleepMs(uint32_t ms) override { delay(ms); }
-  uint32_t nowMs() override { return millis(); }
-  uint32_t nowUs() override { return micros(); }
-  LinkStatus exchange(uint8_t tx, Parity p, uint16_t d, uint8_t& e, uint8_t& r) override {
-    delayMicroseconds(3600);  // realistic byte timing at 9600 Bd
-    return SimEcu::exchange(tx, p, d, e, r);
-  }
-
- protected:
-  uint32_t modelMs() override { return millis(); }
-};
 
 const char* jobCode(Job j) {
   static const char* const names[] = {"none", "connect", "disconnect", "identify", "read_dtc", "read_adapt",
                                       "read_coding", "read_vin", "live_start", "live_stop", "svc_prepare",
                                       "svc_execute", "purge_on", "purge_off", "stop", "impulse_read",
-                                      "ack_fault", "apply_source"};
+                                      "ack_fault"};
   return names[(uint8_t)j < sizeof(names) / sizeof(names[0]) ? (uint8_t)j : 0];
 }
 
@@ -55,25 +39,27 @@ void DiagEngine::begin(Settings* s) {
   trace_.setEnabled(s->traceCapture);
   kline_ = new KLineUart(HFM_KLINE_UART_NUM, HFM_KLINE_TX_PIN, HFM_KLINE_RX_PIN, HFM_KLINE_TX_INVERTED,
                          HFM_KLINE_RX_INVERTED);
-  sim_ = new SimEcuRealtime();
+  // Install the UART immediately so the transceiver TX input is driven idle
+  // HIGH from boot (no floating input / K-Line pull-down glitch).
+  if (!kline_->open()) Serial.println("K-Line UART init failed");
+  kline_->close();
   snprintf(sessionId_, sizeof sessionId_, "S%08lX", (unsigned long)esp_random());
   pinMode(HFM_WRITE_EN_PIN, INPUT_PULLUP);
-  selectLink();
+  link_ = kline_;
+  session_ = new HfmSession(*link_, trace_);
+  applySettings();
   EcuIdent none;
   prof::ResolveOptions o;
   prof::resolve(none, o, st_.profile);
   xTaskCreatePinnedToCore(taskEntry, "hfm-engine", HFM_ENGINE_TASK_STACK, this, 3, nullptr, HFM_ENGINE_TASK_CORE);
 }
 
-void DiagEngine::selectLink() {
-  if (session_) {
-    session_->disconnect();
-    delete session_;
-  }
-  st_.simulator = settings_->source == 1;
-  link_ = st_.simulator ? (ByteLink*)sim_ : (ByteLink*)kline_;
-  if (st_.simulator) sim_->setScenario((SimEcu::Scenario)(settings_->simScenario % 4));
-  session_ = new HfmSession(*link_, trace_);
+void DiagEngine::applySettings() {
+  LinkTiming t;
+  t.breakMs = settings_->breakMs;
+  t.postBreakMs = settings_->postBreakMs;
+  t.byteDeadlineMs = settings_->byteTimeoutMs;
+  session_->setTiming(t);
   session_->setExperimentalReads(settings_->experimentalReads);
 }
 
@@ -139,7 +125,7 @@ void DiagEngine::reresolveProfile() {
   o.experimentalReads = settings_->experimentalReads;
   o.engineerMode = settings_->engineerMode;
   prof::resolve(st_.ident, o, st_.profile);
-  if (session_) session_->setExperimentalReads(settings_->experimentalReads);
+  if (session_) applySettings();
   trace_.setEnabled(settings_->traceCapture);
   unlock();
 }
@@ -169,6 +155,22 @@ void DiagEngine::doIdentify(char* msg, size_t n, bool& ok) {
   ok = s == LinkStatus::Ok;
   EcuIdent id;
   parseIdent(raw, ok ? 28 : 0, id);
+  if (ok) {
+    // F0:26 / F0:27 (ROM page, descriptor address) - read by the factory tester
+    // in the same telegram. Optional: a failure here does not invalidate the ID.
+    uint8_t b26 = 0, b27 = 0;
+    LinkStatus e = session_->prefix(0xF0);
+    if (e == LinkStatus::Ok) e = session_->selector(0x26, b26);
+    if (e == LinkStatus::Ok) e = session_->prefix(0xF0);
+    if (e == LinkStatus::Ok) e = session_->selector(0x27, b27);
+    if (e == LinkStatus::Ok) {
+      id.extPresent = true;
+      id.romPage = b26;
+      id.descAddr = b27;
+    } else {
+      session_->connect();  // re-sync after the optional read failed
+    }
+  }
   lock();
   if (ok) st_.ident = id;
   prof::ResolveOptions o;
@@ -226,18 +228,6 @@ void DiagEngine::execute(Job j, uint32_t arg, const char* text) {
   unlock();
 
   switch (j) {
-    case Job::ApplySource:
-      lock();
-      st_.liveActive = false;
-      st_.ident = EcuIdent();
-      st_.dtc = DtcView();
-      st_.adapt = svc::Adaptations();
-      st_.coding = svc::Coding();
-      unlock();
-      selectLink();
-      reresolveProfile();
-      snprintf(msg, sizeof msg, "Источник: %s", st_.simulator ? "симулятор (синтетические данные)" : "K-Line");
-      break;
     case Job::Connect:
       if (session_->ready()) session_->disconnect();
       doConnect(msg, sizeof msg, ok);
@@ -267,6 +257,7 @@ void DiagEngine::execute(Job j, uint32_t arg, const char* text) {
         st_.dtc.valid = true;
         st_.dtc.tMs = millis();
         st_.dtc.count = decodeAll(fm, st_.profile, st_.dtc.items, 48);
+        st_.dtc.inferred = dtc::inferBankMapping(st_.dtc.items, st_.dtc.count);
         snprintf(msg, sizeof msg, "Прочитано 32 байта F1, установлено битов: %u", st_.dtc.count);
         unlock();
       } else {
@@ -381,6 +372,7 @@ void DiagEngine::execute(Job j, uint32_t arg, const char* text) {
           st_.dtc.valid = true;
           st_.dtc.tMs = millis();
           st_.dtc.count = decodeAll(after, st_.profile, st_.dtc.items, 48);
+          st_.dtc.inferred = dtc::inferBankMapping(st_.dtc.items, st_.dtc.count);
         }
         unlock();
         snprintf(res, sizeof res, ok ? (verified ? "Стирание выполнено, повторное чтение: все 32 байта = 00"
@@ -465,7 +457,6 @@ void DiagEngine::execute(Job j, uint32_t arg, const char* text) {
       snprintf(msg, sizeof msg, "Ошибка квитирована: переподключитесь и идентифицируйте ЭБУ");
       break;
     case Job::ImpulseRead: {
-      if (st_.simulator) { ok = false; snprintf(msg, sizeof msg, "Импульсный режим недоступен в симуляторе"); break; }
       if (!settings_->impulseEnabled) { ok = false; snprintf(msg, sizeof msg, "Включите импульсный режим в настройках"); break; }
       lock();
       st_.liveActive = false;
@@ -527,7 +518,7 @@ void DiagEngine::livePoll() {
   st_.errCount = session_->errorCount();
   unlock();
   if (s != LinkStatus::Ok) {
-    // Read-only: HFMreader re-initialises up to 3 times (connect() retries).
+    // Read-only: re-initialise (connect() retries up to 3 times).
     char msg[96];
     bool ok;
     doConnect(msg, sizeof msg, ok);
@@ -546,7 +537,7 @@ void DiagEngine::keepAlive() {
   uint32_t now = millis();
   if (now - session_->lastActivityMs() < HFM_KEEPALIVE_MS) return;
   uint8_t b;
-  // Harmless read-only command (F0:00) instead of HFMScan "10 00": 0x10 is
+  // Harmless read-only command (F0:00) instead of "10 00": 0x10 is
   // also an element of the DTC clear sequence (docs/DECISIONS.md D-006).
   if (session_->prefix(0xF0) == LinkStatus::Ok) session_->selector(0x00, b);
   lock();

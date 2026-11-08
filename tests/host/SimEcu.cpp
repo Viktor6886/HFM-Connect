@@ -3,7 +3,7 @@
 #include <math.h>
 #include <string.h>
 
-// HFMreader ecu_identification_simulator.GOLDEN_RAW (synthetic):
+// Synthetic identification block (reference ECU layout):
 // BOSCH, "M2 28320 VR0", 013 545 13 32, HW 35/92, SW 46/92, diag 41/00.
 static const uint8_t kGoldenIdent[28] = {0x2C, 0x42, 0x4D, 0x32, 0x32, 0x38, 0x33, 0x32, 0x30, 0x56,
                                          0x52, 0x30, 0x30, 0x31, 0x33, 0x35, 0x34, 0x35, 0x31, 0x33,
@@ -29,7 +29,7 @@ void SimEcu::setScenario(Scenario s) {
   startMs_ = modelMs();
   memset(dtc_, 0, sizeof dtc_);
   if (s == Scenario::Faults) {
-    // HFMreader dtc_simulator scenarios: maf-stored (00=0x40 -> DTC 10),
+    // Synthetic scenarios: bank A 00=0x40 (DTC 10),
     // oxygen-stored (02=0x08 -> DTC 24), plus maf-current (10=0x40).
     dtc_[0x00] = 0x40;
     dtc_[0x02] = 0x08;

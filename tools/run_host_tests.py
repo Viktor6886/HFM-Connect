@@ -19,8 +19,7 @@ BUILD = ROOT / "build" / "host"
 
 # Platform-independent modules only (no Arduino.h).
 CORE = ["HfmSession.cpp", "TraceLog.cpp", "HfmDecode.cpp", "HfmIdent.cpp", "HfmDtc.cpp",
-        "HfmProfiles.cpp", "HfmLive.cpp", "HfmServices.cpp", "ServiceGuard.cpp", "SimEcu.cpp",
-        "ImpulseDecoder.cpp", "ReportBuilder.cpp"]
+        "HfmProfiles.cpp", "HfmLive.cpp", "HfmServices.cpp", "ServiceGuard.cpp", "ImpulseDecoder.cpp"]
 
 
 def compiler():

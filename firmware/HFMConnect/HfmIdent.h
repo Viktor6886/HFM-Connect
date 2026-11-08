@@ -1,5 +1,5 @@
 // HfmIdent.h - parsing of the 28-byte F0 identification block.
-// Layout per HFMreader ecu_identification.parse L56-70 (CS, REV 1.1 s.15):
+// Layout per REV 1.1 s.15:
 //   0-1   manufacturer code (2C 42 = BOSCH)
 //   2-11  ASCII identifier, shown as "XX XXXXX XXX"
 //   12-21 ASCII ECU part number (10 digits), shown as "013 545 13 32"
@@ -31,6 +31,11 @@ struct EcuIdent {
   char diagDisplay[8] = {0}; // "41/00"
   // Fingerprint used as stable profile key: part number + diag index.
   char fingerprint[24] = {0};
+  // F0:26 / F0:27 - ROM page and start address of the live-data descriptor
+  // table (read by the factory tester together with 00..1B). Optional.
+  bool extPresent = false;
+  uint8_t romPage = 0;
+  uint8_t descAddr = 0;
 };
 
 // Parses raw identification bytes. Returns false if the block is too short.

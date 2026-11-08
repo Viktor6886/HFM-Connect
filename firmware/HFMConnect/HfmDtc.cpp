@@ -6,7 +6,7 @@ namespace dtc {
 
 namespace {
 
-// HFM_BASE_DTC_NUMBERS (HFMreader dtc <module> L14, 152 entries, CS).
+// Base DTC numbers per bit position (REV 1.1 s.11, 152 entries).
 const uint16_t kBase[152] = {
     2,   3,   4,   6,   7,   9,   10,  11,  118, 12,  113, 14,  15,  17,  18,  20,  21,  22,  23,  24,
     25,  26,  27,  28,  29,  30,  31,  32,  33,  34,  35,  36,  37,  38,  39,  40,  41,  42,  43,  44,
@@ -90,6 +90,33 @@ const char* bankLabel(uint8_t bank, BankMapping m) {
   if (m == BankMapping::AStoredBCurrent) return bank == 0 ? "stored" : "current";
   if (m == BankMapping::ACurrentBStored) return bank == 0 ? "current" : "stored";
   return bank == 0 ? "bank_a" : "bank_b";
+}
+
+BankMapping inferBankMapping(const Decoded* items, uint16_t n) {
+  bool inA = false, inB = false;
+  for (uint16_t i = 0; i < n; i++) {
+    if (!items[i].entry || !(items[i].entry->flags & DTC_F_INTERMITTENT)) continue;
+    if (items[i].bank == 0) inA = true;
+    else if (items[i].bank == 1) inB = true;
+  }
+  if (inA && !inB) return BankMapping::AStoredBCurrent;
+  if (inB && !inA) return BankMapping::ACurrentBStored;
+  return BankMapping::Unknown;
+}
+
+const char* m111Text(uint16_t code) {
+  // Engine 111 Diagnostic Manual 09/00, 1.2 HFM-SFI 11/10..11/12.
+  switch (code) {
+    case 45: case 46: case 47: case 48: return "Не используется на M111 (4 цилиндра).";
+    case 55: return "Выход зажигания 1 / катушка T1/1: пропуски в цилиндре 1.";
+    case 56: return "Выход зажигания 1 / катушка T1/1: пропуски в цилиндре 4.";
+    case 58: return "Выход зажигания 2 / катушка T1/2: пропуски в цилиндре 2.";
+    case 59: return "Выход зажигания 2 / катушка T1/2: пропуски в цилиндре 3.";
+    case 61: case 62: case 63: return "Не используется на M111.";
+    case 68: case 69: return "Не используется на M111.";
+    case 93: case 94: case 95: case 96: return "Не используется на M111.";
+    default: return nullptr;
+  }
 }
 
 }  // namespace dtc

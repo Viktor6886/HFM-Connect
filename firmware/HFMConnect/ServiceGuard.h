@@ -2,7 +2,7 @@
 //
 // prepare(): evaluates capability, hardware interlock, ECU identity and
 //            operation preconditions; returns a plan with a one-time token
-//            (valid 20 s, HFMreader confirm window) and a confirmation phrase.
+//            (valid 20 s) and a confirmation phrase.
 // authorize(): re-checks everything at execution time; the UI cannot unlock
 //            anything by itself (REV 1.4 s.59.1, M14-16).
 // Any failed or unknown write result puts the guard into FAULT_STOP

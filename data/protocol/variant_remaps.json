@@ -1,4 +1,5 @@
 {
+ "description": "DTC variant remaps, applied sequentially in 'order' (REV 1.1 s.14).",
  "order": [
   "_GROUP_O_REMAP",
   "_DIAG49_BOSCH_H_REMAP",
@@ -224,23 +225,5 @@
   144,
   254,
   255
- ],
- "evidence": [
-  {
-   "file": "HFMreader.exe!PYZ.pyz!hfmreader.dtc",
-   "exe_sha256": "b5aa7e0ea27761802f2fcec41a197923502faf2dbc6722e3ede694ac0b31a2ed",
-   "module_code_sha256": "af10e4920f7183bdeff49166cea74347ff3651852741543e58572fdde697dd2d",
-   "exe_offset_of_module_blob": 820924,
-   "location": "<module> L14 @bc+48 HFM_BASE_DTC_NUMBERS (const[5]); decode_dtc_bytes L139-173",
-   "status": "CS"
-  },
-  {
-   "file": "HFMreader.exe!PYZ.pyz!hfmreader.dtc",
-   "exe_sha256": "b5aa7e0ea27761802f2fcec41a197923502faf2dbc6722e3ede694ac0b31a2ed",
-   "module_code_sha256": "af10e4920f7183bdeff49166cea74347ff3651852741543e58572fdde697dd2d",
-   "exe_offset_of_module_blob": 820924,
-   "location": "<module> L75-85 @bc+184..352 remap tables; apply_variant_remaps L89-104",
-   "status": "CS"
-  }
  ]
 }

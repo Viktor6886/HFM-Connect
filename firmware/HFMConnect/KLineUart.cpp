@@ -8,6 +8,12 @@ KLineUart::KLineUart(int uartNum, int txPin, int rxPin, bool txInv, bool rxInv)
 
 bool KLineUart::open() {
   if (open_) return true;
+  if (installed_) {
+    lineLow(false);
+    uart_flush_input(port_);
+    open_ = true;
+    return true;
+  }
   uart_config_t cfg = {};
   cfg.baud_rate = 9600;
   cfg.data_bits = UART_DATA_8_BITS;
@@ -24,15 +30,19 @@ bool KLineUart::open() {
   parity_ = UART_PARITY_DISABLE;
   lineLow(false);
   uart_flush_input(port_);
+  installed_ = true;
   open_ = true;
   return true;
 }
 
 void KLineUart::close() {
+  // The UART driver stays installed for the whole uptime: deleting it would
+  // release the TX pin and let the transceiver input float (possible K-Line
+  // pull-down glitch). "Closed" only means the session is not using it.
   if (!open_) return;
   lineLow(false);
-  uart_driver_delete(port_);
-  evq_ = nullptr;
+  setParity(UART_PARITY_DISABLE);
+  uart_flush_input(port_);
   open_ = false;
 }
 
@@ -76,14 +86,29 @@ LinkStatus KLineUart::wakeup(const LinkTiming& t, uint8_t& echo, uint8_t& sync) 
   const uint8_t aa = 0xAA;
   uart_write_bytes(port_, (const char*)&aa, 1);
   uart_wait_tx_done(port_, pdMS_TO_TICKS(50));
-  uint8_t buf[2] = {0, 0};
-  int n = uart_read_bytes(port_, buf, 2, pdMS_TO_TICKS(t.byteDeadlineMs));
+  // Collect up to 4 bytes and look for the AA (echo) 55 (ECU) pair; a stray
+  // 00/FF left by the BREAK edge on some transceivers is tolerated.
+  uint8_t buf[4] = {0, 0, 0, 0};
+  int n = 0;
+  uint32_t t0 = millis();
+  while (n < 4 && millis() - t0 < t.byteDeadlineMs) {
+    int r = uart_read_bytes(port_, buf + n, 1, pdMS_TO_TICKS(20));
+    if (r == 1) {
+      n++;
+      if (n >= 2 && buf[n - 2] == 0xAA && buf[n - 1] == 0x55) break;
+    }
+  }
   drainEvents();
+  for (int i = 0; i + 1 < n; i++) {
+    if (buf[i] == 0xAA && buf[i + 1] == 0x55) {
+      echo = 0xAA;
+      sync = 0x55;
+      return LinkStatus::Ok;
+    }
+  }
   if (n >= 1) echo = buf[0];
   if (n >= 2) sync = buf[1];
-  if (n < 2) return LinkStatus::NoSync;
-  if (buf[0] != 0xAA || buf[1] != 0x55) return LinkStatus::NoSync;
-  return LinkStatus::Ok;
+  return LinkStatus::NoSync;
 }
 
 LinkStatus KLineUart::exchange(uint8_t tx, Parity p, uint16_t deadlineMs, uint8_t& echo, uint8_t& resp) {

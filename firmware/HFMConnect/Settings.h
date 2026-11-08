@@ -4,10 +4,11 @@
 #include <Arduino.h>
 
 struct Settings {
-  // diagnostic source: 0 = K-Line hardware, 1 = built-in simulator (synthetic)
-  uint8_t source = 0;
-  uint8_t simScenario = 0;          // SimEcu::Scenario
-  bool experimentalReads = false;   // unknown-ECU reads, HHT recipes, VIN, ext DTC
+  // K-Line timing (defaults = REV 1.1 profile; adjustable for a given adapter/ECU)
+  uint16_t breakMs = 177;
+  uint16_t postBreakMs = 214;
+  uint16_t byteTimeoutMs = 750;
+  bool experimentalReads = false;   // unknown-ECU reads, extended recipes, VIN, ext DTC
   bool engineerMode = false;        // REK-quarantined service ops (reference ECU only)
   bool keepAlive = true;            // idle F0:00 read while connected
   bool impulseEnabled = false;      // pulse-counter mode (grounds the line!)

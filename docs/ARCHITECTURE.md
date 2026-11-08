@@ -11,7 +11,6 @@
                                         │ DiagEngine (FreeRTOS task, core 0) — владеет K-Line│
                                         │   ├─ HfmSession ── политика команд, эхо/ACK      │
                                         │   │     └─ ByteLink ◄─ KLineUart (UART1)         │
-                                        │   │                 ◄─ SimEcu (симулятор)        │
                                         │   ├─ HfmIdent / HfmProfiles (профиль, capability)│
                                         │   ├─ HfmDtc (+ DtcCatalog)                       │
                                         │   ├─ HfmLive (+ HfmDecode, нормы)                │
@@ -34,7 +33,7 @@
 | Транзакции | HfmSession, TraceLog | ByteLink | любая |
 | Интерпретация | HfmDecode, HfmIdent, HfmDtc, DtcCatalog, HfmProfiles, HfmLive | Типы | любая |
 | Сервисы | HfmServices, ServiceGuard, ImpulseDecoder | Транзакции, Интерпретация | любая |
-| Симулятор | SimEcu | ByteLink | любая |
+| Тестовые модели | SimEcu, ReplayLink (только `tests/host/`) | ByteLink | ПК |
 | Аппаратура | KLineUart | ByteLink, ESP-IDF uart | Arduino |
 | Приложение | DiagEngine, WebApi, NetManager, Settings, HFMConnect.ino | всё | Arduino |
 

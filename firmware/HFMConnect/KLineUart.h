@@ -9,7 +9,7 @@
 //  * After each TX the receiver is switched to EVEN parity so that both
 //    10-bit (8N1) and 11-bit (8S1/8E1) ECU frames are received; parity and
 //    framing error events are counted and exposed as evidence, never used to
-//    discard bytes (HFMreader ignores RX parity as well).
+//    discard bytes (RX parity is not part of the protocol check).
 #pragma once
 #ifdef ARDUINO
 #include <Arduino.h>
@@ -50,6 +50,7 @@ class KLineUart : public ByteLink {
   int tx_, rx_;
   bool txInv_, rxInv_;
   bool open_ = false;
+  bool installed_ = false;
   QueueHandle_t evq_ = nullptr;
   uart_parity_t parity_ = UART_PARITY_DISABLE;
   uint32_t parityErr_ = 0, frameErr_ = 0, breaks_ = 0;

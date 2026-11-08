@@ -47,7 +47,7 @@
 #define HFM_ENGINE_TASK_CORE 0
 #define HFM_ENGINE_TASK_STACK 12288
 #define HFM_KEEPALIVE_MS 1000       // idle read F0:00 while connected (0 = off)
-#define HFM_LIVE_MIN_CYCLE_MS 100   // HFMreader reader_service interval 0.1 s
+#define HFM_LIVE_MIN_CYCLE_MS 100   // polling interval 0.1 s (REV 1.1)
 #define HFM_RECORD_FLUSH_MS 2000
 
 // ---- Logging --------------------------------------------------------------------
