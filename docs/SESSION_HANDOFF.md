@@ -38,7 +38,7 @@ ByteLink.h, Config.h, DtcCatalog.h, WebUiAssets.h; `webui/app.js`; `tests/host/*
 | Host-тесты (Windows, zig c++) | 42 теста, 591 проверка, 0 ошибок |
 | check_tables.py | все таблицы = `data/protocol/` |
 | build_webui.py --check, node --check | OK |
-| Компиляция ESP32-S3 | см. раздел 6 |
+| Компиляция ESP32-S3 (CI run 42508102461) | успешно, 0 предупреждений, 1 112 353 Б (84 % APP), RAM 78 КБ |
 | **На устройстве ESP32-S3** | **не запускалось** |
 | **На реальном ЭБУ** | **не проводилось** |
 
