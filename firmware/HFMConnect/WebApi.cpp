@@ -71,7 +71,12 @@ static void writeIdent(JsonWriter& w, const EngineState& s) {
   w.key("profile").beginObject();
   w.kv("id", p.id).kv("name", p.name).kv("resolved", p.resolved).kv("reference_ecu", p.referenceEcu);
   w.kv("bank_mapping", dtc::bankMappingCode(p.bankMapping)).kv("bank_mapping_conf", conf(p.bankMappingConf));
-  w.kv("diag_index_variant", (int)p.variant.diagIndex);
+  const DtcVariantMap* vm = dtc::selectMap(p.variant);
+  w.key("variant").beginObject();
+  w.key("diag_raw").hex(p.variant.diagRaw);
+  w.kv("vendor", p.variant.manufacturer == 1 ? "B" : "V").kv("cylinders", (unsigned)p.variant.cylinders);
+  w.kv("dtc_map", vm ? vm->id : "GENERIC").endObject();
+  w.kv("vdo_candidate", p.vdoCandidate);
   w.key("caps").beginArray();
   for (uint8_t f = 0; f < prof::F_COUNT; f++) {
     w.beginObject();
@@ -139,6 +144,10 @@ static void writeDtc(JsonWriter& w, const EngineState& s) {
   w.kv("bank_mapping_conf", effConf);
   w.kv("bank_mapping_basis", effBasis);
   w.kv("m111_texts", m111);
+  const DtcVariantMap* vm = dtc::selectMap(s.profile.variant);
+  w.kv("dtc_map", vm ? vm->id : "GENERIC").kv("cylinders", (unsigned)s.profile.variant.cylinders);
+  w.kv("vendor", s.profile.variant.manufacturer == 1 ? "B" : "V");
+  w.key("diag_raw").hex(s.profile.variant.diagRaw);
   if (d.valid) {
     w.kv("age_ms", (uint32_t)(millis() - d.tMs));
     w.key("bank_a").hexBytes(d.fm.bankA, 16);
@@ -153,6 +162,7 @@ static void writeDtc(JsonWriter& w, const EngineState& s) {
       w.key("index").hex(x.index);
       w.kv("bit", (unsigned)x.bit).kv("pos", (unsigned)x.position);
       w.kv("base", (unsigned)x.baseCode).kv("code", (unsigned)x.code).kv("remapped", x.remapped);
+      w.kv("map", x.mapId ? x.mapId : "GENERIC");
       const char* alt = m111 ? dtc::m111Text(x.code) : nullptr;
       if (x.entry) {
         static const char* const srcNames[] = {"oem", "reference", "reconcile", "unverified", "app_label"};
@@ -161,7 +171,9 @@ static void writeDtc(JsonWriter& w, const EngineState& s) {
         w.kv("intermittent", (x.entry->flags & DTC_F_INTERMITTENT) != 0);
         w.kv("not_w124", (x.entry->flags & DTC_F_NOT_W124) != 0);
       } else {
-        w.kv("text", "Код вне каталога — RAW (без догадки)").kv("source", "unknown");
+        w.kv("text", x.code ? "Код вне каталога — RAW (без догадки)"
+                            : "Позиция не используется в заводской карте этого варианта ЭБУ — RAW")
+            .kv("source", "unknown");
         w.kv("intermittent", false);
       }
       w.endObject();
@@ -286,6 +298,13 @@ static void writeStatus(JsonWriter& w, const EngineState& s) {
   w.kv("connected_s", s.session == SessionState::Ready ? (uint32_t)((millis() - s.connectedAtMs) / 1000) : 0u);
   w.kv("tx", s.txCount).kv("errors", s.errCount);
   w.kv("parity_errors", s.parityErrors).kv("frame_errors", s.frameErrors);
+  w.key("adapter").beginObject().kv("host_ready", s.adapter.hostReady).kv("present", s.adapter.present);
+  w.kv("configured", s.adapter.configured).kv("chip", s.adapter.chip);
+  char vp[12];
+  snprintf(vp, sizeof vp, "%04X:%04X", s.adapter.vid, s.adapter.pid);
+  w.kv("vid_pid", vp).kv("attach_count", s.adapter.attachCount).kv("usb_errors", s.adapter.usbErrors);
+  w.kv("breaks", s.adapter.breaks).kv("overruns", s.adapter.overruns).endObject();
+  w.kv("auto_connect", AppSettings.autoConnect).kv("auto_msg", s.autoMsg).kv("auto_attempts", s.autoAttempts);
   w.kv("interlock", s.interlock);
   if (s.batteryV >= 0) w.kv("battery_v", (double)s.batteryV, 2); else w.kvNull("battery_v");
   w.kv("ecu", s.profile.name).kv("ecu_resolved", s.profile.resolved).kv("ecu_present", s.ident.present);
@@ -503,7 +522,7 @@ static void hSettingsGet() {
   w.kv("break_ms", (unsigned)s.breakMs).kv("post_break_ms", (unsigned)s.postBreakMs);
   w.kv("byte_timeout_ms", (unsigned)s.byteTimeoutMs);
   w.kv("experimental_reads", s.experimentalReads).kv("engineer_mode", s.engineerMode);
-  w.kv("keep_alive", s.keepAlive).kv("impulse_enabled", s.impulseEnabled).kv("trace_capture", s.traceCapture);
+  w.kv("auto_connect", s.autoConnect).kv("keep_alive", s.keepAlive).kv("impulse_enabled", s.impulseEnabled).kv("trace_capture", s.traceCapture);
   w.kv("battery_manual_confirm", s.batteryManualConfirm);
   w.kv("vehicle_idx", (int)s.vehicleIdx).kv("production_ym", s.productionYm);
   w.kv("vin", s.maskVin && s.vin[0] ? "***" : s.vin).kv("mask_vin", s.maskVin);
@@ -531,6 +550,7 @@ static void hSettingsPost() {
   s.experimentalReads = argBool("experimental_reads", s.experimentalReads);
   s.engineerMode = argBool("engineer_mode", s.engineerMode);
   s.keepAlive = argBool("keep_alive", s.keepAlive);
+  s.autoConnect = argBool("auto_connect", s.autoConnect);
   s.impulseEnabled = argBool("impulse_enabled", s.impulseEnabled);
   s.traceCapture = argBool("trace_capture", s.traceCapture);
   s.batteryManualConfirm = argBool("battery_manual_confirm", s.batteryManualConfirm);

@@ -302,9 +302,9 @@ R.connect = async () => {
     <h2 class="section">Порядок подключения</h2>
     <div class="list steps">
       <div class="step"><div class="num"></div><div><b>Зажигание выключено.</b> Подключите кабель к разъёму X11/4 (W124: 16-конт., контакт 8 — HFM; 38-конт.: контакт 4 — HFM). <span class="muted">Контакт 16 на W124 X11/4 — цепь 15 (зажигание), не OBD-II.</span></div></div>
-      <div class="step"><div class="num"></div><div><b>Масса и питание.</b> Масса — контакт 1. Питание трансивера +12 В — по схеме конкретного кузова (16 / 3).</div></div>
+      <div class="step"><div class="num"></div><div><b>Адаптер.</b> USB K-Line адаптер (FTDI) — в разъём <b>USB (OTG)</b> ESP32-S3; на этот разъём должно подаваться 5 В (VBUS). Прошивка и журнал Serial — через разъём UART/COM. Масса — контакт 1, питание адаптера +12 В — по схеме кузова.</div></div>
       <div class="step"><div class="num"></div><div><b>Зажигание ВКЛ, двигатель не запущен.</b> Лампа CHECK ENGINE может гореть во время сеанса — это штатная индикация связи (MBUSA P-SI-14.00/14).</div></div>
-      <div class="step"><div class="num"></div><div><b>Подключить.</b> BREAK 177 мс → пауза 214 мс → TX AA → RX AA 55 → чтение F0 00–1B (28 байт).</div></div>
+      <div class="step"><div class="num"></div><div><b>Подключение автоматическое.</b> После загрузки и при появлении адаптера: BREAK 177 мс → пауза 214 мс → TX AA → RX AA 55 → чтение F0 00–1B (28 байт). Связь удерживается чтением F0:00 каждые 0,7 с. Кнопка «Отключить» приостанавливает автоподключение до нажатия «Подключить».</div></div>
     </div>
     <h2 class="section">RAW TX/RX журнал</h2>
     <div class="card"><div class="flex between" style="padding:10px 16px"><span class="small muted" id="trCount"></span>
@@ -321,10 +321,14 @@ R.connect = async () => {
     $('#connBtns').innerHTML = s.session === 'ready'
       ? `<button class="btn sec" onclick="job('identify',{},this)">Повторить идентификацию</button><button class="btn red" onclick="job('disconnect',{},this)">Отключить</button>`
       : `<button class="btn full" onclick="job('connect',{},this)">Подключить</button>`;
+    const a = s.adapter || {};
     $('#linkBox').innerHTML = kvTable([
+      ['Адаптер', a.present ? `${esc(a.chip)} · ${esc(a.vid_pid)}${a.configured ? '' : ' · не настроен'}` : (a.host_ready ? 'не обнаружен (USB OTG, нужно 5 В VBUS)' : 'USB-хост не запущен')],
+      ['Автоподключение', s.auto_connect ? esc(s.auto_msg || 'включено') + (s.auto_attempts ? ` · попыток ${s.auto_attempts}` : '') : 'выключено в настройках'],
+      ['USB: подключений / ошибок', `${a.attach_count || 0} / ${a.usb_errors || 0}`],
       ['Сеанс', s.session], ['Последняя ошибка', s.last_error], ['Транспорт', s.transport],
       ['Передано байтов', s.tx], ['Ошибок протокола', s.errors],
-      ['UART: ошибки паритета / кадра', `${s.parity_errors} / ${s.frame_errors}`],
+      ['Линия: ошибки паритета / кадра', `${s.parity_errors} / ${s.frame_errors}`],
       ['Время на связи', s.connected_s + ' с'], ['Ключ WRITE-EN', s.interlock ? 'замкнут' : 'разомкнут'],
       ['Напряжение', s.battery_v == null ? 'АЦП не установлен' : s.battery_v.toFixed(2) + ' В']]);
   }, 1000);
@@ -401,13 +405,14 @@ R.dtc = async () => {
     $('#dtcBox').innerHTML = `
       <div class="note ${d.bank_mapping === 'UNKNOWN' ? 'warn' : 'info'}">Банки F1: <b>${esc({A_STORED_B_CURRENT: 'A = сохранённые, B = текущие', A_CURRENT_B_STORED: 'A = текущие, B = сохранённые', UNKNOWN: 'не определены (Банк A/B)'}[d.bank_mapping] || d.bank_mapping)}</b> ${badge(d.bank_mapping_conf)}<br><span class="small">${esc(d.bank_mapping_basis || '')}</span></div>
       ${groups.current ? '<div class="note mt small">Текущие неисправности имеют смысл только при включённом зажигании и <b>работающем</b> двигателе; при неработающем двигателе часть из них появляется закономерно.</div>' : ''}
+      <div class="note mt small ${d.dtc_map === 'GENERIC' ? 'warn' : ''}">Карта битов: <b>${esc(d.dtc_map || 'GENERIC')}</b> (${d.cylinders ? d.cylinders + ' цил.' : 'число цилиндров неизвестно'}, ${d.vendor === 'B' ? 'Bosch' : 'VDO/не Bosch'}, diag ${esc(d.diag_raw || '')})${d.dtc_map === 'GENERIC' ? ' — выберите автомобиль на главной странице, чтобы применить заводскую карту для 4/6 цилиндров.' : ''}</div>
       ${d.m111_texts ? '<div class="note mt small">Тексты кодов 045–069/093–096 показаны по заводской таблице Engine 111 (4 цилиндра).</div>' : ''}
       ${d.items.length === 0 ? '<div class="card pad mt"><b style="color:var(--green)">Установленных битов нет.</b><p class="small muted" style="margin:6px 0 0">Отсутствие битов не доказывает исправность системы — проверьте также Live Data и модуль DM (отдельно).</p></div>' : ''}
       ${order.map(k => `<h2 class="section">${names[k]} · ${groups[k].length}</h2><div class="list">${groups[k].map(dtcRow).join('')}</div>`).join('')}
       ${ints.length ? `<p class="foot">Периодические (перемежающийся контакт) отмечены оранжевым: ${ints.length}. По OEM они фиксируются при 5 появлениях за поездку.</p>` : ''}
       <h2 class="section">RAW битовая карта</h2>
       <div class="card pad">${grid('F1 00–0F (банк A)', esc(d.bank_a))}${grid('F1 10–1F (банк B)', esc(d.bank_b))}${d.ext_valid ? grid('F1 30–32 / 40–42 (эксп.)', esc(d.ext)) : ''}
-        <p class="small muted">Позиция бита = (индекс mod 16)·8 + бит + 1 → базовый DTC → ремап по diag index. Коды вне каталога показываются RAW.</p></div>
+        <p class="small muted">Позиция бита = (индекс mod 16)·8 + бит + 1 → код по заводской карте варианта (цилиндры, Bosch/VDO, diag F0:26); без карты — базовая таблица с ремапом по позиции. Коды вне каталога и неиспользуемые позиции показываются RAW.</p></div>
       <h2 class="section">Справка</h2>
       <div class="note">HFM хранит неисправности при отключении АКБ; исчезнувшие стираются автоматически за 19 поездок (WIS GF07.51). Коды P0xxx/P1xxx относятся к отдельному модулю DM N59/1 и здесь не отображаются.</div>`;
   };
@@ -418,8 +423,8 @@ R.dtc = async () => {
 };
 
 function dtcRow(x) {
-  return `<div class="dtc"><div class="code ${x.intermittent ? 'int' : ''}">${String(x.code).padStart(3, '0')}</div>
-    <div class="grow"><div>${esc(x.text)}</div><div class="small muted">бит ${x.pos} (F1 ${x.index}, b${x.bit})${x.remapped ? ` · ремап ${x.base}→${x.code}` : ''} · ${esc(x.source)}${x.not_w124 ? ' · не для W124' : ''}</div></div></div>`;
+  return `<div class="dtc"><div class="code ${x.intermittent ? 'int' : ''}">${x.code ? String(x.code).padStart(3, '0') : '—'}</div>
+    <div class="grow"><div>${esc(x.text)}</div><div class="small muted">бит ${x.pos} (F1 ${x.index}, b${x.bit})${x.remapped ? ` · базовый ${x.base}→${x.code || '—'}` : ''}${x.map ? ' · карта ' + esc(x.map) : ''} · ${esc(x.source)}${x.not_w124 ? ' · не для W124' : ''}</div></div></div>`;
 }
 
 async function renderImpulse() {
@@ -778,7 +783,8 @@ R.settings = async () => {
     <h2 class="section">Диагностика</h2>
     <div class="list">
       ${sw('experimental_reads', 'Экспериментальное чтение', 'Чтение у нераспознанных ЭБУ, расширенные рецепты (скорость, нижний O2, CTP/T50), VIN F9, биты DTC 129–152. Уровень ГИП.')}
-      ${sw('keep_alive', 'Keep-alive (F0:00)', 'Безопасное чтение раз в 1 с при простое вместо «10 00»')}
+      ${sw('auto_connect', 'Автоподключение', 'Подключаться к ЭБУ автоматически после загрузки и при подключении адаптера; повтор 2–15 с')}
+      ${sw('keep_alive', 'Keep-alive (F0:00)', 'Безопасное чтение раз в 0,7 с при простое вместо «10 00»')}
       ${sw('trace_capture', 'RAW журнал TX/RX', 'Кольцевой буфер в ОЗУ (1536 событий)')}
       ${sw('mask_vin', 'Скрывать VIN в отчётах', '')}
     </div>

@@ -1,7 +1,8 @@
 # CLAUDE.md — постоянные инструкции для Claude Code
 
 Проект: **HFM Connect** — диагностика Mercedes-Benz Bosch HFM-SFI (M104/M111) по K-Line на
-ESP32-S3 с внешним трансивером и автономным WebUI. Язык общения и документации — русский;
+ESP32-S3 с USB K-Line адаптером FTDI (USB-хост, по умолчанию) или внешним трансивером
+и автономным WebUI. Язык общения и документации — русский;
 идентификаторы кода — английские.
 
 ## Перед началом работы (обязательно)
@@ -30,6 +31,9 @@ ESP32-S3 с внешним трансивером и автономным WebUI.
 - Платформонезависимое ядро (`Hfm*.cpp`, `TraceLog`, `ServiceGuard`, `ImpulseDecoder`)
   **не включает Arduino.h**; Arduino-код — в `#ifdef ARDUINO`.
 - Только `DiagEngine` владеет K-Line; HTTP — через `submit(Job)` и снимки под `lock()`.
+- Транспорт: `FtdiLink` (USB-хост, `HFM_TRANSPORT_FTDI 1`) или `KLineUart`; оба — `ByteLink`.
+  Сборка с FTDI: «USB CDC On Boot: Disabled», «USB Mode: Hardware CDC and JTAG» (D-021).
+- Коды DTC — по заводской карте варианта (`dtc::selectMap`), ремапы — по позиции (D-022).
 - Внешние библиотеки Arduino не добавлять (D-002). JSON — `JsonWriter`.
 - Главный файл прошивки: `firmware/HFMConnect/HFMConnect.ino`; модули — рядом (Arduino IDE).
 - После правки `webui/*` — `python tools/build_webui.py` (CI проверяет актуальность).

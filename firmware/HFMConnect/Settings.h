@@ -11,6 +11,7 @@ struct Settings {
   bool experimentalReads = false;   // unknown-ECU reads, extended recipes, VIN, ext DTC
   bool engineerMode = false;        // REK-quarantined service ops (reference ECU only)
   bool keepAlive = true;            // idle F0:00 read while connected
+  bool autoConnect = true;          // connect automatically when the adapter is present
   bool impulseEnabled = false;      // pulse-counter mode (grounds the line!)
   bool traceCapture = true;         // RAW TX/RX journal in RAM
   bool batteryManualConfirm = false;// operator confirmed >= 11 V (no ADC); reset on reboot

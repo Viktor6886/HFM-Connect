@@ -41,7 +41,7 @@ jobs:
         run: |
           set -o pipefail
           mkdir -p build
-          arduino-cli compile --fqbn esp32:esp32:esp32s3:PartitionScheme=default,CDCOnBoot=cdc \
+          arduino-cli compile --fqbn esp32:esp32:esp32s3:PartitionScheme=default,CDCOnBoot=default \
             --warnings default --build-path build/fw firmware/HFMConnect 2>&1 | tee build/compile.log
       - name: Upload firmware binary
         uses: actions/upload-artifact@v4

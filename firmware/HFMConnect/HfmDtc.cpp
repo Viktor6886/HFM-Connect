@@ -6,7 +6,7 @@ namespace dtc {
 
 namespace {
 
-// Base DTC numbers per bit position (REV 1.1 s.11, 152 entries).
+// Generic base DTC numbers per bit position (REV 1.1 s.11, 152 entries).
 const uint16_t kBase[152] = {
     2,   3,   4,   6,   7,   9,   10,  11,  118, 12,  113, 14,  15,  17,  18,  20,  21,  22,  23,  24,
     25,  26,  27,  28,  29,  30,  31,  32,  33,  34,  35,  36,  37,  38,  39,  40,  41,  42,  43,  44,
@@ -29,25 +29,65 @@ const Pair kDiag50to55[] = {{68, 145},  {69, 146},  {70, 147},  {93, 148},  {94,
                             {136, 160}, {140, 161}, {148, 162}, {149, 158}, {151, 163}, {152, 164}};
 
 template <size_t N>
-uint16_t mapGet(const Pair (&m)[N], uint16_t v) {
+uint16_t mapGet(const Pair (&m)[N], uint16_t key, uint16_t dflt) {
   for (size_t i = 0; i < N; i++)
-    if (m[i].from == v) return m[i].to;
-  return v;
+    if (m[i].from == key) return m[i].to;
+  return dflt;
 }
-
-char lower(char c) { return (c >= 'A' && c <= 'Z') ? (char)(c + 32) : c; }
 
 }  // namespace
 
 uint16_t baseForPosition(uint16_t pos) { return (pos >= 1 && pos <= 152) ? kBase[pos - 1] : 0; }
 
-uint16_t applyRemaps(uint16_t value, const Variant& v) {
-  char g = lower(v.engineGroup);
-  if (g == 'o') value = mapGet(kGroupO, value);
-  if (v.diagIndex == 49 && v.manufacturer == 1 && g == 'h') value = mapGet(kDiag49BoschH, value);
-  if (v.diagIndex >= 49) value = mapGet(kDiag49Plus, value);
-  if (v.diagIndex >= 50 && v.diagIndex <= 55) value = mapGet(kDiag50to55, value);
-  return value;
+uint16_t applyRemaps(uint16_t pos, uint16_t code, const Variant& v) {
+  // Keys are bit positions: the factory tester maps confirm this (e.g. 6-cyl
+  // Bosch, ident >= 'I': position 35 -> 045, 39 -> 047, 41 -> 039).
+  uint16_t out = code;
+  if (v.cylinders == 4) out = mapGet(kGroupO, pos, out);
+  if (v.diagRaw == 0x49 && v.manufacturer == 1 && v.cylinders != 4) out = mapGet(kDiag49BoschH, pos, out);
+  if (v.diagRaw >= 0x49) out = mapGet(kDiag49Plus, pos, out);
+  if (v.diagRaw >= 0x50 && v.diagRaw <= 0x55) out = mapGet(kDiag50to55, pos, out);
+  return out;
+}
+
+const DtcVariantMap* selectMap(const Variant& v) {
+  if (v.cylinders != 4 && v.cylinders != 6) return nullptr;
+  char vend = v.manufacturer == 1 ? 'B' : 'V';
+  uint8_t d = v.diagRaw;
+  for (uint8_t i = 0; i < DTC_VARIANT_MAP_COUNT; i++) {
+    const DtcVariantMap& m = DTC_VARIANT_MAPS[i];
+    if (m.cylinders != v.cylinders) continue;
+    bool vendOk = false;
+    for (const char* c = m.vendors; *c; c++)
+      if (*c == vend) vendOk = true;
+    if (!vendOk) continue;
+    bool ok = false;
+    switch (m.diag) {
+      case DIAG_LT_I: ok = d < 0x49; break;
+      case DIAG_I_TO_P: ok = d >= 0x49 && d < 0x50; break;
+      case DIAG_GE_P: ok = d >= 0x50; break;
+      default: ok = d >= 0x49; break;  // DIAG_GE_I
+    }
+    // A specific ">= 'P'" map wins over the general ">= 'I'" map.
+    if (ok && m.diag == DIAG_GE_I && d >= 0x50) {
+      for (uint8_t k = 0; k < DTC_VARIANT_MAP_COUNT; k++) {
+        const DtcVariantMap& p = DTC_VARIANT_MAPS[k];
+        if (p.diag == DIAG_GE_P && p.cylinders == v.cylinders) {
+          for (const char* c = p.vendors; *c; c++)
+            if (*c == vend) return &p;
+        }
+      }
+    }
+    if (ok) return &m;
+  }
+  return nullptr;
+}
+
+uint16_t codeForPosition(uint16_t pos, const Variant& v) {
+  if (pos < 1 || pos > 152) return 0;
+  const DtcVariantMap* m = selectMap(v);
+  if (m) return m->pos[pos - 1];
+  return applyRemaps(pos, kBase[pos - 1], v);
 }
 
 const DtcCatalogEntry* lookup(uint16_t code) {
@@ -78,9 +118,11 @@ uint16_t decodeBank(const uint8_t* bytes16, uint8_t index0, const Variant& v, De
       d.bit = bit;
       d.position = (uint16_t)(i * 8 + bit + 1);
       d.baseCode = baseForPosition(d.position);
-      d.code = applyRemaps(d.baseCode, v);
+      const DtcVariantMap* m = selectMap(v);
+      d.mapId = m ? m->id : "GENERIC";
+      d.code = m ? m->pos[d.position - 1] : applyRemaps(d.position, d.baseCode, v);
       d.remapped = d.code != d.baseCode;
-      d.entry = lookup(d.code);
+      d.entry = d.code ? lookup(d.code) : nullptr;
     }
   }
   return n;

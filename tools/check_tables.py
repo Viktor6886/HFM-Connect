@@ -56,12 +56,20 @@ def main() -> int:
             print(f"MISMATCH {cname}")
             bad += 1
 
-    cat = FW / "DtcCatalog.h"
-    before = cat.read_bytes()
+    gen = [FW / "DtcCatalog.h", FW / "DtcVariantMaps.h"]
+    before = [g.read_bytes() if g.exists() else b"" for g in gen]
     subprocess.run([sys.executable, str(ROOT / "tools" / "gen_dtc_catalog.py")], check=True, capture_output=True)
-    if cat.read_bytes() != before:
-        print("DtcCatalog.h was stale (regenerated)")
-        bad += 1
+    for g, b in zip(gen, before):
+        if g.read_bytes() != b:
+            print(f"{g.name} was stale (regenerated)")
+            bad += 1
+    # every non-zero code of the factory variant maps must exist in the catalog
+    import csv
+    codes = {int(r["code"]) for r in csv.DictReader((DATA / "dtc.csv").open(encoding="utf-8-sig"))}
+    vm = json.loads((DATA / "dtc_variant_maps.json").read_text(encoding="utf-8"))["maps"]
+    missing = sorted({c for m in vm.values() for c in m["positions"] if c and c not in codes})
+    if missing:
+        print("variant map codes missing in catalog:", missing)
     print("tables OK" if not bad else f"{bad} mismatch(es)")
     return 1 if bad else 0
 

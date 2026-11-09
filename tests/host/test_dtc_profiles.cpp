@@ -1,3 +1,4 @@
+#include <string>
 #include "HfmDtc.h"
 #include "HfmIdent.h"
 #include "HfmProfiles.h"
@@ -36,26 +37,71 @@ TEST(dtc_base_table_edges) {
   CHECK_EQ(dtc::baseForPosition(153), 0);
 }
 
-TEST(dtc_remaps_are_sequential) {
+TEST(dtc_remaps_are_positional) {
+  dtc::Variant v;  // cylinders unknown -> generic table + positional overrides
+  CHECK_EQ(dtc::codeForPosition(70, v), dtc::baseForPosition(70));  // 0x41: no override
+  v.diagRaw = 0x49;  // 'I', Bosch, not 4-cyl
+  CHECK_EQ(dtc::codeForPosition(35, v), 45);
+  CHECK_EQ(dtc::codeForPosition(41, v), 39);
+  CHECK_EQ(dtc::codeForPosition(70, v), 122);
+  v.diagRaw = 0x52;
+  CHECK_EQ(dtc::codeForPosition(70, v), 147);  // 50..55 table applied after 49+
+  CHECK_EQ(dtc::codeForPosition(68, v), 145);
+  CHECK_EQ(dtc::codeForPosition(35, v), dtc::baseForPosition(35));  // Bosch-h only at exactly 'I'
+  // Keys are positions: position 35 is not remapped by a code-keyed lookup of its base code.
+  v.diagRaw = 0x41;
+  v.cylinders = 0;
+  CHECK_EQ(dtc::applyRemaps(51, dtc::baseForPosition(51), v), dtc::baseForPosition(51));
+}
+
+TEST(dtc_factory_map_selection) {
   dtc::Variant v;
-  CHECK_EQ(dtc::applyRemaps(70, v), 70);  // default 41: no remap
-  v.diagIndex = 49;
-  CHECK_EQ(dtc::applyRemaps(35, v), 45);
-  CHECK_EQ(dtc::applyRemaps(70, v), 122);
-  v.diagIndex = 52;
-  CHECK_EQ(dtc::applyRemaps(70, v), 122);  // 49+ applies first, 50-55 map has no 122
-  CHECK_EQ(dtc::applyRemaps(68, v), 145);
-  CHECK_EQ(dtc::applyRemaps(35, v), 35);   // Bosch-h map only at exactly 49
-  v.diagIndex = 41;
-  v.engineGroup = 'o';
-  CHECK_EQ(dtc::applyRemaps(51, v), 55);
+  CHECK(dtc::selectMap(v) == nullptr);  // cylinders unknown
+  v.cylinders = 6; v.manufacturer = 1; v.diagRaw = 0x41;
+  CHECK(std::string(dtc::selectMap(v)->id) == "C8EE");
+  v.manufacturer = 0;
+  CHECK(std::string(dtc::selectMap(v)->id) == "C8EE");
+  v.cylinders = 4;
+  CHECK(std::string(dtc::selectMap(v)->id) == "C86E");
+  v.diagRaw = 0x49;
+  CHECK(std::string(dtc::selectMap(v)->id) == "C96E");  // 4-cyl VDO 'I'..'O'
+  v.diagRaw = 0x50;
+  CHECK(std::string(dtc::selectMap(v)->id) == "CB9E");  // 4-cyl VDO >= 'P'
+  v.manufacturer = 1;
+  CHECK(std::string(dtc::selectMap(v)->id) == "CA9E");  // 4-cyl Bosch >= 'I'
+  v.cylinders = 6;
+  CHECK(std::string(dtc::selectMap(v)->id) == "CB1E");  // 6-cyl Bosch >= 'I'
+  v.manufacturer = 0;
+  CHECK(std::string(dtc::selectMap(v)->id) == "CA06");  // 6-cyl VDO >= 'I'
+  // 6-cyl Bosch >= 'I': positions 35/39/41 -> 045/047/039 (factory map)
+  v.manufacturer = 1; v.diagRaw = 0x4C;
+  CHECK_EQ(dtc::codeForPosition(35, v), 45);
+  CHECK_EQ(dtc::codeForPosition(39, v), 47);
+  CHECK_EQ(dtc::codeForPosition(41, v), 39);
+  // Unused position in a map decodes as code 0 (RAW, no guess).
+  v.cylinders = 4; v.diagRaw = 0x41;
+  CHECK_EQ(dtc::codeForPosition(9, v), 0);
+  uint8_t bank[16] = {0};
+  bank[1] = 0x01;  // position 9
+  dtc::Decoded out[4];
+  CHECK_EQ(dtc::decodeBank(bank, 0x00, v, out, 4), 1);
+  CHECK_EQ(out[0].code, 0);
+  CHECK(out[0].entry == nullptr);
+  CHECK(std::string(out[0].mapId) == "C86E");
+}
+
+TEST(profile_cylinders_from_engine) {
+  CHECK_EQ(prof::cylindersForEngine("104.992"), 6);
+  CHECK_EQ(prof::cylindersForEngine("111.961"), 4);
+  CHECK_EQ(prof::cylindersForEngine("119.970"), 0);
+  CHECK_EQ(prof::cylindersForEngine(nullptr), 0);
 }
 
 TEST(dtc_catalog_lookup) {
   CHECK(dtc::lookup(10) != nullptr);
   CHECK(dtc::lookup(164) != nullptr);
   CHECK(dtc::lookup(239) == nullptr);
-  CHECK_EQ(DTC_CATALOG_COUNT, 163);
+  CHECK_EQ(DTC_CATALOG_COUNT, 165);
   for (uint16_t i = 1; i < DTC_CATALOG_COUNT; i++) CHECK(DTC_CATALOG[i - 1].code < DTC_CATALOG[i].code);
 }
 
@@ -113,7 +159,8 @@ TEST(profile_generic_bosch_blocks_writes_even_in_engineer_mode) {
   CHECK(p.caps[prof::F_DTC_CLEAR].conf == Confidence::BLOCK);
   CHECK(p.bankMapping == dtc::BankMapping::AStoredBCurrent);
   CHECK(p.bankMappingConf == Confidence::GIP);
-  CHECK_EQ(p.variant.diagIndex, 45);
+  CHECK_EQ(p.variant.diagRaw, 0x45);
+  CHECK(!p.vdoCandidate);
 }
 
 TEST(profile_unknown_vendor_needs_experimental_optin) {
@@ -130,6 +177,9 @@ TEST(profile_unknown_vendor_needs_experimental_optin) {
   prof::resolve(id, o, p);
   CHECK(p.caps[prof::F_DTC_READ].allowed);
   CHECK(p.caps[prof::F_DTC_READ].conf == Confidence::GIP);
+  CHECK(p.vdoCandidate);  // non-Bosch in the HFM range: VDO candidate
+  CHECK(p.vdoUnits);
+  CHECK_EQ(p.variant.manufacturer, 0);
 }
 
 TEST(profile_pms_range_rejected) {

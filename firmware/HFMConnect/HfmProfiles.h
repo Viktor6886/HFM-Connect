@@ -102,14 +102,19 @@ struct EcuProfile {
   dtc::Variant variant;
   dtc::BankMapping bankMapping;
   Confidence bankMappingConf;
-  bool vdoUnits;          // adaptation in % (VDO) instead of kg/h (Bosch)
+  bool vdoUnits;          // VDO candidate: VDO live-data addresses, adaptation in %
+  bool vdoCandidate;      // not Bosch (F0:00..01 != 2C 42) but HFM diagnosis range
   Capability caps[F_COUNT];
 };
 
 struct ResolveOptions {
   bool experimentalReads = false; // user opt-in for unknown ECU reads
   bool engineerMode = false;      // user opt-in for REK-quarantined service ops
+  uint8_t cylinders = 0;          // from the selected vehicle (M104 = 6, M111 = 4), 0 = unknown
 };
+
+// Cylinder count from the engine designation ("104.992" -> 6, "111.961" -> 4).
+uint8_t cylindersForEngine(const char* engine);
 
 // Resolves the profile from identification (may be absent: ident.present=false).
 void resolve(const EcuIdent& ident, const ResolveOptions& opt, EcuProfile& out);

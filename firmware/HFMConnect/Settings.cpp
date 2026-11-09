@@ -17,6 +17,7 @@ void Settings::load() {
   experimentalReads = prefs.getBool("exp", false);
   engineerMode = prefs.getBool("eng", false);
   keepAlive = prefs.getBool("ka", true);
+  autoConnect = prefs.getBool("auto", true);
   impulseEnabled = prefs.getBool("imp", false);
   traceCapture = prefs.getBool("trace", true);
   vehicleIdx = prefs.getShort("veh", -1);
@@ -41,6 +42,7 @@ void Settings::save() {
   prefs.putBool("exp", experimentalReads);
   prefs.putBool("eng", engineerMode);
   prefs.putBool("ka", keepAlive);
+  prefs.putBool("auto", autoConnect);
   prefs.putBool("imp", impulseEnabled);
   prefs.putBool("trace", traceCapture);
   prefs.putShort("veh", vehicleIdx);

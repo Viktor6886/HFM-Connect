@@ -239,6 +239,17 @@ void resolve(const EcuIdent& id, const ResolveOptions& opt, EcuProfile& p) {
     // intermittent-fault rule (dtc::inferBankMapping).
     p.bankMapping = dtc::BankMapping::AStoredBCurrent;
     p.bankMappingConf = Confidence::GIP;
+  } else if (id.present && !bosch && hfmRange) {
+    // The factory tester knows VDO variants of the HFM ECU (vendor V maps and
+    // live-data templates). The VDO identification bytes are not documented,
+    // so a non-Bosch ECU in the HFM range is only a VDO candidate: reads need
+    // the experimental opt-in.
+    p.vdoCandidate = true;
+    p.vdoUnits = true;
+    snprintf(p.id, sizeof p.id, "VDO_CANDIDATE_%d", di);
+    snprintf(p.name, sizeof p.name, "HFM, не Bosch (вероятно VDO), diag %s — экспериментально", id.diagDisplay);
+    p.bankMapping = dtc::BankMapping::AStoredBCurrent;
+    p.bankMappingConf = Confidence::GIP;
   } else if (pmsRange) {
     snprintf(p.id, sizeof p.id, "PMS_%d", di);
     snprintf(p.name, sizeof p.name, "Система PMS (diag %s) — вне области проекта", id.diagDisplay);
@@ -246,8 +257,9 @@ void resolve(const EcuIdent& id, const ResolveOptions& opt, EcuProfile& p) {
     snprintf(p.id, sizeof p.id, "UNKNOWN_%02X%02X", id.diagIndexRaw, id.diagSubRaw);
     snprintf(p.name, sizeof p.name, "Неизвестный ЭБУ (%s, diag %s)", id.vendor, id.diagDisplay);
   }
-  if (di >= 0) p.variant.diagIndex = di;
+  if (id.present) p.variant.diagRaw = id.diagIndexRaw;
   p.variant.manufacturer = bosch ? 1 : 0;
+  p.variant.cylinders = opt.cylinders;
 
   bool readOk = p.resolved || (id.present && !pmsRange && opt.experimentalReads);
   Confidence readConf = p.referenceEcu ? Confidence::REK : (p.resolved ? Confidence::REK : Confidence::GIP);
@@ -281,6 +293,13 @@ void resolve(const EcuIdent& id, const ResolveOptions& opt, EcuProfile& p) {
   setCap(p, F_DTC_CLEAR, wr, wc, wrReason);
   setCap(p, F_ADAPT_RESET, wr, wc, wrReason);
   setCap(p, F_PURGE_TEST, wr, wc, wrReason);
+}
+
+uint8_t cylindersForEngine(const char* engine) {
+  if (!engine) return 0;
+  if (strncmp(engine, "104", 3) == 0) return 6;
+  if (strncmp(engine, "111", 3) == 0) return 4;
+  return 0;
 }
 
 // ---- norms (REV 1.4 s.10, I07 pages 2, 10-11, 20, 25-26, 32-33) -----------------

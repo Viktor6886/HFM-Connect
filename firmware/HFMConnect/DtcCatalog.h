@@ -137,6 +137,8 @@ static const DtcCatalogEntry DTC_CATALOG[] = {
   {118, DTC_SRC_UNVERIFIED, DTC_F_NONE, "Определение не подтверждено.", "Definition not yet verified."},
   {119, DTC_SRC_UNVERIFIED, DTC_F_NONE, "Определение не подтверждено.", "Definition not yet verified."},
   {120, DTC_SRC_UNVERIFIED, DTC_F_NONE, "Определение не подтверждено.", "Definition not yet verified."},
+  {121, DTC_SRC_UNVERIFIED, DTC_F_NONE, "Определение не подтверждено (по заводской таблице — только исполнения не для США).", "Definition not yet verified (non-U.S.A. versions only per OEM table)."},
+  {122, DTC_SRC_UNVERIFIED, DTC_F_NONE, "Определение не подтверждено (по заводской таблице — только исполнения не для США).", "Definition not yet verified (non-U.S.A. versions only per OEM table)."},
   {123, DTC_SRC_UNVERIFIED, DTC_F_NONE, "Определение не подтверждено.", "Definition not yet verified."},
   {124, DTC_SRC_UNVERIFIED, DTC_F_NONE, "Определение не подтверждено.", "Definition not yet verified."},
   {125, DTC_SRC_OEM, DTC_F_NONE, "Неисправность ЭБУ двигателя.", "Engine ECU fault."},
@@ -180,4 +182,4 @@ static const DtcCatalogEntry DTC_CATALOG[] = {
   {163, DTC_SRC_UNVERIFIED, DTC_F_NONE, "Определение не подтверждено.", "Definition not yet verified."},
   {164, DTC_SRC_UNVERIFIED, DTC_F_NONE, "Определение не подтверждено.", "Definition not yet verified."},
 };
-static const uint16_t DTC_CATALOG_COUNT = 163;
+static const uint16_t DTC_CATALOG_COUNT = 165;

@@ -20,8 +20,8 @@
                                         │ NetManager (AP+STA, DNS, mDNS) · Settings (NVS)  │
                                         │ LittleFS: /rec/*.csv, /reports/*.json            │
                                         └───────┬──────────────────────────────────────────┘
-                                                │ UART1 TX/RX (GPIO17/18), GPIO10 WRITE-EN
-                                         K-Line трансивер ── X11/4 ── ЭБУ N3/4 HFM-SFI
+                                                │ USB-OTG (FtdiLink, USB-хост) или UART1 (KLineUart)
+                                     FTDI K-Line адаптер / трансивер ── X11/4 ── ЭБУ N3/4 HFM-SFI
 ```
 
 ## Слои и правила зависимостей

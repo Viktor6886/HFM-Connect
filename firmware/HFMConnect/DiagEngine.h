@@ -12,6 +12,7 @@
 #include "Settings.h"
 
 class KLineUart;
+class FtdiLink;
 
 enum class Job : uint8_t {
   None, Connect, Disconnect, Identify, ReadDtc, ReadAdapt, ReadCoding, ReadVin,
@@ -49,6 +50,15 @@ struct ImpulseView {
   uint32_t tMs = 0;
 };
 
+struct AdapterInfo {
+  bool hostReady = false;
+  bool present = false;
+  bool configured = false;
+  uint16_t vid = 0, pid = 0;
+  const char* chip = "нет";
+  uint32_t attachCount = 0, usbErrors = 0, breaks = 0, overruns = 0;
+};
+
 struct EngineState {
   // link/session
   SessionState session = SessionState::Disconnected;
@@ -80,6 +90,9 @@ struct EngineState {
   bool interlock = false;
   float batteryV = -1;
   uint32_t parityErrors = 0, frameErrors = 0;
+  AdapterInfo adapter;
+  char autoMsg[128] = {0};
+  uint32_t autoAttempts = 0;
   // recording
   bool recording = false;
   char recordFile[40] = {0};
@@ -115,6 +128,9 @@ class DiagEngine {
   void doIdentify(char* msg, size_t n, bool& ok);
   void livePoll();
   void keepAlive();
+  void autoConnect();
+  uint8_t vehicleCylinders();
+  bool adapterPresent();
   void purgeWatchdog();
   void fillFacts(guard::Facts& f);
   void finishJob(bool ok, const char* msg);
@@ -128,6 +144,10 @@ class DiagEngine {
   TraceLog trace_;
   ByteLink* link_ = nullptr;
   KLineUart* kline_ = nullptr;
+  FtdiLink* ftdi_ = nullptr;
+  bool userDisconnected_ = false;
+  uint32_t lastAutoMs_ = 0;
+  uint32_t autoBackoffMs_ = 2000;
   HfmSession* session_ = nullptr;
   guard::ServiceGuard guard_;
   EngineState st_;

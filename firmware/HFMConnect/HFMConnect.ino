@@ -1,8 +1,9 @@
 // HFM Connect - diagnostic tool for Mercedes-Benz Bosch HFM-SFI (M104/M111)
-// over K-Line, ESP32-S3 + external K-Line transceiver, offline WebUI.
+// over K-Line: USB FTDI K-Line adapter (ESP32-S3 USB host) or UART transceiver, offline WebUI.
 //
-// Arduino IDE: Board "ESP32S3 Dev Module", Partition Scheme
-// "Default 4MB with spiffs" (or larger), USB CDC On Boot "Enabled".
+// Arduino IDE: Board "ESP32S3 Dev Module", Partition Scheme "Default 4MB with
+// spiffs" (or larger), USB CDC On Boot "Disabled", USB Mode "Hardware CDC and
+// JTAG". Upload/log via the UART connector; FTDI K-Line adapter on the USB one.
 // No external libraries are required. See docs/BUILD.md.
 //
 // Safety: all state-changing ECU operations are disabled by default and need
@@ -17,6 +18,15 @@
 #include "NetManager.h"
 #include "Settings.h"
 #include "WebApi.h"
+
+// The FTDI adapter uses the USB OTG port in host mode: the native USB must not
+// be used for the Serial console at the same time.
+#if HFM_TRANSPORT_FTDI && defined(ARDUINO_USB_CDC_ON_BOOT) && ARDUINO_USB_CDC_ON_BOOT
+#error "FTDI-адаптер: установите Инструменты -> USB CDC On Boot: Disabled (лог и загрузка через UART-разъём)"
+#endif
+#if HFM_TRANSPORT_FTDI && defined(ARDUINO_USB_MODE) && ARDUINO_USB_MODE == 0
+#error "FTDI-адаптер: установите Инструменты -> USB Mode: Hardware CDC and JTAG (не USB-OTG/TinyUSB)"
+#endif
 
 static void ledColor(uint8_t r, uint8_t g, uint8_t b) {
 #if HFM_USE_RGB_LED && defined(RGB_BUILTIN)

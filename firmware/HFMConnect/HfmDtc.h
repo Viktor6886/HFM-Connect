@@ -8,14 +8,24 @@
 #include <stdint.h>
 
 #include "DtcCatalog.h"
+#include "DtcVariantMaps.h"
 
 namespace dtc {
 
+// ECU variant for bit-map selection. The factory tester selects one of seven
+// maps by cylinder count, vendor (B = Bosch, V = VDO) and the diagnosis
+// identifier byte F0:26 compared with 'I' (0x49) and 'P' (0x50).
 struct Variant {
-  uint8_t manufacturer = 1;  // 1 = Bosch (default)
-  char engineGroup = 'h';    // 'h' (HFM default) / 'o'
-  int16_t diagIndex = 41;    // BCD-decoded diagnostic index
+  uint8_t manufacturer = 1;  // 1 = Bosch, 0 = other (VDO)
+  uint8_t cylinders = 0;     // 4 (M111) / 6 (M104) / 0 = unknown
+  uint8_t diagRaw = 0x41;    // raw F0:26 byte (0x41 = reference ECU "41/00")
 };
+
+// Selected factory map, nullptr when cylinders are unknown (generic table
+// with positional overrides is used instead).
+const DtcVariantMap* selectMap(const Variant& v);
+// Code for bit position 1..152 under the variant (0 = position not used).
+uint16_t codeForPosition(uint16_t pos, const Variant& v);
 
 enum class BankMapping : uint8_t { Unknown, AStoredBCurrent, ACurrentBStored };
 
@@ -29,8 +39,9 @@ inline const char* bankMappingCode(BankMapping m) {
 
 // Base DTC number for bit position 1..152 (0 if out of range).
 uint16_t baseForPosition(uint16_t pos);
-// Sequential remap (REV 1.1 s.14): value = map.get(value, value) for each table in order.
-uint16_t applyRemaps(uint16_t base, const Variant& v);
+// Generic positional overrides (REV 1.1 s.14) used when no factory map is
+// selected: tables are keyed by BIT POSITION (not by code), applied in order.
+uint16_t applyRemaps(uint16_t pos, uint16_t code, const Variant& v);
 // Catalog lookup (nullptr if not in the 163-entry catalog).
 const DtcCatalogEntry* lookup(uint16_t code);
 
@@ -39,9 +50,10 @@ struct Decoded {
   uint8_t index;       // raw F1 index
   uint8_t bit;         // 0 = LSB
   uint16_t position;   // 1..152
-  uint16_t baseCode;   // before remap
-  uint16_t code;       // after remap
+  uint16_t baseCode;   // generic table code for the position
+  uint16_t code;       // code for this ECU variant (0 = position not used)
   bool remapped;
+  const char* mapId;   // factory map id ("C8EE"...) or "GENERIC"
   const DtcCatalogEntry* entry;  // may be nullptr (unknown code)
 };
 

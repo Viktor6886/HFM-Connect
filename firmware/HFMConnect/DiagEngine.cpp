@@ -5,6 +5,7 @@
 #include <esp_random.h>
 
 #include "Config.h"
+#include "FtdiLink.h"
 #include "KLineUart.h"
 
 DiagEngine Engine;
@@ -37,15 +38,22 @@ void DiagEngine::begin(Settings* s) {
   gTraceMtx = xSemaphoreCreateRecursiveMutex();
   trace_.setLock(traceLock, traceUnlock, gTraceMtx);
   trace_.setEnabled(s->traceCapture);
+#if HFM_TRANSPORT_FTDI
+  // FTDI K-Line adapter on the ESP32-S3 USB OTG port (USB host mode).
+  ftdi_ = new FtdiLink();
+  if (!ftdi_->begin()) Serial.println("USB host init failed (FTDI adapter unavailable)");
+  link_ = ftdi_;
+#else
   kline_ = new KLineUart(HFM_KLINE_UART_NUM, HFM_KLINE_TX_PIN, HFM_KLINE_RX_PIN, HFM_KLINE_TX_INVERTED,
                          HFM_KLINE_RX_INVERTED);
   // Install the UART immediately so the transceiver TX input is driven idle
   // HIGH from boot (no floating input / K-Line pull-down glitch).
   if (!kline_->open()) Serial.println("K-Line UART init failed");
   kline_->close();
+  link_ = kline_;
+#endif
   snprintf(sessionId_, sizeof sessionId_, "S%08lX", (unsigned long)esp_random());
   pinMode(HFM_WRITE_EN_PIN, INPUT_PULLUP);
-  link_ = kline_;
   session_ = new HfmSession(*link_, trace_);
   applySettings();
   EcuIdent none;
@@ -114,9 +122,34 @@ void DiagEngine::readHardware() {
   lock();
   st_.interlock = il;
   st_.batteryV = v;
-  st_.parityErrors = kline_->parityErrors();
-  st_.frameErrors = kline_->frameErrors();
+  if (ftdi_) {
+    st_.parityErrors = ftdi_->parityErrors();
+    st_.frameErrors = ftdi_->frameErrors();
+    st_.adapter.present = ftdi_->attached();
+    st_.adapter.configured = ftdi_->configured();
+    st_.adapter.vid = ftdi_->vid();
+    st_.adapter.pid = ftdi_->pid();
+    st_.adapter.chip = ftdi_->chipName();
+    st_.adapter.attachCount = ftdi_->attachCount();
+    st_.adapter.usbErrors = ftdi_->usbErrors();
+    st_.adapter.breaks = ftdi_->breaksSeen();
+    st_.adapter.overruns = ftdi_->overruns();
+    st_.adapter.hostReady = ftdi_->hostReady();
+  } else if (kline_) {
+    st_.parityErrors = kline_->parityErrors();
+    st_.frameErrors = kline_->frameErrors();
+    st_.adapter.present = true;
+    st_.adapter.configured = true;
+    st_.adapter.chip = "UART";
+    st_.adapter.hostReady = true;
+  }
   unlock();
+}
+
+uint8_t DiagEngine::vehicleCylinders() {
+  int16_t vi = settings_->vehicleIdx;
+  const prof::VehicleEntry* ve = vi >= 0 ? prof::vehicleByIndex((uint16_t)vi) : nullptr;
+  return ve ? prof::cylindersForEngine(ve->engine) : 0;
 }
 
 void DiagEngine::reresolveProfile() {
@@ -124,6 +157,7 @@ void DiagEngine::reresolveProfile() {
   prof::ResolveOptions o;
   o.experimentalReads = settings_->experimentalReads;
   o.engineerMode = settings_->engineerMode;
+  o.cylinders = vehicleCylinders();
   prof::resolve(st_.ident, o, st_.profile);
   if (session_) applySettings();
   trace_.setEnabled(settings_->traceCapture);
@@ -176,6 +210,7 @@ void DiagEngine::doIdentify(char* msg, size_t n, bool& ok) {
   prof::ResolveOptions o;
   o.experimentalReads = settings_->experimentalReads;
   o.engineerMode = settings_->engineerMode;
+  o.cylinders = vehicleCylinders();
   prof::resolve(st_.ident, o, st_.profile);
   unlock();
   if (!ok) snprintf(msg, n, "Ошибка чтения F0 (%s)", linkStatusCode(s));
@@ -229,16 +264,24 @@ void DiagEngine::execute(Job j, uint32_t arg, const char* text) {
 
   switch (j) {
     case Job::Connect:
+      userDisconnected_ = false;
+      autoBackoffMs_ = HFM_AUTOCONNECT_MIN_MS;
+      if (!adapterPresent()) {
+        ok = false;
+        snprintf(msg, sizeof msg, "Адаптер K-Line не обнаружен (USB). Проверьте кабель и питание VBUS 5 В");
+        break;
+      }
       if (session_->ready()) session_->disconnect();
       doConnect(msg, sizeof msg, ok);
       if (ok) doIdentify(msg, sizeof msg, ok);
       break;
     case Job::Disconnect:
+      userDisconnected_ = true;  // no auto-reconnect until "Connect" is pressed
       lock();
       st_.liveActive = false;
       unlock();
       session_->disconnect();
-      snprintf(msg, sizeof msg, "Отключено");
+      snprintf(msg, sizeof msg, "Отключено (автоподключение приостановлено до нажатия «Подключить»)");
       break;
     case Job::Identify:
       if (!ensureConnected(msg, sizeof msg)) { ok = false; break; }
@@ -458,6 +501,7 @@ void DiagEngine::execute(Job j, uint32_t arg, const char* text) {
       break;
     case Job::ImpulseRead: {
       if (!settings_->impulseEnabled) { ok = false; snprintf(msg, sizeof msg, "Включите импульсный режим в настройках"); break; }
+      if (!kline_) { ok = false; snprintf(msg, sizeof msg, "Импульсный режим требует UART-трансивера; с FTDI-адаптером недоступен"); break; }
       lock();
       st_.liveActive = false;
       unlock();
@@ -502,16 +546,19 @@ void DiagEngine::livePoll() {
   bool ext = st_.profile.caps[prof::F_LIVE_EXTENDED].allowed;
   int16_t vi = settings_->vehicleIdx;
   bool vdo = st_.profile.vdoUnits;
+  uint8_t diagRaw = st_.profile.variant.diagRaw;
   unlock();
-  LinkStatus s = live::pollNative(*session_, snap);
-  if (s == LinkStatus::Ok && ext) live::pollExtended(*session_, snap);
+  // VDO candidate: VDO address plan (experimental prefixes); Bosch extended
+  // addresses do not apply to it.
+  LinkStatus s = live::pollNative(*session_, snap, vdo);
+  if (s == LinkStatus::Ok && ext && !vdo) live::pollExtended(*session_, snap);
   prof::NormGroup ng = prof::NormGroup::None;
   const prof::VehicleEntry* ve = vi >= 0 ? prof::vehicleByIndex((uint16_t)vi) : nullptr;
   if (ve) ng = ve->norms;
   lock();
   st_.snap = snap;
   prevLive_ = st_.live;
-  live::decode(snap, ng, vdo, &prevLive_, st_.live);
+  live::decode(snap, ng, vdo, &prevLive_, st_.live, diagRaw);
   st_.liveCycles++;
   st_.session = session_->state();
   st_.txCount = session_->txCount();
@@ -606,6 +653,50 @@ void DiagEngine::recordRow() {
   unlock();
 }
 
+bool DiagEngine::adapterPresent() {
+  if (ftdi_) return ftdi_->attached();
+  return kline_ != nullptr;
+}
+
+void DiagEngine::autoConnect() {
+  // Adapter unplugged during a session: drop the session cleanly.
+  if (session_->ready() && !adapterPresent()) {
+    session_->disconnect();
+    lock();
+    st_.liveActive = false;
+    st_.session = session_->state();
+    strlcpy(st_.autoMsg, "Адаптер отключён от USB", sizeof st_.autoMsg);
+    unlock();
+    return;
+  }
+  if (session_->ready() || !settings_->autoConnect || userDisconnected_) return;
+  if (guard_.state() != guard::State::Idle && guard_.state() != guard::State::FaultStop) return;
+  if (!adapterPresent()) {
+    lock();
+    strlcpy(st_.autoMsg, "Ожидание адаптера K-Line (USB FTDI)", sizeof st_.autoMsg);
+    unlock();
+    return;
+  }
+  uint32_t now = millis();
+  if (now - lastAutoMs_ < autoBackoffMs_) return;
+  lastAutoMs_ = now;
+  char msg[96];
+  bool ok = false;
+  doConnect(msg, sizeof msg, ok);
+  if (ok) doIdentify(msg, sizeof msg, ok);
+  lock();
+  st_.autoAttempts++;
+  if (ok) {
+    autoBackoffMs_ = HFM_AUTOCONNECT_MIN_MS;
+    snprintf(st_.autoMsg, sizeof st_.autoMsg, "Подключено автоматически: %s", msg);
+  } else {
+    autoBackoffMs_ = autoBackoffMs_ * 2 > HFM_AUTOCONNECT_MAX_MS ? HFM_AUTOCONNECT_MAX_MS : autoBackoffMs_ * 2;
+    snprintf(st_.autoMsg, sizeof st_.autoMsg, "Автоподключение: %s; повтор через %lu с", msg,
+             (unsigned long)(autoBackoffMs_ / 1000));
+  }
+  unlock();
+}
+
 void DiagEngine::run() {
   for (;;) {
     readHardware();
@@ -631,6 +722,7 @@ void DiagEngine::run() {
       livePoll();
     } else {
       keepAlive();
+      autoConnect();
     }
     purgeWatchdog();
     uint32_t now = millis();

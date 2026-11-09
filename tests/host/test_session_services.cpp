@@ -1,6 +1,7 @@
 // Session/service tests against SimEcu (software model, synthetic data).
 // These are SOFTWARE tests: they prove internal consistency with the
 // reconstructed protocol, not behaviour of a real ECU.
+#include "HfmDecode.h"
 #include "HfmDtc.h"
 #include "HfmLive.h"
 #include "HfmServices.h"
@@ -322,4 +323,78 @@ TEST(impulse_factory_table_lookup) {
   const ImpulseCodeEntry* t = impulseTable(&n);
   for (uint16_t i = 0; i < n; i++)
     for (uint8_t c = 0; c < t[i].count; c++) CHECK(dtc::lookup(t[i].a[c]) != nullptr);
+}
+
+TEST(live_status_masks_bosch_and_vdo) {
+  // Bosch masks equal the bit_v1_old table used by hfm::statusMask.
+  for (uint8_t q = 0; q < 12; q++) CHECK_EQ(live::statusMaskBosch(q), hfm::statusMask(q));
+  CHECK_EQ(live::statusMaskBosch(0), 0x80);  // idle contact
+  CHECK_EQ(live::statusMaskVdo(0), 0x40);
+  CHECK_EQ(live::statusMaskVdo(1), 0x80);    // starter
+  // VDO bits sharing one byte (22:7A) never collide.
+  uint8_t q22[] = {0, 9, 6, 4, 10};
+  uint8_t seen = 0;
+  for (uint8_t q : q22) {
+    CHECK((seen & live::statusMaskVdo(q)) == 0);
+    seen |= live::statusMaskVdo(q);
+  }
+}
+
+TEST(live_o2_primary_is_factory_formula) {
+  live::Snapshot s;
+  s.groupOk[live::G_MIXTURE] = true;
+  s.g[live::G_MIXTURE][0] = 0x80;
+  live::Decoded d;
+  live::decode(s, prof::NormGroup::None, false, nullptr, d);
+  CHECK_EQ((int)d.v[live::P_O2].v, 461);      // trunc0(51102*128 - 1928300, 10000)
+  CHECK_EQ((int)d.v[live::P_O2_ALT].v, 512);  // 4 x raw
+  s.g[live::G_MIXTURE][0] = 0x00;
+  live::decode(s, prof::NormGroup::None, false, nullptr, d);
+  CHECK_EQ((int)d.v[live::P_O2].v, -192);     // negative region of the factory norm
+}
+
+TEST(live_idle_target_source_by_diag_byte) {
+  live::Snapshot s;
+  s.groupOk[live::G_AIRFLOW] = s.groupOk[live::G_COOLANT] = true;
+  s.g[live::G_AIRFLOW][2] = 28;   // rpm byte (700 rpm)
+  s.g[live::G_COOLANT][0] = 30;   // 21:D7 -> 750
+  s.extRead = true;
+  s.extOk[live::X_IDLE_TARGET] = true;
+  s.ext[live::X_IDLE_TARGET] = 32;  // 20:67 -> 800
+  live::Decoded d;
+  live::decode(s, prof::NormGroup::None, false, nullptr, d, 0x40);
+  CHECK_EQ((int)d.v[live::P_IDLE_TARGET].v, 750);
+  live::decode(s, prof::NormGroup::None, false, nullptr, d, 0x41);
+  CHECK_EQ((int)d.v[live::P_IDLE_TARGET].v, 800);
+  s.g[live::G_AIRFLOW][2] = 0;    // engine stopped
+  live::decode(s, prof::NormGroup::None, false, nullptr, d, 0x41);
+  CHECK_EQ((int)d.v[live::P_IDLE_TARGET].v, 0);
+}
+
+TEST(live_vdo_plan_decode) {
+  live::Snapshot s;
+  s.vdoPlan = true;
+  for (int g = 0; g < live::V_COUNT; g++) s.vdoOk[g] = true;
+  s.vdo[live::V_P12][1] = 30;     // 12:7E rpm byte -> 750
+  s.vdo[live::V_P22][4] = 0x40;   // 22:7A idle contact (VDO mask)
+  s.vdo[live::V_P23][0] = 0x80;   // 23:A4 starter
+  s.vdo[live::V_O2][0] = 0x80;    // 20:F2
+  live::Decoded d;
+  live::decode(s, prof::NormGroup::None, true, nullptr, d);
+  CHECK_EQ((int)d.v[live::P_RPM].v, 750);
+  CHECK_EQ((int)d.v[live::P_IDLE_CONTACT].v, 1);
+  CHECK_EQ((int)d.v[live::P_FULL_LOAD].v, 0);
+  CHECK_EQ((int)d.v[live::P_STARTER].v, 1);
+  CHECK_EQ((int)d.v[live::P_O2].v, 461);
+  CHECK(d.v[live::P_IGN].q == live::Quality::NotRead);  // VDO ignition formula unknown
+  CHECK(d.v[live::P_SPEED].hasValue);
+}
+
+TEST(vdo_prefixes_need_experimental_optin) {
+  CHECK(classifyPrefix(0x12) == PrefixClass::ExperimentalRead);
+  CHECK(classifyPrefix(0x22) == PrefixClass::ExperimentalRead);
+  CHECK(classifyPrefix(0x23) == PrefixClass::ExperimentalRead);
+  Rig r;
+  r.s.connect();
+  CHECK(r.s.prefix(0x22) == LinkStatus::NotAllowed);
 }

@@ -3,8 +3,19 @@
 // See docs/HARDWARE.md for the reference schematic.
 #pragma once
 
-#define HFM_FW_VERSION "0.1.0"
+#define HFM_FW_VERSION "0.3.0"
 #define HFM_FW_NAME "HFM Connect"
+
+// ---- K-Line transport ----------------------------------------------------------
+// 1 = USB K-Line adapter with an FTDI chip (FT232R "KKL" cable) on the ESP32-S3
+//     USB OTG port (USB host). Arduino IDE: "USB CDC On Boot: Disabled", upload
+//     and Serial log via the UART ("COM") connector, adapter on the "USB" one.
+//     The OTG port must supply 5 V VBUS to the adapter (see docs/HARDWARE.md).
+// 0 = external K-Line transceiver on UART1 (pins below).
+#define HFM_TRANSPORT_FTDI 1
+#define HFM_FTDI_LATENCY_MS 1   // FTDI latency timer: fast echo/response delivery
+#define HFM_FTDI_DTR 1          // assert DTR (many KKL cables enable the K-Line driver with it)
+#define HFM_FTDI_RTS 1          // assert RTS
 
 // ---- K-Line transceiver (L9637D / MC33290 / SN65HVDA195 class) ----------------
 // UART1 of the ESP32-S3; TX drives the transceiver TXD input, RX reads RXD.
@@ -46,7 +57,9 @@
 // ---- Diagnostic engine ----------------------------------------------------------
 #define HFM_ENGINE_TASK_CORE 0
 #define HFM_ENGINE_TASK_STACK 12288
-#define HFM_KEEPALIVE_MS 1000       // idle read F0:00 while connected (0 = off)
+#define HFM_KEEPALIVE_MS 700        // idle read F0:00 while connected (REV 1.1 idle limit 1300 ms)
+#define HFM_AUTOCONNECT_MIN_MS 2000  // auto-connect retry interval after boot / adapter plug-in
+#define HFM_AUTOCONNECT_MAX_MS 15000 // back-off limit while the ECU does not answer
 #define HFM_LIVE_MIN_CYCLE_MS 100   // polling interval 0.1 s (REV 1.1)
 #define HFM_RECORD_FLUSH_MS 2000
 

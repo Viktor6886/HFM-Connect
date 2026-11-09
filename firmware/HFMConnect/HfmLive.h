@@ -19,6 +19,8 @@ namespace live {
 enum GroupId : uint8_t { G_RPM_LOW, G_RPM_HIGH, G_MIXTURE, G_AIRFLOW, G_COOLANT, G_MAF_LO, G_MAF_HI, G_COUNT };
 // Extended reads (AC, gated by F_LIVE_EXTENDED).
 enum ExtId : uint8_t { X_SPEED, X_O2_REAR, X_IDLE_TARGET, X_STATUS98, X_COUNT };
+// VDO variant plan (factory tester templates, vendor V): other addresses.
+enum VdoGroupId : uint8_t { V_P12, V_P22, V_INJ, V_P23, V_O2, V_COUNT };
 
 struct GroupDef {
   const char* name;
@@ -28,6 +30,7 @@ struct GroupDef {
 };
 const GroupDef& group(uint8_t g);
 const GroupDef& extRead(uint8_t x);
+const GroupDef& vdoGroup(uint8_t g);
 
 struct Snapshot {
   uint32_t seq = 0;
@@ -38,12 +41,16 @@ struct Snapshot {
   bool extRead = false;
   bool extOk[X_COUNT] = {};
   uint8_t ext[X_COUNT] = {};
+  bool vdoPlan = false;       // snapshot taken with the VDO address plan
+  bool vdoOk[V_COUNT] = {};
+  uint8_t vdo[V_COUNT][6] = {};
   LinkStatus lastStatus = LinkStatus::Ok;
 };
 
 // Reads the native groups (full8: 7 prefixes, 21 selectors). MAF low/high are
-// sampled in the same cycle (REV 1.1 s.6).
-LinkStatus pollNative(HfmSession& s, Snapshot& snap);
+// sampled in the same cycle (REV 1.1 s.6). vdo = use the VDO address plan
+// (experimental read prefixes 12/22/23, VDO candidate profiles only).
+LinkStatus pollNative(HfmSession& s, Snapshot& snap, bool vdo = false);
 LinkStatus pollExtended(HfmSession& s, Snapshot& snap);
 
 // ---- registry -------------------------------------------------------------------
@@ -96,6 +103,12 @@ struct Decoded {
 };
 
 // Decodes a snapshot. prev (may be null) is used for plausibility checks.
-void decode(const Snapshot& s, prof::NormGroup ng, bool vdo, const Decoded* prev, Decoded& out);
+// diagRaw = F0:26 byte: selects the idle-target source (< 0x41: 21:D7).
+void decode(const Snapshot& s, prof::NormGroup ng, bool vdo, const Decoded* prev, Decoded& out,
+            uint8_t diagRaw = 0x41);
+
+// Status-bit masks by display index q (factory tester tables): Bosch and VDO.
+uint8_t statusMaskBosch(uint8_t q);
+uint8_t statusMaskVdo(uint8_t q);
 
 }  // namespace live

@@ -12,6 +12,11 @@ PrefixClass classifyPrefix(uint8_t op) {
       return PrefixClass::Read;
     // Gated reads (REV 1.4 s.7: VIN F9 feature-gated):
     case 0xF9:  // VIN bytes 00..0D
+    // VDO variant live-data pages (factory tester templates for vendor V;
+    // never field-tested): only with the experimental opt-in.
+    case 0x12:
+    case 0x22:
+    case 0x23:
       return PrefixClass::ExperimentalRead;
     // State-changing prefixes (REV 1.1 s.5.2/16): never sent without a token.
     case 0x10:  // DTC clear sequence element
