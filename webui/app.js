@@ -355,7 +355,7 @@ async function pollUsb() {
   try {
     const u = await api('usb');
     if (!u.available) { box.textContent = 'Транспорт UART: USB-хост не используется.'; return; }
-    $('#usbEnum').textContent = `Сбоев определения: ${u.enum_failures} · автоповторов: ${u.reenum_count} из ${u.reenum_max}`;
+    $('#usbEnum').textContent = `Сбоев определения: ${u.enum_failures} · автоповторов: ${u.reenum_count} (первые ${u.reenum_max} сразу, дальше раз в 30 с)`;
     const cls = c => c === 9 ? 'хаб' : c === 0 ? 'по интерфейсу' : '0x' + c.toString(16).padStart(2, '0');
     box.innerHTML = u.devices.length
       ? `<div class="trace"><table><thead><tr><th>адрес</th><th>VID:PID</th><th>класс</th><th>скорость</th><th>подключено</th></tr></thead><tbody>${u.devices.map(d => `<tr><td>${d.addr}</td><td>${esc(d.vid_pid)}${d.vid_pid.startsWith('0403:') ? ' · FTDI' : ''}</td><td>${cls(d.class)}</td><td>${esc(d.speed)}</td><td>${d.behind_hub ? 'хаб, порт ' + d.hub_port : 'корневой порт'}</td></tr>`).join('')}</tbody></table></div>`

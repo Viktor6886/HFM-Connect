@@ -273,7 +273,27 @@ void FtdiLink::clientTask(void* arg) {
       gEnumFailed = false;
       self->enumFailures_++;
       self->enumFailMs_ = millis();
-      if (!self->dev_ && self->reenumCount_ < (uint32_t)kMaxReenum) self->reenumRequest_ = true;
+      // Quick attempts first, then one every 30 s while the adapter is missing.
+      if (!self->dev_ && (self->reenumCount_ < (uint32_t)kMaxReenum || millis() - self->lastReenumMs_ >= 30000))
+        self->reenumRequest_ = true;
+    }
+    // An enumeration that hangs without an error (seen behind a hub: the device
+    // counted by the host library but never listed or reported) is a failure too.
+    if (!self->dev_ && millis() - self->lastStallCheckMs_ >= 1000) {
+      self->lastStallCheckMs_ = millis();
+      int n = self->usbDevices();
+      uint8_t addrs[8];
+      int cnt = 0;
+      if (n > 0 && usb_host_device_addr_list_fill(sizeof addrs, addrs, &cnt) == ESP_OK && n > cnt) {
+        if (!self->stallSinceMs_) self->stallSinceMs_ = millis();
+        if (millis() - self->stallSinceMs_ >= 4000) {
+          self->stallSinceMs_ = 0;
+          logLine("enumeration stalled (device counted but not ready)");
+          gEnumFailed = true;
+        }
+      } else {
+        self->stallSinceMs_ = 0;
+      }
     }
     // Wait 1.5 s after a failure so the hub driver finishes its own recovery.
     if (self->reenumRequest_ && !self->dev_ && millis() - self->enumFailMs_ >= 1500) {
@@ -289,6 +309,8 @@ void FtdiLink::clientTask(void* arg) {
 
 void FtdiLink::reenumerate() {
   reenumCount_++;
+  lastReenumMs_ = millis();
+  stallSinceMs_ = 0;
   char t[64];
   snprintf(t, sizeof t, "re-enumerate: root port power cycle %lu", (unsigned long)reenumCount_);
   logLine(t);

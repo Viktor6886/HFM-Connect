@@ -153,6 +153,9 @@ class FtdiLink : public ByteLink {
   std::atomic<uint32_t> enumFailures_{0};
   uint32_t enumFailMs_ = 0;
   uint32_t reenumCount_ = 0;  // automatic attempts since the adapter was last attached
+  uint32_t lastReenumMs_ = 0;
+  uint32_t lastStallCheckMs_ = 0;
+  uint32_t stallSinceMs_ = 0;  // a device counted but not listed since (0 = none)
   SeenDevice seen_[kMaxSeen];
   int seenCount_ = 0;
   mutable portMUX_TYPE noteMux_ = portMUX_INITIALIZER_UNLOCKED;
