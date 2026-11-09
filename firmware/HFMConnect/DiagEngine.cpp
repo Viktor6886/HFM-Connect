@@ -140,6 +140,11 @@ void DiagEngine::readHardware() {
     st_.adapter.seenVid = ftdi_->seenVid();
     st_.adapter.seenPid = ftdi_->seenPid();
     ftdi_->note(st_.adapter.note, sizeof st_.adapter.note);
+    FtdiLink::PortInfo pi = ftdi_->portInfo();
+    st_.adapter.phyOtg = pi.phyOtg;
+    st_.adapter.portPowered = pi.powered;
+    st_.adapter.portConnected = pi.connected;
+    st_.adapter.lineState = pi.lineState;
   } else if (kline_) {
     st_.parityErrors = kline_->parityErrors();
     st_.frameErrors = kline_->frameErrors();
@@ -260,7 +265,7 @@ static uint16_t decodeAll(const svc::FaultMemory& fm, const prof::EcuProfile& p,
 }
 
 void DiagEngine::execute(Job j, uint32_t arg, const char* text) {
-  char msg[192] = "OK";
+  char msg[256] = "OK";
   bool ok = true;
   lock();
   st_.job.state = JobState::Running;
@@ -571,7 +576,7 @@ void DiagEngine::livePoll() {
   unlock();
   if (s != LinkStatus::Ok) {
     // Read-only: re-initialise (connect() retries up to 3 times).
-    char msg[192];
+    char msg[256];
     bool ok;
     doConnect(msg, sizeof msg, ok);
     if (!ok) {
@@ -659,7 +664,7 @@ void DiagEngine::recordRow() {
 }
 
 void DiagEngine::adapterMissing(char* msg, size_t n) {
-  char why[112] = {0};
+  char why[160] = {0};
   if (ftdi_) ftdi_->note(why, sizeof why);
   if (why[0])
     snprintf(msg, n, "Адаптер K-Line не обнаружен: %s", why);
@@ -688,7 +693,7 @@ void DiagEngine::autoConnect() {
   if (!adapterPresent()) {
     lock();
     unlock();
-    char why[192];
+    char why[256];
     adapterMissing(why, sizeof why);
     lock();
     strlcpy(st_.autoMsg, why, sizeof st_.autoMsg);
@@ -698,7 +703,7 @@ void DiagEngine::autoConnect() {
   uint32_t now = millis();
   if (now - lastAutoMs_ < autoBackoffMs_) return;
   lastAutoMs_ = now;
-  char msg[192];
+  char msg[256];
   bool ok = false;
   doConnect(msg, sizeof msg, ok);
   if (ok) doIdentify(msg, sizeof msg, ok);

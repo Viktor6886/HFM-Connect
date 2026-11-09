@@ -295,7 +295,7 @@ R.connect = async () => {
   const st = S.settings;
   page('Подключение', `
     <div class="card pad">
-      <div class="small muted">Адаптер K-Line на UART ESP32-S3. Тайминги линии настраиваются в «Настройках» (BREAK, пауза, тайм-аут байта).</div>
+      <div class="small muted">USB K-Line адаптер (FTDI) в разъёме USB (OTG) ESP32-S3. Тайминги линии настраиваются в «Настройках» (BREAK, пауза, тайм-аут байта).</div>
       <div class="btns mt2" id="connBtns"></div>
     </div>
     <h2 class="section">Состояние канала</h2><div class="card pad" id="linkBox"></div>
@@ -326,6 +326,7 @@ R.connect = async () => {
       ['Адаптер', a.present ? `${esc(a.chip)} · ${esc(a.vid_pid)}${a.configured ? '' : ' · не настроен'}` : 'не обнаружен: ' + esc(a.note || 'ожидание USB-устройства')],
       ['Автоподключение', s.auto_connect ? esc(s.auto_msg || 'включено') + (s.auto_attempts ? ` · попыток ${s.auto_attempts}` : '') : 'выключено в настройках'],
       ['USB: устройств на разъёме / событий', `${a.usb_devices == null ? '—' : a.usb_devices} / ${a.dev_events || 0}` + (a.seen_vid_pid ? ` · последнее ${esc(a.seen_vid_pid)}` : '')],
+      ['USB: порт и линии D+ / D−', a.phy_otg === false ? 'PHY не на OTG' : `${a.port_connected ? 'устройство есть' : 'устройства нет'} · D+ ${a.dp ? 1 : 0} / D− ${a.dm ? 1 : 0}`],
       ['USB: подключений / ошибок', `${a.attach_count || 0} / ${a.usb_errors || 0}`],
       ['Сеанс', s.session], ['Последняя ошибка', s.last_error], ['Транспорт', s.transport],
       ['Передано байтов', s.tx], ['Ошибок протокола', s.errors],

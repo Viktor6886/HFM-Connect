@@ -5,6 +5,9 @@
 #include <string.h>
 
 #include "Config.h"
+#include "soc/rtc_cntl_reg.h"
+#include "soc/usb_dwc_struct.h"
+#include "soc/usb_wrap_struct.h"
 
 // FTDI SIO vendor requests (bmRequestType 0x40, host-to-device, vendor, device).
 enum : uint8_t {
@@ -70,11 +73,40 @@ void FtdiLink::note(char* out, size_t n) const {
     snprintf(out, n, "USB-хост не запущен (%s)", esp_err_to_name(installErr_));
     return;
   }
+  if (usbDevices() <= 0) {
+    // Nothing enumerated: tell apart "no device on the wires" from a failed
+    // enumeration using the root port state of the OTG controller.
+    PortInfo pi = portInfo();
+    if (!pi.phyOtg)
+      strlcpy(out, "внутренний USB-PHY не переключён на OTG (ошибка прошивки/ядра)", n);
+    else if (!pi.connected && pi.lineState == 0)
+      strlcpy(out, "на D+/D− нет сигнала: у адаптера нет 5 В (VBUS) или он не в разъёме USB (OTG)", n);
+    else
+      snprintf(out, n, "устройство на D+/D− есть (линии %u), но не определилось — переподключите адаптер",
+               pi.lineState);
+    return;
+  }
   portENTER_CRITICAL(&noteMux_);
   strlcpy(out, note_, n);
   portEXIT_CRITICAL(&noteMux_);
-  if (!out[0] && usbDevices() <= 0)
-    strlcpy(out, "на разъёме USB (OTG) нет USB-устройств: нет 5 В (VBUS) на разъёме или адаптер не в том разъёме", n);
+}
+
+FtdiLink::PortInfo FtdiLink::portInfo() const {
+  PortInfo pi;
+  // Internal FSLS PHY routed to the OTG controller (USB Wrap): software mux
+  // enabled and selected, pads enabled (ESP32-S3 TRM, RTC_CNTL_USB_CONF_REG).
+  uint32_t uc = REG_READ(RTC_CNTL_USB_CONF_REG);
+  pi.phyOtg = (uc & RTC_CNTL_SW_HW_USB_PHY_SEL) && (uc & RTC_CNTL_SW_USB_PHY_SEL) && USB_WRAP.otg_conf.pad_enable &&
+              !USB_WRAP.otg_conf.phy_sel;
+  if (hostReady_) {
+    usb_dwc_hprt_reg_t h;
+    h.val = USB_DWC.hprt_reg.val;
+    pi.connected = h.prtconnsts;
+    pi.enabled = h.prtena;
+    pi.powered = h.prtpwr;
+    pi.lineState = (uint8_t)h.prtlnsts;  // bit0 = D+, bit1 = D-
+  }
+  return pi;
 }
 
 int FtdiLink::usbDevices() const {

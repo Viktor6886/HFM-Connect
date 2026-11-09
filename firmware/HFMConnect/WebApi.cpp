@@ -307,7 +307,9 @@ static void writeStatus(JsonWriter& w, const EngineState& s) {
   if (s.adapter.usbDevices >= 0) w.kv("usb_devices", (uint32_t)s.adapter.usbDevices); else w.kvNull("usb_devices");
   snprintf(vp, sizeof vp, "%04X:%04X", s.adapter.seenVid, s.adapter.seenPid);
   w.kv("dev_events", s.adapter.deviceEvents).kv("seen_vid_pid", (s.adapter.seenVid || s.adapter.seenPid) ? vp : "");
-  w.kv("note", s.adapter.note).endObject();
+  w.kv("note", s.adapter.note).kv("phy_otg", s.adapter.phyOtg).kv("port_powered", s.adapter.portPowered);
+  w.kv("port_connected", s.adapter.portConnected).kv("dp", (s.adapter.lineState & 1) != 0);
+  w.kv("dm", (s.adapter.lineState & 2) != 0).endObject();
   w.kv("auto_connect", AppSettings.autoConnect).kv("auto_msg", s.autoMsg).kv("auto_attempts", s.autoAttempts);
   w.kv("interlock", s.interlock);
   if (s.batteryV >= 0) w.kv("battery_v", (double)s.batteryV, 2); else w.kvNull("battery_v");

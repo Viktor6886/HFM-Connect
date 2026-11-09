@@ -58,6 +58,15 @@ class FtdiLink : public ByteLink {
   uint16_t seenPid() const { return seenPid_; }
   // Human-readable reason (Russian) why no adapter is attached; "" when attached.
   void note(char* out, size_t n) const;
+  // Root port of the OTG controller: PHY routing and D+/D- line levels.
+  struct PortInfo {
+    bool phyOtg = false;      // internal PHY routed to USB OTG
+    bool powered = false;     // HPRT.PrtPwr
+    bool connected = false;   // HPRT.PrtConnSts: a device pull-up is seen
+    bool enabled = false;     // HPRT.PrtEna: port reset done, device enumerating/enumerated
+    uint8_t lineState = 0;    // HPRT.PrtLnSts: bit0 = D+, bit1 = D-
+  };
+  PortInfo portInfo() const;
 
  private:
   static void hostTask(void* arg);
@@ -109,7 +118,7 @@ class FtdiLink : public ByteLink {
   volatile uint16_t seenVid_ = 0, seenPid_ = 0;
   int lastScanCount_ = -1;
   uint32_t lastScanMs_ = 0;
-  char note_[112] = {0};
+  char note_[160] = {0};
   mutable portMUX_TYPE noteMux_ = portMUX_INITIALIZER_UNLOCKED;
   // Updated from the USB client task and the engine task, read by the UI.
   std::atomic<uint32_t> parityErr_{0}, frameErr_{0}, breakSeen_{0}, overrun_{0}, usbErr_{0};

@@ -27,7 +27,7 @@ struct JobInfo {
   uint32_t id = 0;
   Job job = Job::None;
   JobState state = JobState::Idle;
-  char message[192] = {0};
+  char message[256] = {0};
   uint32_t startedMs = 0, finishedMs = 0;
 };
 
@@ -61,7 +61,9 @@ struct AdapterInfo {
   int usbDevices = -1;          // enumerated USB devices on the OTG port (-1 = unknown)
   uint32_t deviceEvents = 0;    // NEW_DEV events since boot
   uint16_t seenVid = 0, seenPid = 0;
-  char note[112] = {0};         // why no adapter is attached ("" when attached)
+  char note[160] = {0};         // why no adapter is attached ("" when attached)
+  bool phyOtg = false, portPowered = false, portConnected = false;
+  uint8_t lineState = 0;        // D+ (bit0), D- (bit1)
 };
 
 struct EngineState {
@@ -96,7 +98,7 @@ struct EngineState {
   float batteryV = -1;
   uint32_t parityErrors = 0, frameErrors = 0;
   AdapterInfo adapter;
-  char autoMsg[192] = {0};
+  char autoMsg[256] = {0};
   uint32_t autoAttempts = 0;
   // recording
   bool recording = false;
