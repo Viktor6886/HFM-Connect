@@ -348,7 +348,8 @@ static void hUsb() {
     w.kv("host_ready", f->hostReady()).kv("attached", f->attached());
     int nd = f->usbDevices();
     if (nd >= 0) w.kv("usb_devices", (uint32_t)nd); else w.kvNull("usb_devices");
-    w.kv("dev_events", f->deviceEvents());
+    w.kv("dev_events", f->deviceEvents()).kv("enum_failures", f->enumFailures());
+    w.kv("reenum_count", f->reenumCount()).kv("reenum_max", (uint32_t)FtdiLink::kMaxReenum);
     w.key("port").beginObject().kv("phy_otg", pi.phyOtg).kv("powered", pi.powered).kv("connected", pi.connected);
     w.kv("enabled", pi.enabled).kv("dp", (pi.lineState & 1) != 0).kv("dm", (pi.lineState & 2) != 0).endObject();
     FtdiLink::SeenDevice d[FtdiLink::kMaxSeen];
@@ -370,6 +371,15 @@ static void hUsb() {
     w.endArray();
   }
   w.endObject();
+  sendSmall(w);
+}
+
+static void hUsbReset() {
+  FtdiLink* f = Engine.usbLink();
+  if (!f) return sendError(409, "USB host not used");
+  f->requestReenumerate();
+  JsonWriter w(64);
+  w.beginObject().kv("ok", true).endObject();
   sendSmall(w);
 }
 
@@ -712,6 +722,7 @@ void webBegin() {
   server.on("/index.html", HTTP_GET, hIndex);
   server.on("/api/status", HTTP_GET, hStatus);
   server.on("/api/usb", HTTP_GET, hUsb);
+  server.on("/api/usb/reset", HTTP_POST, hUsbReset);
   server.on("/api/ecu", HTTP_GET, hEcu);
   server.on("/api/dtc", HTTP_GET, hDtc);
   server.on("/api/live", HTTP_GET, hLive);

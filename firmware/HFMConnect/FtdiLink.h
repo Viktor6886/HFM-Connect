@@ -85,6 +85,15 @@ class FtdiLink : public ByteLink {
   static const int kLogLen = 120;
   int usbLog(char (*out)[kLogLen], int max) const;
 
+  // Re-enumeration: ESP-IDF disables a hub port after one failed enumeration
+  // (e.g. "CHECK_SHORT_DEV_DESC FAILED" -> "Port disabled") and never retries.
+  // The root port is then powered off and on, which re-enumerates the hub and
+  // the devices behind it like a cable re-plug. Automatic, limited attempts.
+  static const int kMaxReenum = 5;
+  void requestReenumerate() { reenumRequest_ = true; }
+  uint32_t reenumCount() const { return reenumCount_; }
+  uint32_t enumFailures() const { return enumFailures_; }
+
  private:
   static void hostTask(void* arg);
   static void clientTask(void* arg);
@@ -95,6 +104,7 @@ class FtdiLink : public ByteLink {
 
   void openDevice(uint8_t addr);
   void scanDevices();
+  void reenumerate();
   void setNote(const char* fmt, ...);
   void remember(uint8_t addr, const usb_device_desc_t* dd, const usb_device_info_t* di);
   static void logLine(const char* text);
@@ -139,6 +149,10 @@ class FtdiLink : public ByteLink {
   int lastScanCount_ = -1;
   uint32_t lastScanMs_ = 0;
   char note_[160] = {0};
+  std::atomic<bool> reenumRequest_{false};
+  std::atomic<uint32_t> enumFailures_{0};
+  uint32_t enumFailMs_ = 0;
+  uint32_t reenumCount_ = 0;  // automatic attempts since the adapter was last attached
   SeenDevice seen_[kMaxSeen];
   int seenCount_ = 0;
   mutable portMUX_TYPE noteMux_ = portMUX_INITIALIZER_UNLOCKED;

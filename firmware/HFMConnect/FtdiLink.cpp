@@ -59,6 +59,8 @@ static portMUX_TYPE gLogMux = portMUX_INITIALIZER_UNLOCKED;
 static char gLog[FtdiLink::kLogLines][FtdiLink::kLogLen];
 static uint32_t gLogHead = 0;  // total lines written
 static vprintf_like_t gPrevVprintf = nullptr;
+static FtdiLink* gSelf = nullptr;
+static volatile bool gEnumFailed = false;
 
 void FtdiLink::logLine(const char* text) {
   char t[kLogLen];
@@ -80,8 +82,11 @@ int FtdiLink::logHook(const char* fmt, va_list ap) {
   va_end(cp);
   // Keep USB stack messages only (tags of the ESP-IDF usb component).
   if (strstr(t, "USB") || strstr(t, "HUB") || strstr(t, "HCD") || strstr(t, "ENUM") || strstr(t, "EXT_") ||
-      strstr(t, "usb") || strstr(t, "hub"))
+      strstr(t, "usb") || strstr(t, "hub")) {
     logLine(t);
+    // A port given up by the hub driver: schedule re-enumeration.
+    if (strstr(t, "Port disabled") || strstr(t, "FAILED")) gEnumFailed = true;
+  }
   return gPrevVprintf ? gPrevVprintf(fmt, ap) : 0;
 }
 
@@ -198,6 +203,7 @@ bool FtdiLink::begin() {
   txDone_ = xSemaphoreCreateBinary();
   ioMtx_ = xSemaphoreCreateMutex();
   rx_ = xStreamBufferCreate(1024, 1);
+  gSelf = this;
   gPrevVprintf = esp_log_set_vprintf(logHook);
   usb_host_config_t hc = {};
   hc.skip_phy_setup = false;
@@ -263,11 +269,46 @@ void FtdiLink::clientTask(void* arg) {
     if (self->gone_ && !self->rxActive_) self->closeDevice();
     // A device enumerated before this client registered (adapter already
     // plugged in at boot) produces no NEW_DEV event: look for it explicitly.
+    if (gEnumFailed) {
+      gEnumFailed = false;
+      self->enumFailures_++;
+      self->enumFailMs_ = millis();
+      if (!self->dev_ && self->reenumCount_ < (uint32_t)kMaxReenum) self->reenumRequest_ = true;
+    }
+    // Wait 1.5 s after a failure so the hub driver finishes its own recovery.
+    if (self->reenumRequest_ && !self->dev_ && millis() - self->enumFailMs_ >= 1500) {
+      self->reenumRequest_ = false;
+      self->reenumerate();
+    }
     if (!self->dev_ && self->pendingAddr_ < 0 && millis() - self->lastScanMs_ >= 1000) {
       self->lastScanMs_ = millis();
       self->scanDevices();
     }
   }
+}
+
+void FtdiLink::reenumerate() {
+  reenumCount_++;
+  char t[64];
+  snprintf(t, sizeof t, "re-enumerate: root port power cycle %lu", (unsigned long)reenumCount_);
+  logLine(t);
+  esp_err_t e = usb_host_lib_set_root_port_power(false);
+  if (e != ESP_OK) {
+    snprintf(t, sizeof t, "root port off: %s", esp_err_to_name(e));
+    logLine(t);
+    return;
+  }
+  // Let the host library process the disconnect of the hub and its devices.
+  for (int i = 0; i < 25; i++) usb_host_client_handle_events(client_, pdMS_TO_TICKS(20));
+  e = usb_host_lib_set_root_port_power(true);
+  if (e != ESP_OK) {
+    snprintf(t, sizeof t, "root port on: %s", esp_err_to_name(e));
+    logLine(t);
+  }
+  lastScanCount_ = -1;
+  portENTER_CRITICAL(&noteMux_);
+  seenCount_ = 0;
+  portEXIT_CRITICAL(&noteMux_);
 }
 
 void FtdiLink::scanDevices() {
@@ -363,6 +404,7 @@ void FtdiLink::openDevice(uint8_t addr) {
   rxX_->context = this;
   rxActive_ = usb_host_transfer_submit(rxX_) == ESP_OK;
   attached_ = true;
+  reenumCount_ = 0;
   setNote("");
   Serial.printf("[usb] FTDI adapter %04X:%04X bcd %04X attached (interface %u, IN %02X, OUT %02X)\n", vid_, pid_, bcd_,
                 iface_, epIn_, epOut_);

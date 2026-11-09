@@ -301,6 +301,8 @@ R.connect = async () => {
     <h2 class="section">Состояние канала</h2><div class="card pad" id="linkBox"></div>
     <h2 class="section">USB-диагностика</h2>
     <div class="card pad"><div class="small muted">Все USB-устройства, которые определил USB-хост (хаб тоже), и последние сообщения USB-стека. Адаптер FT232R — VID:PID 0403:6001.</div>
+      <div class="small mt" id="usbEnum"></div>
+      <div class="btns mt"><button class="btn sm sec" id="usbReset">Переопределить USB-устройства</button></div>
       <div id="usbDevs" class="mt"></div><div class="trace mt" id="usbLog" style="max-height:220px"></div></div>
     <h2 class="section">Порядок подключения</h2>
     <div class="list steps">
@@ -340,6 +342,11 @@ R.connect = async () => {
   every(pollTrace, 700);
   every(pollUsb, 2000);
   pollUsb();
+  $('#usbReset').addEventListener('click', async e => {
+    e.target.disabled = true;
+    try { await api('usb/reset', {method: 'POST'}); } catch (x) {}
+    setTimeout(() => { e.target.disabled = false; pollUsb(); }, 3000);
+  });
 };
 
 async function pollUsb() {
@@ -348,6 +355,7 @@ async function pollUsb() {
   try {
     const u = await api('usb');
     if (!u.available) { box.textContent = 'Транспорт UART: USB-хост не используется.'; return; }
+    $('#usbEnum').textContent = `Сбоев определения: ${u.enum_failures} · автоповторов: ${u.reenum_count} из ${u.reenum_max}`;
     const cls = c => c === 9 ? 'хаб' : c === 0 ? 'по интерфейсу' : '0x' + c.toString(16).padStart(2, '0');
     box.innerHTML = u.devices.length
       ? `<div class="trace"><table><thead><tr><th>адрес</th><th>VID:PID</th><th>класс</th><th>скорость</th><th>подключено</th></tr></thead><tbody>${u.devices.map(d => `<tr><td>${d.addr}</td><td>${esc(d.vid_pid)}${d.vid_pid.startsWith('0403:') ? ' · FTDI' : ''}</td><td>${cls(d.class)}</td><td>${esc(d.speed)}</td><td>${d.behind_hub ? 'хаб, порт ' + d.hub_port : 'корневой порт'}</td></tr>`).join('')}</tbody></table></div>`
