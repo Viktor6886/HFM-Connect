@@ -1,6 +1,7 @@
 #ifdef ARDUINO
 #include "FtdiLink.h"
 
+#include <stdarg.h>
 #include <string.h>
 
 #include "Config.h"
@@ -47,6 +48,42 @@ const char* FtdiLink::chipName() const {
   }
 }
 
+void FtdiLink::setNote(const char* fmt, ...) {
+  char t[sizeof note_];
+  va_list ap;
+  va_start(ap, fmt);
+  vsnprintf(t, sizeof t, fmt, ap);
+  va_end(ap);
+  portENTER_CRITICAL(&noteMux_);
+  memcpy(note_, t, sizeof note_);
+  portEXIT_CRITICAL(&noteMux_);
+  if (t[0]) Serial.printf("[usb] %s\n", t);
+}
+
+void FtdiLink::note(char* out, size_t n) const {
+  if (!n) return;
+  if (attached_) {
+    out[0] = 0;
+    return;
+  }
+  if (!hostReady_) {
+    snprintf(out, n, "USB-хост не запущен (%s)", esp_err_to_name(installErr_));
+    return;
+  }
+  portENTER_CRITICAL(&noteMux_);
+  strlcpy(out, note_, n);
+  portEXIT_CRITICAL(&noteMux_);
+  if (!out[0] && usbDevices() <= 0)
+    strlcpy(out, "на разъёме USB (OTG) нет USB-устройств: нет 5 В (VBUS) на разъёме или адаптер не в том разъёме", n);
+}
+
+int FtdiLink::usbDevices() const {
+  if (!hostReady_) return -1;
+  usb_host_lib_info_t info = {};
+  if (usb_host_lib_info(&info) != ESP_OK) return -1;
+  return info.num_devices;
+}
+
 bool FtdiLink::begin() {
   if (hostReady_) return true;
   ctrlDone_ = xSemaphoreCreateBinary();
@@ -56,16 +93,25 @@ bool FtdiLink::begin() {
   usb_host_config_t hc = {};
   hc.skip_phy_setup = false;
   hc.intr_flags = ESP_INTR_FLAG_LEVEL1;
-  if (usb_host_install(&hc) != ESP_OK) return false;
+  installErr_ = usb_host_install(&hc);
+  if (installErr_ != ESP_OK) {
+    Serial.printf("[usb] usb_host_install: %s\n", esp_err_to_name(installErr_));
+    return false;
+  }
   xTaskCreatePinnedToCore(hostTask, "usb-host", 4096, this, 5, nullptr, 0);
   usb_host_client_config_t cc = {};
   cc.is_synchronous = false;
   cc.max_num_event_msg = 8;
   cc.async.client_event_callback = clientEvent;
   cc.async.callback_arg = this;
-  if (usb_host_client_register(&cc, &client_) != ESP_OK) return false;
+  installErr_ = usb_host_client_register(&cc, &client_);
+  if (installErr_ != ESP_OK) {
+    Serial.printf("[usb] usb_host_client_register: %s\n", esp_err_to_name(installErr_));
+    return false;
+  }
   xTaskCreatePinnedToCore(clientTask, "usb-ftdi", 4096, this, 5, nullptr, 0);
   hostReady_ = true;
+  Serial.println("[usb] USB host ready, waiting for the FTDI adapter on the USB (OTG) port");
   return true;
 }
 
@@ -80,6 +126,7 @@ void FtdiLink::hostTask(void*) {
 void FtdiLink::clientEvent(const usb_host_client_event_msg_t* msg, void* arg) {
   FtdiLink* self = static_cast<FtdiLink*>(arg);
   if (msg->event == USB_HOST_CLIENT_EVENT_NEW_DEV) {
+    self->devEvents_++;
     if (!self->dev_) self->pendingAddr_ = msg->new_dev.address;
   } else if (msg->event == USB_HOST_CLIENT_EVENT_DEV_GONE) {
     if (self->dev_ && msg->dev_gone.dev_hdl == self->dev_) {
@@ -100,20 +147,50 @@ void FtdiLink::clientTask(void* arg) {
       self->openDevice((uint8_t)a);
     }
     if (self->gone_ && !self->rxActive_) self->closeDevice();
+    // A device enumerated before this client registered (adapter already
+    // plugged in at boot) produces no NEW_DEV event: look for it explicitly.
+    if (!self->dev_ && self->pendingAddr_ < 0 && millis() - self->lastScanMs_ >= 1000) {
+      self->lastScanMs_ = millis();
+      self->scanDevices();
+    }
   }
+}
+
+void FtdiLink::scanDevices() {
+  int n = usbDevices();
+  if (n == lastScanCount_) return;  // rejected devices are not retried until the set changes
+  lastScanCount_ = n;
+  if (n <= 0) return;
+  uint8_t addrs[8];
+  int cnt = 0;
+  if (usb_host_device_addr_list_fill(sizeof addrs, addrs, &cnt) != ESP_OK) return;
+  for (int i = 0; i < cnt && !dev_; i++) openDevice(addrs[i]);
 }
 
 void FtdiLink::openDevice(uint8_t addr) {
   usb_device_handle_t dev = nullptr;
-  if (usb_host_device_open(client_, addr, &dev) != ESP_OK) return;
+  esp_err_t e = usb_host_device_open(client_, addr, &dev);
+  if (e != ESP_OK) {
+    setNote("USB-устройство (адрес %u) не открывается: %s", addr, esp_err_to_name(e));
+    return;
+  }
   const usb_device_desc_t* dd = nullptr;
-  if (usb_host_get_device_descriptor(dev, &dd) != ESP_OK || dd->idVendor != FTDI_VID) {
+  if (usb_host_get_device_descriptor(dev, &dd) != ESP_OK) {
+    usb_host_device_close(client_, dev);
+    setNote("USB-устройство (адрес %u): нет дескриптора", addr);
+    return;
+  }
+  seenVid_ = dd->idVendor;
+  seenPid_ = dd->idProduct;
+  if (dd->idVendor != FTDI_VID) {
     usb_host_device_close(client_, dev);  // not an FTDI adapter: ignore it
+    setNote("найдено USB-устройство %04X:%04X, но это не FTDI (нужен VID 0403)", dd->idVendor, dd->idProduct);
     return;
   }
   const usb_config_desc_t* cfg = nullptr;
   if (usb_host_get_active_config_descriptor(dev, &cfg) != ESP_OK) {
     usb_host_device_close(client_, dev);
+    setNote("FTDI %04X:%04X: нет дескриптора конфигурации", dd->idVendor, dd->idProduct);
     return;
   }
   // Walk the configuration: first interface with a bulk IN and a bulk OUT endpoint.
@@ -132,8 +209,15 @@ void FtdiLink::openDevice(uint8_t addr) {
       }
     }
   }
-  if (curIf < 0 || !inEp || !outEp || usb_host_interface_claim(client_, dev, (uint8_t)curIf, 0) != ESP_OK) {
+  if (curIf < 0 || !inEp || !outEp) {
     usb_host_device_close(client_, dev);
+    setNote("FTDI %04X:%04X: нет bulk-каналов в интерфейсе", dd->idVendor, dd->idProduct);
+    return;
+  }
+  e = usb_host_interface_claim(client_, dev, (uint8_t)curIf, 0);
+  if (e != ESP_OK) {
+    usb_host_device_close(client_, dev);
+    setNote("FTDI %04X:%04X: интерфейс %d не захвачен: %s", dd->idVendor, dd->idProduct, curIf, esp_err_to_name(e));
     return;
   }
   dev_ = dev;
@@ -160,6 +244,9 @@ void FtdiLink::openDevice(uint8_t addr) {
   rxX_->context = this;
   rxActive_ = usb_host_transfer_submit(rxX_) == ESP_OK;
   attached_ = true;
+  setNote("");
+  Serial.printf("[usb] FTDI adapter %04X:%04X bcd %04X attached (interface %u, IN %02X, OUT %02X)\n", vid_, pid_, bcd_,
+                iface_, epIn_, epOut_);
 }
 
 void FtdiLink::closeDevice() {
@@ -173,6 +260,8 @@ void FtdiLink::closeDevice() {
   open_ = false;
   attached_ = false;
   configured_ = false;
+  lastScanCount_ = -1;
+  setNote("адаптер отключён от USB");
 }
 
 void FtdiLink::rxCb(usb_transfer_t* x) {

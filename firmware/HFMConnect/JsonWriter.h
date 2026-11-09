@@ -101,8 +101,18 @@ class JsonWriter {
             char t[8];
             snprintf(t, sizeof t, "\\u%04x", c);
             buf_ += t;
+          } else if (c < 0x80) {
+            buf_ += (char)c;
           } else {
-            buf_ += (char)c;  // UTF-8 passes through
+            // UTF-8 passes through; a sequence cut by a fixed-size buffer
+            // (or a stray byte) is dropped so the JSON stays valid UTF-8.
+            int len = c >= 0xF8 ? 0 : c >= 0xF0 ? 4 : c >= 0xE0 ? 3 : c >= 0xC2 ? 2 : 0;
+            int k = 1;
+            while (k < len && (p[k] & 0xC0) == 0x80) k++;
+            if (len && k == len) {
+              buf_.append((const char*)p, (size_t)len);
+              p += len - 1;
+            }
           }
       }
     }

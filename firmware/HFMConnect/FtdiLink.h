@@ -49,6 +49,15 @@ class FtdiLink : public ByteLink {
   uint32_t breaksSeen() const { return breakSeen_; }
   uint32_t overruns() const { return overrun_; }
   uint32_t usbErrors() const { return usbErr_; }
+  // USB diagnostics for "adapter not detected": host install result, number
+  // of enumerated USB devices, the last device seen and why it was not used.
+  esp_err_t installError() const { return installErr_; }
+  int usbDevices() const;
+  uint32_t deviceEvents() const { return devEvents_; }
+  uint16_t seenVid() const { return seenVid_; }
+  uint16_t seenPid() const { return seenPid_; }
+  // Human-readable reason (Russian) why no adapter is attached; "" when attached.
+  void note(char* out, size_t n) const;
 
  private:
   static void hostTask(void* arg);
@@ -59,6 +68,8 @@ class FtdiLink : public ByteLink {
   static void rxCb(usb_transfer_t* x);
 
   void openDevice(uint8_t addr);
+  void scanDevices();
+  void setNote(const char* fmt, ...);
   void closeDevice();
   bool configure();
   bool ctrl(uint8_t request, uint16_t value, uint16_t index);
@@ -93,6 +104,13 @@ class FtdiLink : public ByteLink {
   uint16_t port_ = 1;  // FTDI "interface A" index for vendor requests
   uint16_t vid_ = 0, pid_ = 0, bcd_ = 0;
   uint32_t attachCount_ = 0;
+  esp_err_t installErr_ = ESP_OK;
+  std::atomic<uint32_t> devEvents_{0};
+  volatile uint16_t seenVid_ = 0, seenPid_ = 0;
+  int lastScanCount_ = -1;
+  uint32_t lastScanMs_ = 0;
+  char note_[112] = {0};
+  mutable portMUX_TYPE noteMux_ = portMUX_INITIALIZER_UNLOCKED;
   // Updated from the USB client task and the engine task, read by the UI.
   std::atomic<uint32_t> parityErr_{0}, frameErr_{0}, breakSeen_{0}, overrun_{0}, usbErr_{0};
   Parity curParity_ = Parity::None;

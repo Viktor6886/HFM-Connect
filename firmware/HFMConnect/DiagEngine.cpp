@@ -135,6 +135,11 @@ void DiagEngine::readHardware() {
     st_.adapter.breaks = ftdi_->breaksSeen();
     st_.adapter.overruns = ftdi_->overruns();
     st_.adapter.hostReady = ftdi_->hostReady();
+    st_.adapter.usbDevices = ftdi_->usbDevices();
+    st_.adapter.deviceEvents = ftdi_->deviceEvents();
+    st_.adapter.seenVid = ftdi_->seenVid();
+    st_.adapter.seenPid = ftdi_->seenPid();
+    ftdi_->note(st_.adapter.note, sizeof st_.adapter.note);
   } else if (kline_) {
     st_.parityErrors = kline_->parityErrors();
     st_.frameErrors = kline_->frameErrors();
@@ -255,7 +260,7 @@ static uint16_t decodeAll(const svc::FaultMemory& fm, const prof::EcuProfile& p,
 }
 
 void DiagEngine::execute(Job j, uint32_t arg, const char* text) {
-  char msg[96] = "OK";
+  char msg[192] = "OK";
   bool ok = true;
   lock();
   st_.job.state = JobState::Running;
@@ -268,7 +273,7 @@ void DiagEngine::execute(Job j, uint32_t arg, const char* text) {
       autoBackoffMs_ = HFM_AUTOCONNECT_MIN_MS;
       if (!adapterPresent()) {
         ok = false;
-        snprintf(msg, sizeof msg, "Адаптер K-Line не обнаружен (USB). Проверьте кабель и питание VBUS 5 В");
+        adapterMissing(msg, sizeof msg);
         break;
       }
       if (session_->ready()) session_->disconnect();
@@ -566,7 +571,7 @@ void DiagEngine::livePoll() {
   unlock();
   if (s != LinkStatus::Ok) {
     // Read-only: re-initialise (connect() retries up to 3 times).
-    char msg[96];
+    char msg[192];
     bool ok;
     doConnect(msg, sizeof msg, ok);
     if (!ok) {
@@ -653,6 +658,15 @@ void DiagEngine::recordRow() {
   unlock();
 }
 
+void DiagEngine::adapterMissing(char* msg, size_t n) {
+  char why[112] = {0};
+  if (ftdi_) ftdi_->note(why, sizeof why);
+  if (why[0])
+    snprintf(msg, n, "Адаптер K-Line не обнаружен: %s", why);
+  else
+    strlcpy(msg, "Адаптер K-Line не обнаружен (USB): ожидание определения устройства", n);
+}
+
 bool DiagEngine::adapterPresent() {
   if (ftdi_) return ftdi_->attached();
   return kline_ != nullptr;
@@ -673,14 +687,18 @@ void DiagEngine::autoConnect() {
   if (guard_.state() != guard::State::Idle && guard_.state() != guard::State::FaultStop) return;
   if (!adapterPresent()) {
     lock();
-    strlcpy(st_.autoMsg, "Ожидание адаптера K-Line (USB FTDI)", sizeof st_.autoMsg);
+    unlock();
+    char why[192];
+    adapterMissing(why, sizeof why);
+    lock();
+    strlcpy(st_.autoMsg, why, sizeof st_.autoMsg);
     unlock();
     return;
   }
   uint32_t now = millis();
   if (now - lastAutoMs_ < autoBackoffMs_) return;
   lastAutoMs_ = now;
-  char msg[96];
+  char msg[192];
   bool ok = false;
   doConnect(msg, sizeof msg, ok);
   if (ok) doIdentify(msg, sizeof msg, ok);

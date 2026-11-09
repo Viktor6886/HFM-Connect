@@ -27,7 +27,7 @@ struct JobInfo {
   uint32_t id = 0;
   Job job = Job::None;
   JobState state = JobState::Idle;
-  char message[96] = {0};
+  char message[192] = {0};
   uint32_t startedMs = 0, finishedMs = 0;
 };
 
@@ -57,6 +57,11 @@ struct AdapterInfo {
   uint16_t vid = 0, pid = 0;
   const char* chip = "нет";
   uint32_t attachCount = 0, usbErrors = 0, breaks = 0, overruns = 0;
+  // USB diagnostics while no adapter is attached.
+  int usbDevices = -1;          // enumerated USB devices on the OTG port (-1 = unknown)
+  uint32_t deviceEvents = 0;    // NEW_DEV events since boot
+  uint16_t seenVid = 0, seenPid = 0;
+  char note[112] = {0};         // why no adapter is attached ("" when attached)
 };
 
 struct EngineState {
@@ -91,7 +96,7 @@ struct EngineState {
   float batteryV = -1;
   uint32_t parityErrors = 0, frameErrors = 0;
   AdapterInfo adapter;
-  char autoMsg[128] = {0};
+  char autoMsg[192] = {0};
   uint32_t autoAttempts = 0;
   // recording
   bool recording = false;
@@ -131,6 +136,7 @@ class DiagEngine {
   void autoConnect();
   uint8_t vehicleCylinders();
   bool adapterPresent();
+  void adapterMissing(char* msg, size_t n);
   void purgeWatchdog();
   void fillFacts(guard::Facts& f);
   void finishJob(bool ok, const char* msg);

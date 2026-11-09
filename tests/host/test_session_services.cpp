@@ -7,6 +7,7 @@
 #include "HfmServices.h"
 #include "HfmSession.h"
 #include "ImpulseDecoder.h"
+#include "JsonWriter.h"
 #include "ServiceGuard.h"
 #include "SimEcu.h"
 #include "minitest.h"
@@ -397,4 +398,17 @@ TEST(vdo_prefixes_need_experimental_optin) {
   Rig r;
   r.s.connect();
   CHECK(r.s.prefix(0x22) == LinkStatus::NotAllowed);
+}
+
+TEST(json_drops_utf8_cut_by_buffer) {
+  // A Russian message truncated by a fixed-size buffer must not end with a
+  // broken UTF-8 byte (the browser showed it as "?").
+  char msg[12];
+  snprintf(msg, sizeof msg, "%s", "\xD0\x9F\xD0\xB8\xD1\x82\xD0\xB0\xD0\xBD\xD0\xB8\xD0\xB5");  // "Питание"
+  JsonWriter w;
+  w.beginObject().kv("m", msg).endObject();
+  CHECK(w.str() == "{\"m\":\"\xD0\x9F\xD0\xB8\xD1\x82\xD0\xB0\xD0\xBD\"}");
+  JsonWriter w2;
+  w2.beginObject().kv("m", "a\xB8\xD1\x8F\xF0\x9F\x98\x80z").endObject();
+  CHECK(w2.str() == "{\"m\":\"a\xD1\x8F\xF0\x9F\x98\x80z\"}");
 }

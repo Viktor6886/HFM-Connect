@@ -323,8 +323,9 @@ R.connect = async () => {
       : `<button class="btn full" onclick="job('connect',{},this)">Подключить</button>`;
     const a = s.adapter || {};
     $('#linkBox').innerHTML = kvTable([
-      ['Адаптер', a.present ? `${esc(a.chip)} · ${esc(a.vid_pid)}${a.configured ? '' : ' · не настроен'}` : (a.host_ready ? 'не обнаружен (USB OTG, нужно 5 В VBUS)' : 'USB-хост не запущен')],
+      ['Адаптер', a.present ? `${esc(a.chip)} · ${esc(a.vid_pid)}${a.configured ? '' : ' · не настроен'}` : 'не обнаружен: ' + esc(a.note || 'ожидание USB-устройства')],
       ['Автоподключение', s.auto_connect ? esc(s.auto_msg || 'включено') + (s.auto_attempts ? ` · попыток ${s.auto_attempts}` : '') : 'выключено в настройках'],
+      ['USB: устройств на разъёме / событий', `${a.usb_devices == null ? '—' : a.usb_devices} / ${a.dev_events || 0}` + (a.seen_vid_pid ? ` · последнее ${esc(a.seen_vid_pid)}` : '')],
       ['USB: подключений / ошибок', `${a.attach_count || 0} / ${a.usb_errors || 0}`],
       ['Сеанс', s.session], ['Последняя ошибка', s.last_error], ['Транспорт', s.transport],
       ['Передано байтов', s.tx], ['Ошибок протокола', s.errors],
