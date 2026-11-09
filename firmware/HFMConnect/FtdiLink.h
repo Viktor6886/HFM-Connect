@@ -15,6 +15,8 @@
 #include <Arduino.h>
 #include <freertos/stream_buffer.h>
 
+#include <atomic>
+
 #include "ByteLink.h"
 #include "usb/usb_host.h"
 
@@ -91,7 +93,8 @@ class FtdiLink : public ByteLink {
   uint16_t port_ = 1;  // FTDI "interface A" index for vendor requests
   uint16_t vid_ = 0, pid_ = 0, bcd_ = 0;
   uint32_t attachCount_ = 0;
-  volatile uint32_t parityErr_ = 0, frameErr_ = 0, breakSeen_ = 0, overrun_ = 0, usbErr_ = 0;
+  // Updated from the USB client task and the engine task, read by the UI.
+  std::atomic<uint32_t> parityErr_{0}, frameErr_{0}, breakSeen_{0}, overrun_{0}, usbErr_{0};
   Parity curParity_ = Parity::None;
   bool curBreak_ = false;
   bool lineKnown_ = false;

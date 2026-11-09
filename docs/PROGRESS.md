@@ -22,6 +22,7 @@
 | Host-тесты (zig c++, Windows) | 49 / 656 проверок / 0 ошибок |
 | check_tables.py | все таблицы совпадают с `data/protocol/` |
 | build_webui.py --check / node --check | OK |
+| arduino-cli локально, сессия 3 (esp32 3.3.8, CDCOnBoot=default, FTDI) | успешно, 0 предупреждений: 1 187 905 Б (90 % APP), RAM 77 820 Б (23 %) |
 | arduino-cli в CI (ESP32S3 Dev Module, Default 4MB) | успешно, 0 предупреждений: 1 112 353 Б (84 % APP), RAM 78 КБ (23 %) — run 42508102461 |
 
 ## Что изменилось в сессии 3

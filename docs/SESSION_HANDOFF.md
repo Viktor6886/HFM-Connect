@@ -46,7 +46,7 @@ Config.h, HFMConnect.ino, DtcCatalog.h, WebUiAssets.h; `webui/app.js`;
 | Host-тесты (Windows, zig c++) | 49 тестов, 656 проверок, 0 ошибок |
 | check_tables.py | таблицы и карты = `data/protocol/` |
 | build_webui.py --check, node --check | OK |
-| Компиляция ESP32-S3 локально (esp32 3.3.8, CDCOnBoot=default) | см. PROGRESS.md / TESTING.md |
+| Компиляция ESP32-S3 локально (esp32 3.3.8, CDCOnBoot=default) | успешно, 0 предупреждений: 1 187 905 Б (90 % APP), RAM 77 820 Б (23 %) |
 | **FTDI-адаптер на устройстве** | **не проверялся** (H11, H12) |
 | **На реальном ЭБУ** | **не проводилось** |
 
