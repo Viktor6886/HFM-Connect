@@ -322,6 +322,10 @@ void FtdiLink::scanDevices() {
   char t[64];
   snprintf(t, sizeof t, "scan: %d device(s) enumerated, %d address(es) listed", n, cnt);
   logLine(t);
+  // Rebuild the list of seen devices: unplugged ones must not stay listed.
+  portENTER_CRITICAL(&noteMux_);
+  seenCount_ = 0;
+  portEXIT_CRITICAL(&noteMux_);
   for (int i = 0; i < cnt && !dev_; i++) openDevice(addrs[i]);
 }
 

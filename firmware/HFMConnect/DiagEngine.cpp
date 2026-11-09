@@ -190,7 +190,19 @@ void DiagEngine::doConnect(char* msg, size_t n, bool& ok) {
   st_.connectedAtMs = session_->connectedAtMs();
   st_.lastError = s;
   unlock();
-  if (!ok) snprintf(msg, n, "Нет синхронизации AA/55 (%s): проверьте питание, массу и K-Line", linkStatusCode(s));
+  if (ok) return;
+  // The adapter echoes its own TX: an echo proves the adapter and its +12 V
+  // supply work, so the missing 55 points at the ECU side of the line.
+  uint8_t echo = session_->lastSyncEcho();
+  if (s == LinkStatus::NoSync && echo == 0xAA)
+    snprintf(msg, n,
+             "Нет ответа ЭБУ (NO_SYNC): эхо AA есть — адаптер и линия в порядке; проверьте контакт HFM на X11/4 "
+             "и зажигание");
+  else if (s == LinkStatus::NoSync && echo == 0)
+    snprintf(msg, n, "Нет эха AA (NO_SYNC): на адаптер не подано +12 В или K-Line замкнута на массу");
+  else
+    snprintf(msg, n, "Нет синхронизации AA/55 (%s, эхо %02X): проверьте питание, массу и K-Line", linkStatusCode(s),
+             echo);
 }
 
 void DiagEngine::doIdentify(char* msg, size_t n, bool& ok) {
