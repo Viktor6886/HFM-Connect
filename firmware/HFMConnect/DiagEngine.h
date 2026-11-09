@@ -124,6 +124,7 @@ class DiagEngine {
   void reresolveProfile();  // after settings change (experimental / engineer mode)
   const char* sessionId() const { return sessionId_; }
   const char* transportName();
+  FtdiLink* usbLink() { return ftdi_; }  // null for the UART transport
 
   static void taskEntry(void* self);
 

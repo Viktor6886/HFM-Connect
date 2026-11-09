@@ -210,7 +210,7 @@ R.home = () => {
     const v = s.vehicle;
     $('#homeBox').innerHTML = `
       <div class="grid c2">
-        <div class="card pad stat"><div class="k">K-Line</div><div class="n" style="font-size:22px">${esc({ready: 'На связи', error: 'Ошибка', connecting: 'Подключение', disconnected: 'Отключено'}[s.session] || s.session)}</div><div class="small muted">K-Line UART · TX ${s.tx} · ошибок ${s.errors}</div></div>
+        <div class="card pad stat"><div class="k">K-Line</div><div class="n" style="font-size:22px">${esc({ready: 'На связи', error: 'Ошибка', connecting: 'Подключение', disconnected: 'Отключено'}[s.session] || s.session)}</div><div class="small muted">${s.transport === 'ftdi-usb' ? 'USB FTDI' : 'K-Line UART'} · TX ${s.tx} · ошибок ${s.errors}</div></div>
         <div class="card pad stat"><div class="k">Память неисправностей</div><div class="n">${dtcN}</div><div class="small muted">${S.dtc && S.dtc.valid ? 'установленных битов' : 'не прочитана'}</div></div>
         <div class="card pad stat"><div class="k">ЭБУ</div><div style="font-weight:600;margin-top:4px">${esc(s.ecu_present ? s.ecu : 'не идентифицирован')}</div></div>
         <div class="card pad stat"><div class="k">Автомобиль</div><div style="font-weight:600;margin-top:4px">${v ? esc(`${v.chassis} ${v.name} · ${v.engine}`) : 'не выбран'}</div>${v ? `<div class="small muted">${esc(v.norms)}</div>` : ''}</div>
@@ -299,10 +299,13 @@ R.connect = async () => {
       <div class="btns mt2" id="connBtns"></div>
     </div>
     <h2 class="section">Состояние канала</h2><div class="card pad" id="linkBox"></div>
+    <h2 class="section">USB-диагностика</h2>
+    <div class="card pad"><div class="small muted">Все USB-устройства, которые определил USB-хост (хаб тоже), и последние сообщения USB-стека. Адаптер FT232R — VID:PID 0403:6001.</div>
+      <div id="usbDevs" class="mt"></div><div class="trace mt" id="usbLog" style="max-height:220px"></div></div>
     <h2 class="section">Порядок подключения</h2>
     <div class="list steps">
       <div class="step"><div class="num"></div><div><b>Зажигание выключено.</b> Подключите кабель к разъёму X11/4 (W124: 16-конт., контакт 8 — HFM; 38-конт.: контакт 4 — HFM). <span class="muted">Контакт 16 на W124 X11/4 — цепь 15 (зажигание), не OBD-II.</span></div></div>
-      <div class="step"><div class="num"></div><div><b>Адаптер.</b> USB K-Line адаптер (FTDI) — в разъём <b>USB (OTG)</b> ESP32-S3; на этот разъём должно подаваться 5 В (VBUS). Прошивка и журнал Serial — через разъём UART/COM. Масса — контакт 1, питание адаптера +12 В — по схеме кузова.</div></div>
+      <div class="step"><div class="num"></div><div><b>Адаптер.</b> USB K-Line адаптер (FTDI) — в разъём <b>USB (OTG)</b> ESP32-S3 напрямую или через USB-хаб с внешним питанием; адаптеру нужно 5 В (VBUS). На платах с двумя разъёмами прошивка и журнал Serial — через разъём UART/COM. Масса — контакт 1, питание адаптера +12 В — по схеме кузова.</div></div>
       <div class="step"><div class="num"></div><div><b>Зажигание ВКЛ, двигатель не запущен.</b> Лампа CHECK ENGINE может гореть во время сеанса — это штатная индикация связи (MBUSA P-SI-14.00/14).</div></div>
       <div class="step"><div class="num"></div><div><b>Подключение автоматическое.</b> После загрузки и при появлении адаптера: BREAK 177 мс → пауза 214 мс → TX AA → RX AA 55 → чтение F0 00–1B (28 байт). Связь удерживается чтением F0:00 каждые 0,7 с. Кнопка «Отключить» приостанавливает автоподключение до нажатия «Подключить».</div></div>
     </div>
@@ -335,7 +338,23 @@ R.connect = async () => {
       ['Напряжение', s.battery_v == null ? 'АЦП не установлен' : s.battery_v.toFixed(2) + ' В']]);
   }, 1000);
   every(pollTrace, 700);
+  every(pollUsb, 2000);
+  pollUsb();
 };
+
+async function pollUsb() {
+  const box = $('#usbDevs');
+  if (!box) return;
+  try {
+    const u = await api('usb');
+    if (!u.available) { box.textContent = 'Транспорт UART: USB-хост не используется.'; return; }
+    const cls = c => c === 9 ? 'хаб' : c === 0 ? 'по интерфейсу' : '0x' + c.toString(16).padStart(2, '0');
+    box.innerHTML = u.devices.length
+      ? `<div class="trace"><table><thead><tr><th>адрес</th><th>VID:PID</th><th>класс</th><th>скорость</th><th>подключено</th></tr></thead><tbody>${u.devices.map(d => `<tr><td>${d.addr}</td><td>${esc(d.vid_pid)}${d.vid_pid.startsWith('0403:') ? ' · FTDI' : ''}</td><td>${cls(d.class)}</td><td>${esc(d.speed)}</td><td>${d.behind_hub ? 'хаб, порт ' + d.hub_port : 'корневой порт'}</td></tr>`).join('')}</tbody></table></div>`
+      : `<div class="small">Устройств не прочитано (определено USB-хостом: ${u.usb_devices == null ? '—' : u.usb_devices}, событий: ${u.dev_events}).</div>`;
+    $('#usbLog').innerHTML = u.log.length ? u.log.map(l => `<div class="mono small">${esc(l)}</div>`).join('') : '<div class="small muted">сообщений нет</div>';
+  } catch (e) {}
+}
 
 async function pollTrace() {
   if (S.tracePaused) return;

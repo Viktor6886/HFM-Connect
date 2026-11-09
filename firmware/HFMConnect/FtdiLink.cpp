@@ -1,6 +1,7 @@
 #ifdef ARDUINO
 #include "FtdiLink.h"
 
+#include <esp_log.h>
 #include <stdarg.h>
 #include <string.h>
 
@@ -51,6 +52,78 @@ const char* FtdiLink::chipName() const {
   }
 }
 
+// ESP-IDF log capture: boards like the ESP32-S3 Zero have no USB-UART bridge
+// and their only USB port is taken by the host, so USB stack errors are kept
+// for the web UI. Only ESP_LOGE is compiled into the Arduino core libraries.
+static portMUX_TYPE gLogMux = portMUX_INITIALIZER_UNLOCKED;
+static char gLog[FtdiLink::kLogLines][FtdiLink::kLogLen];
+static uint32_t gLogHead = 0;  // total lines written
+static vprintf_like_t gPrevVprintf = nullptr;
+
+void FtdiLink::logLine(const char* text) {
+  char t[kLogLen];
+  snprintf(t, sizeof t, "%lu %s", (unsigned long)(millis() / 1000), text);
+  size_t n = strlen(t);
+  while (n && (t[n - 1] == '\n' || t[n - 1] == '\r')) t[--n] = 0;
+  if (!n) return;
+  portENTER_CRITICAL(&gLogMux);
+  memcpy(gLog[gLogHead % kLogLines], t, sizeof t);
+  gLogHead++;
+  portEXIT_CRITICAL(&gLogMux);
+}
+
+int FtdiLink::logHook(const char* fmt, va_list ap) {
+  char t[kLogLen];
+  va_list cp;
+  va_copy(cp, ap);
+  vsnprintf(t, sizeof t, fmt, cp);
+  va_end(cp);
+  // Keep USB stack messages only (tags of the ESP-IDF usb component).
+  if (strstr(t, "USB") || strstr(t, "HUB") || strstr(t, "HCD") || strstr(t, "ENUM") || strstr(t, "EXT_") ||
+      strstr(t, "usb") || strstr(t, "hub"))
+    logLine(t);
+  return gPrevVprintf ? gPrevVprintf(fmt, ap) : 0;
+}
+
+int FtdiLink::usbLog(char (*out)[kLogLen], int max) const {
+  portENTER_CRITICAL(&gLogMux);
+  uint32_t head = gLogHead;
+  int n = head < (uint32_t)kLogLines ? (int)head : kLogLines;
+  if (n > max) n = max;
+  for (int i = 0; i < n; i++) memcpy(out[i], gLog[(head - n + i) % kLogLines], kLogLen);
+  portEXIT_CRITICAL(&gLogMux);
+  return n;
+}
+
+int FtdiLink::seenDevices(SeenDevice* out, int max) const {
+  portENTER_CRITICAL(&noteMux_);
+  int n = seenCount_ < max ? seenCount_ : max;
+  for (int i = 0; i < n; i++) out[i] = seen_[i];
+  portEXIT_CRITICAL(&noteMux_);
+  return n;
+}
+
+void FtdiLink::remember(uint8_t addr, const usb_device_desc_t* dd, const usb_device_info_t* di) {
+  SeenDevice d;
+  d.addr = addr;
+  d.vid = dd->idVendor;
+  d.pid = dd->idProduct;
+  d.cls = dd->bDeviceClass;
+  d.speed = di ? (uint8_t)di->speed : 0;
+  d.behindHub = di && di->parent.dev_hdl;
+  d.hubPort = di ? di->parent.port_num : 0;
+  portENTER_CRITICAL(&noteMux_);
+  int i = 0;
+  while (i < seenCount_ && seen_[i].addr != addr) i++;
+  if (i == seenCount_ && seenCount_ < kMaxSeen) seenCount_++;
+  if (i < seenCount_) seen_[i] = d;
+  portEXIT_CRITICAL(&noteMux_);
+  char t[96];
+  snprintf(t, sizeof t, "device addr %u %04X:%04X class %02X speed %u %s port %u", addr, d.vid, d.pid, d.cls, d.speed,
+           d.behindHub ? "hub" : "root", d.hubPort);
+  logLine(t);
+}
+
 void FtdiLink::setNote(const char* fmt, ...) {
   char t[sizeof note_];
   va_list ap;
@@ -60,7 +133,10 @@ void FtdiLink::setNote(const char* fmt, ...) {
   portENTER_CRITICAL(&noteMux_);
   memcpy(note_, t, sizeof note_);
   portEXIT_CRITICAL(&noteMux_);
-  if (t[0]) Serial.printf("[usb] %s\n", t);
+  if (t[0]) {
+    Serial.printf("[usb] %s\n", t);
+    logLine(t);
+  }
 }
 
 void FtdiLink::note(char* out, size_t n) const {
@@ -122,12 +198,14 @@ bool FtdiLink::begin() {
   txDone_ = xSemaphoreCreateBinary();
   ioMtx_ = xSemaphoreCreateMutex();
   rx_ = xStreamBufferCreate(1024, 1);
+  gPrevVprintf = esp_log_set_vprintf(logHook);
   usb_host_config_t hc = {};
   hc.skip_phy_setup = false;
   hc.intr_flags = ESP_INTR_FLAG_LEVEL1;
   installErr_ = usb_host_install(&hc);
   if (installErr_ != ESP_OK) {
     Serial.printf("[usb] usb_host_install: %s\n", esp_err_to_name(installErr_));
+    logLine("usb_host_install failed");
     return false;
   }
   xTaskCreatePinnedToCore(hostTask, "usb-host", 4096, this, 5, nullptr, 0);
@@ -143,6 +221,7 @@ bool FtdiLink::begin() {
   }
   xTaskCreatePinnedToCore(clientTask, "usb-ftdi", 4096, this, 5, nullptr, 0);
   hostReady_ = true;
+  logLine("USB host ready");
   Serial.println("[usb] USB host ready, waiting for the FTDI adapter on the USB (OTG) port");
   return true;
 }
@@ -159,6 +238,9 @@ void FtdiLink::clientEvent(const usb_host_client_event_msg_t* msg, void* arg) {
   FtdiLink* self = static_cast<FtdiLink*>(arg);
   if (msg->event == USB_HOST_CLIENT_EVENT_NEW_DEV) {
     self->devEvents_++;
+    char t[40];
+    snprintf(t, sizeof t, "NEW_DEV addr %u", msg->new_dev.address);
+    logLine(t);
     if (!self->dev_) self->pendingAddr_ = msg->new_dev.address;
   } else if (msg->event == USB_HOST_CLIENT_EVENT_DEV_GONE) {
     if (self->dev_ && msg->dev_gone.dev_hdl == self->dev_) {
@@ -196,6 +278,9 @@ void FtdiLink::scanDevices() {
   uint8_t addrs[8];
   int cnt = 0;
   if (usb_host_device_addr_list_fill(sizeof addrs, addrs, &cnt) != ESP_OK) return;
+  char t[64];
+  snprintf(t, sizeof t, "scan: %d device(s) enumerated, %d address(es) listed", n, cnt);
+  logLine(t);
   for (int i = 0; i < cnt && !dev_; i++) openDevice(addrs[i]);
 }
 
@@ -214,6 +299,8 @@ void FtdiLink::openDevice(uint8_t addr) {
   }
   seenVid_ = dd->idVendor;
   seenPid_ = dd->idProduct;
+  usb_device_info_t di = {};
+  remember(addr, dd, usb_host_device_info(dev, &di) == ESP_OK ? &di : nullptr);
   if (dd->idVendor != FTDI_VID) {
     usb_host_device_close(client_, dev);  // not an FTDI adapter: ignore it
     setNote("найдено USB-устройство %04X:%04X, но это не FTDI (нужен VID 0403)", dd->idVendor, dd->idProduct);

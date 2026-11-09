@@ -7,6 +7,7 @@
 
 #include "Config.h"
 #include "DiagEngine.h"
+#include "FtdiLink.h"
 #include "JsonWriter.h"
 #include "NetManager.h"
 #include "Settings.h"
@@ -335,6 +336,43 @@ static void writeStatus(JsonWriter& w, const EngineState& s) {
 }
 
 // ---- handlers --------------------------------------------------------------------------
+// USB diagnostics: devices enumerated on the OTG port (hubs included), root
+// port state and the last USB stack messages.
+static void hUsb() {
+  JsonWriter w(1536);
+  w.beginObject();
+  FtdiLink* f = Engine.usbLink();
+  w.kv("available", f != nullptr);
+  if (f) {
+    FtdiLink::PortInfo pi = f->portInfo();
+    w.kv("host_ready", f->hostReady()).kv("attached", f->attached());
+    int nd = f->usbDevices();
+    if (nd >= 0) w.kv("usb_devices", (uint32_t)nd); else w.kvNull("usb_devices");
+    w.kv("dev_events", f->deviceEvents());
+    w.key("port").beginObject().kv("phy_otg", pi.phyOtg).kv("powered", pi.powered).kv("connected", pi.connected);
+    w.kv("enabled", pi.enabled).kv("dp", (pi.lineState & 1) != 0).kv("dm", (pi.lineState & 2) != 0).endObject();
+    FtdiLink::SeenDevice d[FtdiLink::kMaxSeen];
+    int n = f->seenDevices(d, FtdiLink::kMaxSeen);
+    w.key("devices").beginArray();
+    for (int i = 0; i < n; i++) {
+      char vp[12];
+      snprintf(vp, sizeof vp, "%04X:%04X", d[i].vid, d[i].pid);
+      static const char* kSpeed[] = {"low", "full", "high"};
+      w.beginObject().kv("addr", (uint32_t)d[i].addr).kv("vid_pid", vp).kv("class", (uint32_t)d[i].cls);
+      w.kv("speed", d[i].speed < 3 ? kSpeed[d[i].speed] : "?").kv("behind_hub", d[i].behindHub);
+      w.kv("hub_port", (uint32_t)d[i].hubPort).endObject();
+    }
+    w.endArray();
+    static char lines[FtdiLink::kLogLines][FtdiLink::kLogLen];
+    int nl = f->usbLog(lines, FtdiLink::kLogLines);
+    w.key("log").beginArray();
+    for (int i = 0; i < nl; i++) w.value(lines[i]);
+    w.endArray();
+  }
+  w.endObject();
+  sendSmall(w);
+}
+
 static void hStatus() {
   JsonWriter w(1024);
   Engine.lock();
@@ -673,6 +711,7 @@ void webBegin() {
   server.on("/", HTTP_GET, hIndex);
   server.on("/index.html", HTTP_GET, hIndex);
   server.on("/api/status", HTTP_GET, hStatus);
+  server.on("/api/usb", HTTP_GET, hUsb);
   server.on("/api/ecu", HTTP_GET, hEcu);
   server.on("/api/dtc", HTTP_GET, hDtc);
   server.on("/api/live", HTTP_GET, hLive);

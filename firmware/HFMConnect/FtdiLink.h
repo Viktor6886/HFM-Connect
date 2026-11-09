@@ -68,6 +68,23 @@ class FtdiLink : public ByteLink {
   };
   PortInfo portInfo() const;
 
+  // Every enumerated USB device seen on the OTG port (hubs included), for the
+  // diagnostics page: an adapter behind a hub must show up here.
+  struct SeenDevice {
+    uint8_t addr = 0;
+    uint16_t vid = 0, pid = 0;
+    uint8_t cls = 0;          // bDeviceClass (0x09 = hub)
+    uint8_t speed = 0;        // usb_speed_t: 0 = low, 1 = full, 2 = high
+    uint8_t hubPort = 0;      // port on the parent hub, 0 = root port
+    bool behindHub = false;
+  };
+  static const int kMaxSeen = 6;
+  int seenDevices(SeenDevice* out, int max) const;
+  // Last USB messages: ESP-IDF USB stack errors (ESP_LOGE) and this driver's notes.
+  static const int kLogLines = 16;
+  static const int kLogLen = 120;
+  int usbLog(char (*out)[kLogLen], int max) const;
+
  private:
   static void hostTask(void* arg);
   static void clientTask(void* arg);
@@ -79,6 +96,9 @@ class FtdiLink : public ByteLink {
   void openDevice(uint8_t addr);
   void scanDevices();
   void setNote(const char* fmt, ...);
+  void remember(uint8_t addr, const usb_device_desc_t* dd, const usb_device_info_t* di);
+  static void logLine(const char* text);
+  static int logHook(const char* fmt, va_list ap);
   void closeDevice();
   bool configure();
   bool ctrl(uint8_t request, uint16_t value, uint16_t index);
@@ -119,6 +139,8 @@ class FtdiLink : public ByteLink {
   int lastScanCount_ = -1;
   uint32_t lastScanMs_ = 0;
   char note_[160] = {0};
+  SeenDevice seen_[kMaxSeen];
+  int seenCount_ = 0;
   mutable portMUX_TYPE noteMux_ = portMUX_INITIALIZER_UNLOCKED;
   // Updated from the USB client task and the engine task, read by the UI.
   std::atomic<uint32_t> parityErr_{0}, frameErr_{0}, breakSeen_{0}, overrun_{0}, usbErr_{0};
