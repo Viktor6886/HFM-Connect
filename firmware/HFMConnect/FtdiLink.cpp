@@ -59,8 +59,16 @@ static portMUX_TYPE gLogMux = portMUX_INITIALIZER_UNLOCKED;
 static char gLog[FtdiLink::kLogLines][FtdiLink::kLogLen];
 static uint32_t gLogHead = 0;  // total lines written
 static vprintf_like_t gPrevVprintf = nullptr;
-static FtdiLink* gSelf = nullptr;
-static volatile bool gEnumFailed = false;
+static std::atomic<bool> gEnumFailed{false};
+
+// The event task must never wait for a caller which is waiting for its callback.
+class IoGuard {
+ public:
+  explicit IoGuard(SemaphoreHandle_t mutex) : mutex_(mutex) { xSemaphoreTake(mutex_, portMAX_DELAY); }
+  ~IoGuard() { xSemaphoreGive(mutex_); }
+ private:
+  SemaphoreHandle_t mutex_;
+};
 
 void FtdiLink::logLine(const char* text) {
   char t[kLogLen];
@@ -120,9 +128,11 @@ void FtdiLink::remember(uint8_t addr, const usb_device_desc_t* dd, const usb_dev
   portENTER_CRITICAL(&noteMux_);
   int i = 0;
   while (i < seenCount_ && seen_[i].addr != addr) i++;
+  bool changed = i == seenCount_ || seen_[i].vid != d.vid || seen_[i].pid != d.pid;
   if (i == seenCount_ && seenCount_ < kMaxSeen) seenCount_++;
   if (i < seenCount_) seen_[i] = d;
   portEXIT_CRITICAL(&noteMux_);
+  if (!changed) return;
   char t[96];
   snprintf(t, sizeof t, "device addr %u %04X:%04X class %02X speed %u %s port %u", addr, d.vid, d.pid, d.cls, d.speed,
            d.behindHub ? "hub" : "root", d.hubPort);
@@ -136,9 +146,10 @@ void FtdiLink::setNote(const char* fmt, ...) {
   vsnprintf(t, sizeof t, fmt, ap);
   va_end(ap);
   portENTER_CRITICAL(&noteMux_);
-  memcpy(note_, t, sizeof note_);
+  bool changed = strcmp(note_, t) != 0;
+  strlcpy(note_, t, sizeof note_);
   portEXIT_CRITICAL(&noteMux_);
-  if (t[0]) {
+  if (changed && t[0]) {
     Serial.printf("[usb] %s\n", t);
     logLine(t);
   }
@@ -203,10 +214,14 @@ bool FtdiLink::begin() {
   txDone_ = xSemaphoreCreateBinary();
   ioMtx_ = xSemaphoreCreateMutex();
   rx_ = xStreamBufferCreate(1024, 1);
-  gSelf = this;
+  if (!rx_ || !ctrlDone_ || !txDone_ || !ioMtx_) {
+    installErr_ = ESP_ERR_NO_MEM;
+    return false;
+  }
   gPrevVprintf = esp_log_set_vprintf(logHook);
   usb_host_config_t hc = {};
   hc.skip_phy_setup = false;
+  hc.root_port_unpowered = true;  // Register the client before the first enumeration.
   hc.intr_flags = ESP_INTR_FLAG_LEVEL1;
   installErr_ = usb_host_install(&hc);
   if (installErr_ != ESP_OK) {
@@ -214,7 +229,10 @@ bool FtdiLink::begin() {
     logLine("usb_host_install failed");
     return false;
   }
-  xTaskCreatePinnedToCore(hostTask, "usb-host", 4096, this, 5, nullptr, 0);
+  if (xTaskCreatePinnedToCore(hostTask, "usb-host", 4096, this, 5, nullptr, 0) != pdPASS) {
+    installErr_ = ESP_ERR_NO_MEM;
+    return false;
+  }
   usb_host_client_config_t cc = {};
   cc.is_synchronous = false;
   cc.max_num_event_msg = 8;
@@ -225,7 +243,10 @@ bool FtdiLink::begin() {
     Serial.printf("[usb] usb_host_client_register: %s\n", esp_err_to_name(installErr_));
     return false;
   }
-  xTaskCreatePinnedToCore(clientTask, "usb-ftdi", 4096, this, 5, nullptr, 0);
+  if (xTaskCreatePinnedToCore(clientTask, "usb-ftdi", 4096, this, 5, nullptr, 0) != pdPASS) {
+    installErr_ = ESP_ERR_NO_MEM;
+    return false;
+  }
   hostReady_ = true;
   logLine("USB host ready");
   Serial.println("[usb] USB host ready, waiting for the FTDI adapter on the USB (OTG) port");
@@ -247,7 +268,7 @@ void FtdiLink::clientEvent(const usb_host_client_event_msg_t* msg, void* arg) {
     char t[40];
     snprintf(t, sizeof t, "NEW_DEV addr %u", msg->new_dev.address);
     logLine(t);
-    if (!self->dev_) self->pendingAddr_ = msg->new_dev.address;
+    self->scan_.requested = true;
   } else if (msg->event == USB_HOST_CLIENT_EVENT_DEV_GONE) {
     if (self->dev_ && msg->dev_gone.dev_hdl == self->dev_) {
       self->gone_ = true;
@@ -259,94 +280,95 @@ void FtdiLink::clientEvent(const usb_host_client_event_msg_t* msg, void* arg) {
 
 void FtdiLink::clientTask(void* arg) {
   FtdiLink* self = static_cast<FtdiLink*>(arg);
+  if (usb_host_lib_set_root_port_power(true) != ESP_OK) {
+    self->portOff_ = true;
+    self->retry_.failed(millis());
+    logLine("root port startup failed; retry scheduled");
+  }
   for (;;) {
     usb_host_client_handle_events(self->client_, pdMS_TO_TICKS(20));
-    if (self->pendingAddr_ >= 0) {
-      int a = self->pendingAddr_;
-      self->pendingAddr_ = -1;
-      self->openDevice((uint8_t)a);
+    if (self->gone_ && !self->rxActive_ && xSemaphoreTake(self->ioMtx_, 0) == pdTRUE) {
+      self->closeDevice();
+      xSemaphoreGive(self->ioMtx_);
     }
-    if (self->gone_ && !self->rxActive_) self->closeDevice();
-    // A device enumerated before this client registered (adapter already
-    // plugged in at boot) produces no NEW_DEV event: look for it explicitly.
-    if (gEnumFailed) {
-      gEnumFailed = false;
+    const uint32_t now = millis();
+    if (gEnumFailed.exchange(false)) {
       self->enumFailures_++;
-      self->enumFailMs_ = millis();
-      // Quick attempts first, then one every 30 s while the adapter is missing.
-      if (!self->dev_ && (self->reenumCount_ < (uint32_t)kMaxReenum || millis() - self->lastReenumMs_ >= 30000))
-        self->reenumRequest_ = true;
+      if (!self->dev_) self->retry_.failed(now);
     }
-    // An enumeration that hangs without an error (seen behind a hub: the device
-    // counted by the host library but never listed or reported) is a failure too.
-    if (!self->dev_ && millis() - self->lastStallCheckMs_ >= 1000) {
-      self->lastStallCheckMs_ = millis();
-      int n = self->usbDevices();
-      uint8_t addrs[8];
-      int cnt = 0;
-      if (n > 0 && usb_host_device_addr_list_fill(sizeof addrs, addrs, &cnt) == ESP_OK && n > cnt) {
-        if (!self->stallSinceMs_) self->stallSinceMs_ = millis();
-        if (millis() - self->stallSinceMs_ >= 4000) {
-          self->stallSinceMs_ = 0;
-          logLine("enumeration stalled (device counted but not ready)");
-          gEnumFailed = true;
-        }
-      } else {
-        self->stallSinceMs_ = 0;
-      }
-    }
-    // Wait 1.5 s after a failure so the hub driver finishes its own recovery.
-    if (self->reenumRequest_ && !self->dev_ && millis() - self->enumFailMs_ >= 1500) {
-      self->reenumRequest_ = false;
-      self->reenumerate();
-    }
-    if (!self->dev_ && self->pendingAddr_ < 0 && millis() - self->lastScanMs_ >= 1000) {
-      self->lastScanMs_ = millis();
+    // Always reconcile the actual address list, even when only the addresses
+    // (or their readiness) changed and the device count stayed constant.
+    if (!self->dev_ && self->scan_.due(now) &&
+        xSemaphoreTake(self->ioMtx_, 0) == pdTRUE) {
+      self->scan_.started(now);
       self->scanDevices();
+      xSemaphoreGive(self->ioMtx_);
+    }
+    bool manual = self->reenumRequest_.exchange(false);
+    if (!self->dev_ && (manual || self->retry_.due(millis()))) {
+      auto port = self->portInfo();
+      if (manual || self->portOff_ || port.connected || port.lineState) {
+        self->reenumerate();
+        self->retry_.attempted(millis(), self->reenumCount_);
+      } else {
+        self->retry_ = {};
+        self->reenumCount_ = 0;
+      }
     }
   }
 }
 
 void FtdiLink::reenumerate() {
   reenumCount_++;
-  lastReenumMs_ = millis();
   stallSinceMs_ = 0;
   char t[64];
-  snprintf(t, sizeof t, "re-enumerate: root port power cycle %lu", (unsigned long)reenumCount_);
+  snprintf(t, sizeof t, "re-enumerate: root port power cycle %lu", (unsigned long)reenumCount_.load());
   logLine(t);
-  esp_err_t e = usb_host_lib_set_root_port_power(false);
-  if (e != ESP_OK) {
-    snprintf(t, sizeof t, "root port off: %s", esp_err_to_name(e));
-    logLine(t);
-    return;
+  if (!portOff_) {
+    esp_err_t e = usb_host_lib_set_root_port_power(false);
+    if (e != ESP_OK) {
+      snprintf(t, sizeof t, "root port off: %s", esp_err_to_name(e));
+      logLine(t);
+      return;
+    }
+    portOff_ = true;
+    for (int i = 0; i < 25; i++) usb_host_client_handle_events(client_, pdMS_TO_TICKS(20));
   }
-  // Let the host library process the disconnect of the hub and its devices.
-  for (int i = 0; i < 25; i++) usb_host_client_handle_events(client_, pdMS_TO_TICKS(20));
-  e = usb_host_lib_set_root_port_power(true);
+  esp_err_t e = usb_host_lib_set_root_port_power(true);
   if (e != ESP_OK) {
     snprintf(t, sizeof t, "root port on: %s", esp_err_to_name(e));
     logLine(t);
+    return;
   }
-  lastScanCount_ = -1;
+  portOff_ = false;
+  scan_.requested = true;
   portENTER_CRITICAL(&noteMux_);
   seenCount_ = 0;
   portEXIT_CRITICAL(&noteMux_);
 }
 
 void FtdiLink::scanDevices() {
-  int n = usbDevices();
-  if (n == lastScanCount_) return;  // rejected devices are not retried until the set changes
-  lastScanCount_ = n;
-  if (n <= 0) return;
-  uint8_t addrs[8];
+  uint8_t addrs[127];
   int cnt = 0;
   if (usb_host_device_addr_list_fill(sizeof addrs, addrs, &cnt) != ESP_OK) return;
-  char t[64];
-  snprintf(t, sizeof t, "scan: %d device(s) enumerated, %d address(es) listed", n, cnt);
-  logLine(t);
-  // Rebuild the list of seen devices: unplugged ones must not stay listed.
+  // The library counts a device before its address can be opened.
+  const int devices = usbDevices();
+  if (devices > cnt || (devices == 0 && cnt == 0 && portInfo().connected)) {
+    uint32_t now = millis();
+    if (!stallSinceMs_) stallSinceMs_ = now;
+    if (now - stallSinceMs_ >= 4000) {
+      stallSinceMs_ = now;
+      logLine("enumeration stalled (no ready address)");
+      enumFailures_++;
+      retry_.failed(now);
+    }
+  } else {
+    stallSinceMs_ = 0;
+  }
   portENTER_CRITICAL(&noteMux_);
-  seenCount_ = 0;
+  for (int i = seenCount_ - 1; i >= 0; i--) {
+    if (!memchr(addrs, seen_[i].addr, cnt)) seen_[i] = seen_[--seenCount_];
+  }
   portEXIT_CRITICAL(&noteMux_);
   for (int i = 0; i < cnt && !dev_; i++) openDevice(addrs[i]);
 }
@@ -360,8 +382,8 @@ void FtdiLink::openDevice(uint8_t addr) {
   }
   const usb_device_desc_t* dd = nullptr;
   if (usb_host_get_device_descriptor(dev, &dd) != ESP_OK) {
-    usb_host_device_close(client_, dev);
     setNote("USB-устройство (адрес %u): нет дескриптора", addr);
+    usb_host_device_close(client_, dev);
     return;
   }
   seenVid_ = dd->idVendor;
@@ -369,14 +391,15 @@ void FtdiLink::openDevice(uint8_t addr) {
   usb_device_info_t di = {};
   remember(addr, dd, usb_host_device_info(dev, &di) == ESP_OK ? &di : nullptr);
   if (dd->idVendor != FTDI_VID) {
-    usb_host_device_close(client_, dev);  // not an FTDI adapter: ignore it
-    setNote("найдено USB-устройство %04X:%04X, но это не FTDI (нужен VID 0403)", dd->idVendor, dd->idProduct);
+    if (dd->bDeviceClass == 9) setNote("USB-хаб %04X:%04X обнаружен, ожидание FTDI", dd->idVendor, dd->idProduct);
+    else setNote("USB-устройство %04X:%04X, ожидание FTDI", dd->idVendor, dd->idProduct);
+    usb_host_device_close(client_, dev);
     return;
   }
   const usb_config_desc_t* cfg = nullptr;
   if (usb_host_get_active_config_descriptor(dev, &cfg) != ESP_OK) {
-    usb_host_device_close(client_, dev);
     setNote("FTDI %04X:%04X: нет дескриптора конфигурации", dd->idVendor, dd->idProduct);
+    usb_host_device_close(client_, dev);
     return;
   }
   // Walk the configuration: first interface with a bulk IN and a bulk OUT endpoint.
@@ -386,8 +409,13 @@ void FtdiLink::openDevice(uint8_t addr) {
   uint8_t inEp = 0, outEp = 0;
   uint16_t inMps = 64;
   for (uint16_t i = 0; i + 2 <= total && p[i] >= 2; i = (uint16_t)(i + p[i])) {
-    if (p[i + 1] == 0x04 && curIf < 0) curIf = p[i + 2];
-    if (p[i + 1] == 0x05 && curIf >= 0 && (p[i + 3] & 0x03) == 0x02) {
+    if (i + p[i] > total) break;
+    if (p[i + 1] == 0x04 && p[i] >= 9) {
+      if (inEp && outEp) break;
+      curIf = p[i + 3] == 0 ? p[i + 2] : -1;
+      inEp = outEp = 0;
+    }
+    if (p[i + 1] == 0x05 && p[i] >= 7 && curIf >= 0 && (p[i + 3] & 0x03) == 0x02) {
       if (p[i + 2] & 0x80) {
         if (!inEp) { inEp = p[i + 2]; inMps = (uint16_t)(p[i + 4] | (p[i + 5] << 8)); }
       } else if (!outEp) {
@@ -396,17 +424,18 @@ void FtdiLink::openDevice(uint8_t addr) {
     }
   }
   if (curIf < 0 || !inEp || !outEp) {
-    usb_host_device_close(client_, dev);
     setNote("FTDI %04X:%04X: нет bulk-каналов в интерфейсе", dd->idVendor, dd->idProduct);
+    usb_host_device_close(client_, dev);
     return;
   }
   e = usb_host_interface_claim(client_, dev, (uint8_t)curIf, 0);
   if (e != ESP_OK) {
-    usb_host_device_close(client_, dev);
     setNote("FTDI %04X:%04X: интерфейс %d не захвачен: %s", dd->idVendor, dd->idProduct, curIf, esp_err_to_name(e));
+    usb_host_device_close(client_, dev);
     return;
   }
   dev_ = dev;
+  ifaceClaimed_ = true;
   iface_ = (uint8_t)curIf;
   epIn_ = inEp;
   epOut_ = outEp;
@@ -421,7 +450,12 @@ void FtdiLink::openDevice(uint8_t addr) {
   gone_ = false;
   configured_ = false;
   lineKnown_ = false;
-  attachCount_++;
+  if (!ctrlX_ || !txX_ || !rxX_) {
+    logLine("FTDI transfer allocation failed");
+    gone_ = true;
+    usbErr_++;
+    return;
+  }
   // Start the endless bulk IN stream (status bytes arrive every latency period).
   rxX_->device_handle = dev_;
   rxX_->bEndpointAddress = epIn_;
@@ -429,7 +463,16 @@ void FtdiLink::openDevice(uint8_t addr) {
   rxX_->callback = rxCb;
   rxX_->context = this;
   rxActive_ = usb_host_transfer_submit(rxX_) == ESP_OK;
+  if (!rxActive_) {
+    logLine("FTDI bulk IN submit failed");
+    gone_ = true;
+    usbErr_++;
+    return;
+  }
+  attachCount_++;
   attached_ = true;
+  retry_ = {};
+  stallSinceMs_ = 0;
   reenumCount_ = 0;
   setNote("");
   Serial.printf("[usb] FTDI adapter %04X:%04X bcd %04X attached (interface %u, IN %02X, OUT %02X)\n", vid_, pid_, bcd_,
@@ -438,7 +481,11 @@ void FtdiLink::openDevice(uint8_t addr) {
 
 void FtdiLink::closeDevice() {
   if (!dev_) return;
-  usb_host_interface_release(client_, dev_, iface_);
+  if (ctrlPending_ && xSemaphoreTake(ctrlDone_, 0) == pdTRUE) ctrlPending_ = false;
+  if (txPending_ && xSemaphoreTake(txDone_, 0) == pdTRUE) txPending_ = false;
+  if (ctrlPending_ || txPending_) return;
+  if (ifaceClaimed_ && usb_host_interface_release(client_, dev_, iface_) != ESP_OK) return;
+  ifaceClaimed_ = false;
   // Fails while a control/OUT transfer is still in flight: retried on the
   // next client-task loop, so the address is freed for a re-plugged adapter.
   if (usb_host_device_close(client_, dev_) != ESP_OK) return;
@@ -447,18 +494,21 @@ void FtdiLink::closeDevice() {
   open_ = false;
   attached_ = false;
   configured_ = false;
-  lastScanCount_ = -1;
-  setNote("адаптер отключён от USB");
+  if (rxX_) usb_host_transfer_free(rxX_);
+  rxX_ = nullptr;
+  setNote("USB-канал закрыт, ожидание FTDI");
 }
 
 void FtdiLink::rxCb(usb_transfer_t* x) {
   FtdiLink* self = static_cast<FtdiLink*>(x->context);
   if (x->status != USB_TRANSFER_STATUS_COMPLETED) {
     if (x->status != USB_TRANSFER_STATUS_NO_DEVICE && x->status != USB_TRANSFER_STATUS_CANCELED) self->usbErr_++;
-    if (self->gone_ || x->status == USB_TRANSFER_STATUS_NO_DEVICE) {
-      self->rxActive_ = false;
-      return;
-    }
+    // A failed IN endpoint can be halted. Reclaim it on a fresh attachment
+    // instead of queueing the next receive on a stopped pipe.
+    self->gone_ = true;
+    self->attached_ = false;
+    self->rxActive_ = false;
+    return;
   } else if (x->actual_num_bytes >= 2) {
     // FTDI packs: [modem status][line status][data...] per max-packet chunk.
     for (int off = 0; off + 2 <= x->actual_num_bytes; off += self->mpsIn_) {
@@ -478,7 +528,12 @@ void FtdiLink::rxCb(usb_transfer_t* x) {
     return;
   }
   x->num_bytes = self->mpsIn_;
-  if (usb_host_transfer_submit(x) != ESP_OK) self->rxActive_ = false;
+  if (usb_host_transfer_submit(x) != ESP_OK) {
+    self->usbErr_++;
+    self->rxActive_ = false;
+    self->gone_ = true;
+    self->attached_ = false;
+  }
 }
 
 void FtdiLink::ctrlCb(usb_transfer_t* x) {
@@ -495,6 +550,8 @@ void FtdiLink::txCb(usb_transfer_t* x) {
 
 bool FtdiLink::ctrl(uint8_t request, uint16_t value, uint16_t index) {
   if (!attached_ || !dev_) return false;
+  if (ctrlPending_ && xSemaphoreTake(ctrlDone_, 0) != pdTRUE) return false;
+  ctrlPending_ = false;
   usb_setup_packet_t* s = (usb_setup_packet_t*)ctrlX_->data_buffer;
   s->bmRequestType = 0x40;
   s->bRequest = request;
@@ -506,12 +563,12 @@ bool FtdiLink::ctrl(uint8_t request, uint16_t value, uint16_t index) {
   ctrlX_->num_bytes = sizeof(usb_setup_packet_t);
   ctrlX_->callback = ctrlCb;
   ctrlX_->context = this;
-  xSemaphoreTake(ctrlDone_, 0);
   if (usb_host_transfer_submit_control(client_, ctrlX_) != ESP_OK) {
     usbErr_++;
     return false;
   }
-  if (xSemaphoreTake(ctrlDone_, pdMS_TO_TICKS(500)) != pdTRUE || !ctrlOk_) {
+  ctrlPending_ = xSemaphoreTake(ctrlDone_, pdMS_TO_TICKS(500)) != pdTRUE;
+  if (ctrlPending_ || !ctrlOk_) {
     usbErr_++;
     return false;
   }
@@ -549,6 +606,8 @@ bool FtdiLink::configure() {
 }
 
 bool FtdiLink::open() {
+  if (!ioMtx_) return false;
+  IoGuard guard(ioMtx_);
   if (!hostReady_ || !attached_) return false;
   if (!configured_ && !configure()) return false;
   purgeRx();
@@ -557,6 +616,8 @@ bool FtdiLink::open() {
 }
 
 void FtdiLink::close() {
+  if (!ioMtx_) return;
+  IoGuard guard(ioMtx_);
   // The adapter stays configured and attached; only the session ends.
   if (attached_ && configured_) setLine(Parity::None, false);
   open_ = false;
@@ -570,18 +631,20 @@ void FtdiLink::purgeRx() {
 
 bool FtdiLink::writeByte(uint8_t b) {
   if (!attached_ || !dev_) return false;
+  if (txPending_ && xSemaphoreTake(txDone_, 0) != pdTRUE) return false;
+  txPending_ = false;
   txX_->device_handle = dev_;
   txX_->bEndpointAddress = epOut_;
   txX_->data_buffer[0] = b;
   txX_->num_bytes = 1;
   txX_->callback = txCb;
   txX_->context = this;
-  xSemaphoreTake(txDone_, 0);
   if (usb_host_transfer_submit(txX_) != ESP_OK) {
     usbErr_++;
     return false;
   }
-  if (xSemaphoreTake(txDone_, pdMS_TO_TICKS(200)) != pdTRUE || !txOk_) {
+  txPending_ = xSemaphoreTake(txDone_, pdMS_TO_TICKS(200)) != pdTRUE;
+  if (txPending_ || !txOk_) {
     usbErr_++;
     return false;
   }
@@ -602,6 +665,8 @@ int FtdiLink::readBytes(uint8_t* buf, int n, uint32_t timeoutMs) {
 }
 
 LinkStatus FtdiLink::wakeup(const LinkTiming& t, uint8_t& echo, uint8_t& sync) {
+  if (!ioMtx_) return LinkStatus::LinkDown;
+  IoGuard guard(ioMtx_);
   echo = sync = 0;
   if (!isOpen()) return LinkStatus::LinkDown;
   if (!setLine(Parity::None, true)) return LinkStatus::LinkDown;  // BREAK: K-Line held low
@@ -634,6 +699,8 @@ LinkStatus FtdiLink::wakeup(const LinkTiming& t, uint8_t& echo, uint8_t& sync) {
 }
 
 LinkStatus FtdiLink::exchange(uint8_t tx, Parity p, uint16_t deadlineMs, uint8_t& echo, uint8_t& resp) {
+  if (!ioMtx_) return LinkStatus::LinkDown;
+  IoGuard guard(ioMtx_);
   echo = resp = 0;
   if (!isOpen()) return LinkStatus::LinkDown;
   purgeRx();

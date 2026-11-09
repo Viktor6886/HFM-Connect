@@ -18,6 +18,7 @@
 #include <atomic>
 
 #include "ByteLink.h"
+#include "UsbRetry.h"
 #include "usb/usb_host.h"
 
 class FtdiLink : public ByteLink {
@@ -88,8 +89,8 @@ class FtdiLink : public ByteLink {
   // Re-enumeration: ESP-IDF disables a hub port after one failed enumeration
   // (e.g. "CHECK_SHORT_DEV_DESC FAILED" -> "Port disabled") and never retries.
   // The root port is then powered off and on, which re-enumerates the hub and
-  // the devices behind it like a cable re-plug. Automatic, limited attempts.
-  static const int kMaxReenum = 5;
+  // the devices behind it like a cable re-plug. Fast retries followed by 30 s intervals.
+  static const int kMaxReenum = UsbRetry::quickAttempts;
   void requestReenumerate() { reenumRequest_ = true; }
   uint32_t reenumCount() const { return reenumCount_; }
   uint32_t enumFailures() const { return enumFailures_; }
@@ -127,13 +128,16 @@ class FtdiLink : public ByteLink {
   SemaphoreHandle_t ioMtx_ = nullptr;
   StreamBufferHandle_t rx_ = nullptr;
 
-  volatile bool hostReady_ = false;
-  volatile bool attached_ = false;
-  volatile bool configured_ = false;
-  volatile bool open_ = false;
+  std::atomic<bool> hostReady_{false};
+  std::atomic<bool> attached_ = false;
+  std::atomic<bool> configured_ = false;
+  std::atomic<bool> open_ = false;
   volatile bool rxActive_ = false;
   volatile bool gone_ = false;
-  volatile int pendingAddr_ = -1;
+  UsbAddressScan scan_;
+  bool portOff_ = false;
+  bool ifaceClaimed_ = false;
+  bool ctrlPending_ = false, txPending_ = false;
   volatile bool ctrlOk_ = false;
   volatile bool txOk_ = false;
 
@@ -142,19 +146,15 @@ class FtdiLink : public ByteLink {
   uint16_t mpsIn_ = 64;
   uint16_t port_ = 1;  // FTDI "interface A" index for vendor requests
   uint16_t vid_ = 0, pid_ = 0, bcd_ = 0;
-  uint32_t attachCount_ = 0;
+  std::atomic<uint32_t> attachCount_{0};
   esp_err_t installErr_ = ESP_OK;
   std::atomic<uint32_t> devEvents_{0};
   volatile uint16_t seenVid_ = 0, seenPid_ = 0;
-  int lastScanCount_ = -1;
-  uint32_t lastScanMs_ = 0;
   char note_[160] = {0};
   std::atomic<bool> reenumRequest_{false};
   std::atomic<uint32_t> enumFailures_{0};
-  uint32_t enumFailMs_ = 0;
-  uint32_t reenumCount_ = 0;  // automatic attempts since the adapter was last attached
-  uint32_t lastReenumMs_ = 0;
-  uint32_t lastStallCheckMs_ = 0;
+  UsbRetry retry_;
+  std::atomic<uint32_t> reenumCount_{0};  // automatic attempts since the adapter was last attached
   uint32_t stallSinceMs_ = 0;  // a device counted but not listed since (0 = none)
   SeenDevice seen_[kMaxSeen];
   int seenCount_ = 0;

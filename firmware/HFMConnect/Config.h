@@ -3,7 +3,7 @@
 // See docs/HARDWARE.md for the reference schematic.
 #pragma once
 
-#define HFM_FW_VERSION "0.3.6"
+#define HFM_FW_VERSION "0.3.7"
 #define HFM_FW_NAME "HFM Connect"
 
 // ---- K-Line transport ----------------------------------------------------------

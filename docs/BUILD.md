@@ -22,7 +22,7 @@
 | PSRAM | любой (не требуется) |
 | Upload Speed | 921600 |
 
-6. Подключите плату USB-кабелем к разъёму **UART/COM**, выберите порт, нажмите **Загрузить**.
+6. На ESP32-S3 Zero отсоедините KKL и внешнее питание, подключите плату к ПК через её USB-C. На плате с отдельным UART/COM используйте этот разъём. Выберите порт и нажмите **Загрузить**.
    При неверных настройках USB компиляция остановится с `#error` и подсказкой.
    Если загрузка не начинается — удерживайте BOOT, нажмите RESET, отпустите BOOT.
 7. Монитор порта 115200: прошивка выведет имя точки доступа.
@@ -61,7 +61,7 @@ python tools/build_webui.py
 
 ```bash
 arduino-cli core install esp32:esp32
-arduino-cli compile --fqbn esp32:esp32:esp32s3:PartitionScheme=default,CDCOnBoot=cdc firmware/HFMConnect
+arduino-cli compile --fqbn esp32:esp32:esp32s3:PartitionScheme=default,CDCOnBoot=default firmware/HFMConnect
 arduino-cli upload  --fqbn esp32:esp32:esp32s3 -p COM5 firmware/HFMConnect
 ```
 

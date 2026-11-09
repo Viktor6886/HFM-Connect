@@ -125,12 +125,24 @@ void DiagEngine::readHardware() {
   if (ftdi_) {
     st_.parityErrors = ftdi_->parityErrors();
     st_.frameErrors = ftdi_->frameErrors();
-    st_.adapter.present = ftdi_->attached();
+    const bool present = ftdi_->attached();
+    const uint32_t count = ftdi_->attachCount();
+    if (count != st_.adapter.attachCount || (st_.adapter.present && !present)) {
+      session_->disconnect();
+      guard_.cancel();
+      if (guard_.state() == guard::State::Active) guard_.finish(false);
+      st_.plan = guard_.plan();
+      st_.liveActive = false;
+      st_.session = session_->state();
+      autoBackoffMs_ = HFM_AUTOCONNECT_MIN_MS;
+      lastAutoMs_ = millis() - autoBackoffMs_;
+    }
+    st_.adapter.present = present;
     st_.adapter.configured = ftdi_->configured();
     st_.adapter.vid = ftdi_->vid();
     st_.adapter.pid = ftdi_->pid();
     st_.adapter.chip = ftdi_->chipName();
-    st_.adapter.attachCount = ftdi_->attachCount();
+    st_.adapter.attachCount = count;
     st_.adapter.usbErrors = ftdi_->usbErrors();
     st_.adapter.breaks = ftdi_->breaksSeen();
     st_.adapter.overruns = ftdi_->overruns();
@@ -191,15 +203,14 @@ void DiagEngine::doConnect(char* msg, size_t n, bool& ok) {
   st_.lastError = s;
   unlock();
   if (ok) return;
-  // The adapter echoes its own TX: an echo proves the adapter and its +12 V
-  // supply work, so the missing 55 points at the ECU side of the line.
+  // Local echo alone cannot verify the vehicle wiring or ECU power.
   uint8_t echo = session_->lastSyncEcho();
   if (s == LinkStatus::NoSync && echo == 0xAA)
     snprintf(msg, n,
-             "Нет ответа ЭБУ (NO_SYNC): эхо AA есть — адаптер и линия в порядке; проверьте контакт HFM на X11/4 "
+             "Нет ответа 55 (NO_SYNC): эхо AA получено; проверьте питание KKL и ЭБУ, массу, контакт HFM "
              "и зажигание");
   else if (s == LinkStatus::NoSync && echo == 0)
-    snprintf(msg, n, "Нет эха AA (NO_SYNC): на адаптер не подано +12 В или K-Line замкнута на массу");
+    snprintf(msg, n, "Нет эха AA (NO_SYNC): проверьте питание адаптера и проводку K-Line");
   else
     snprintf(msg, n, "Нет синхронизации AA/55 (%s, эхо %02X): проверьте питание, массу и K-Line", linkStatusCode(s),
              echo);
@@ -690,21 +701,9 @@ bool DiagEngine::adapterPresent() {
 }
 
 void DiagEngine::autoConnect() {
-  // Adapter unplugged during a session: drop the session cleanly.
-  if (session_->ready() && !adapterPresent()) {
-    session_->disconnect();
-    lock();
-    st_.liveActive = false;
-    st_.session = session_->state();
-    strlcpy(st_.autoMsg, "Адаптер отключён от USB", sizeof st_.autoMsg);
-    unlock();
-    return;
-  }
   if (session_->ready() || !settings_->autoConnect || userDisconnected_) return;
   if (guard_.state() != guard::State::Idle && guard_.state() != guard::State::FaultStop) return;
   if (!adapterPresent()) {
-    lock();
-    unlock();
     char why[256];
     adapterMissing(why, sizeof why);
     lock();
