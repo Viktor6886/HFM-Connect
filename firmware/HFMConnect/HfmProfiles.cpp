@@ -212,7 +212,8 @@ void resolve(const EcuIdent& id, const ResolveOptions& opt, EcuProfile& p) {
   setCap(p, F_IMPULSE_CLEAR, false, Confidence::BLOCK,
          "Импульсное стирание отключено по умолчанию (REV 1.4 M14-07)");
 
-  bool bosch = id.present && id.vendorKnown;
+  const bool bosch = id.present && id.vendorId == 1;
+  const bool vdo = id.present && id.vendorId == 2;
   int16_t di = id.diagIndexBcd;
   bool hfmRange = di >= 40 && di <= 59;
   bool pmsRange = di >= 60 && di <= 79;
@@ -220,8 +221,9 @@ void resolve(const EcuIdent& id, const ResolveOptions& opt, EcuProfile& p) {
   if (!id.present) {
     snprintf(p.id, sizeof p.id, "UNRESOLVED");
     snprintf(p.name, sizeof p.name, "ЭБУ не идентифицирован");
-  } else if (bosch && id.partValid && strcmp(id.partNumber, "0135451332") == 0 && id.diagIndexRaw == 0x41 &&
-             id.diagSubRaw == 0x00 && id.raw[2] == 'M' && id.raw[4] == '2' && id.raw[5] == '8') {
+  } else if (bosch && id.raw[0] == 0x2C && id.partValid && strcmp(id.partNumber, "0135451332") == 0 &&
+             id.diagIndexRaw == 0x41 && id.diagSubRaw == 0x00 && id.raw[2] == 'M' && id.raw[4] == '2' &&
+             id.raw[5] == '8') {
     // Reference ECU of the REV 1.1 specification (field observations exist for
     // reads). Not re-tested by this project.
     p.resolved = true;
@@ -233,21 +235,30 @@ void resolve(const EcuIdent& id, const ResolveOptions& opt, EcuProfile& p) {
   } else if (bosch && hfmRange) {
     p.resolved = true;
     snprintf(p.id, sizeof p.id, "GENERIC_BOSCH_HFM_%d", di);
-    snprintf(p.name, sizeof p.name, "Bosch HFM-SFI, diag %s (общий профиль)", id.diagDisplay);
+    snprintf(p.name, sizeof p.name, "Bosch HFM-SFI %s, diag %s", id.partDisplay, id.diagDisplay);
     // Probable orientation (reference profile + factory tester order: it reads
     // 10..1F, erases, then verifies 00..0F). Confirmed per readout by the
     // intermittent-fault rule (dtc::inferBankMapping).
     p.bankMapping = dtc::BankMapping::AStoredBCurrent;
     p.bankMappingConf = Confidence::GIP;
-  } else if (id.present && !bosch && hfmRange) {
-    // The factory tester knows VDO variants of the HFM ECU (vendor V maps and
-    // live-data templates). The VDO identification bytes are not documented,
-    // so a non-Bosch ECU in the HFM range is only a VDO candidate: reads need
-    // the experimental opt-in.
-    p.vdoCandidate = true;
+  } else if (vdo && hfmRange) {
+    // Vendor letter 'V' (PC tester decoding). The factory tester has VDO
+    // variant maps and live-data templates; the VDO live addresses are GIP,
+    // so Live Data needs the experimental opt-in, the HFM read pages do not.
+    p.resolved = true;
     p.vdoUnits = true;
-    snprintf(p.id, sizeof p.id, "VDO_CANDIDATE_%d", di);
-    snprintf(p.name, sizeof p.name, "HFM, не Bosch (вероятно VDO), diag %s — экспериментально", id.diagDisplay);
+    snprintf(p.id, sizeof p.id, "VDO_HFM_%d", di);
+    snprintf(p.name, sizeof p.name, "VDO HFM %s, diag %s", id.partDisplay, id.diagDisplay);
+    p.bankMapping = dtc::BankMapping::AStoredBCurrent;
+    p.bankMappingConf = Confidence::GIP;
+  } else if (id.present && hfmRange && id.vendorId == 0) {
+    // Unknown vendor letter in the HFM diagnosis range: reads need the
+    // experimental opt-in; the live-data address plan is probed (Bosch plan
+    // first, VDO plan only with the opt-in) and remembered per ECU.
+    p.vdoCandidate = true;
+    snprintf(p.id, sizeof p.id, "HFM_UNKNOWN_VENDOR_%d", di);
+    snprintf(p.name, sizeof p.name, "HFM %s, diag %s (код производителя %s не распознан)", id.partDisplay,
+             id.diagDisplay, id.vendorCode);
     p.bankMapping = dtc::BankMapping::AStoredBCurrent;
     p.bankMappingConf = Confidence::GIP;
   } else if (pmsRange) {
@@ -258,7 +269,7 @@ void resolve(const EcuIdent& id, const ResolveOptions& opt, EcuProfile& p) {
     snprintf(p.name, sizeof p.name, "Неизвестный ЭБУ (%s, diag %s)", id.vendor, id.diagDisplay);
   }
   if (id.present) p.variant.diagRaw = id.diagIndexRaw;
-  p.variant.manufacturer = bosch ? 1 : 0;
+  p.variant.manufacturer = bosch ? 1 : 0;  // DTC maps: 'B' Bosch, otherwise vendor V
   p.variant.cylinders = opt.cylinders;
 
   bool readOk = p.resolved || (id.present && !pmsRange && opt.experimentalReads);
@@ -267,7 +278,10 @@ void resolve(const EcuIdent& id, const ResolveOptions& opt, EcuProfile& p) {
       (pmsRange ? "PMS не поддерживается" :
        (id.present ? "ЭБУ не распознан: включите «Экспериментальное чтение» в настройках" : "Сначала выполните идентификацию"));
   setCap(p, F_DTC_READ, readOk, readConf, readReason);
-  setCap(p, F_LIVE_NATIVE, readOk, readConf, readReason);
+  // VDO live addresses (prefixes 12/22/23) are GIP: experimental opt-in.
+  bool liveOk = readOk && (!p.vdoUnits || opt.experimentalReads);
+  setCap(p, F_LIVE_NATIVE, liveOk, p.vdoUnits ? Confidence::GIP : readConf,
+         liveOk ? "" : (readOk ? "Адреса Live Data VDO не подтверждены: включите «Экспериментальное чтение»" : readReason));
   setCap(p, F_ADAPT_READ, readOk, Confidence::REK, readReason);
   setCap(p, F_CODING_READ, readOk, Confidence::REK, readReason);
   bool expOk = readOk && opt.experimentalReads;

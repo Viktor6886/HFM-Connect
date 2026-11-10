@@ -35,7 +35,7 @@
 1. Соберите адаптер: [docs/HARDWARE.md](docs/HARDWARE.md).
 2. Arduino IDE 2 + ядро **esp32 3.x** → откройте `firmware/HFMConnect/HFMConnect.ino` →
    плата *ESP32S3 Dev Module* → Загрузить. Внешние библиотеки не нужны. [docs/BUILD.md](docs/BUILD.md)
-3. Wi-Fi `HFM-Connect-XXXX` (пароль `hfm12345` — смените) → `http://192.168.4.1/`.
+3. Wi-Fi `HFM Connect` (пароль по умолчанию `12345678` — можно сменить) → `http://192.168.4.1/`.
 4. Зажигание ВКЛ → *Подключение → Подключить*. Если синхронизация нестабильна — *Настройки → Тайминги K-Line*.
 
 ## Структура

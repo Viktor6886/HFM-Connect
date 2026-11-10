@@ -28,6 +28,18 @@ const char* jobStateCode(JobState s) {
   }
 }
 
+const char* linkPhaseCode(LinkPhase p) {
+  switch (p) {
+    case LinkPhase::NoAdapter: return "no_adapter";
+    case LinkPhase::Paused: return "paused";
+    case LinkPhase::Connecting: return "connecting";
+    case LinkPhase::Recovering: return "recovering";
+    case LinkPhase::Ready: return "ready";
+    case LinkPhase::Error: return "error";
+    default: return "idle";
+  }
+}
+
 static void traceLock(void* m) { xSemaphoreTakeRecursive((SemaphoreHandle_t)m, portMAX_DELAY); }
 static void traceUnlock(void* m) { xSemaphoreGiveRecursive((SemaphoreHandle_t)m); }
 static SemaphoreHandle_t gTraceMtx = nullptr;
@@ -67,9 +79,12 @@ void DiagEngine::applySettings() {
   t.breakMs = settings_->breakMs;
   t.postBreakMs = settings_->postBreakMs;
   t.byteDeadlineMs = settings_->byteTimeoutMs;
+  t.resyncSilenceMs = HFM_RESYNC_SILENCE_MS;
   session_->setTiming(t);
   session_->setExperimentalReads(settings_->experimentalReads);
-  if (ftdi_) ftdi_->setWakeConfig(settings_->breakMs, settings_->ftdiModem, settings_->wakeAuto);
+  if (ftdi_)
+    ftdi_->setWakeConfig(settings_->breakMs, settings_->ftdiModem, settings_->wakeAuto, settings_->wakeLearnedBreak,
+                         settings_->wakeLearnedModem);
 }
 
 const char* DiagEngine::transportName() { return link_ ? link_->name() : "none"; }
@@ -77,25 +92,66 @@ const char* DiagEngine::transportName() { return link_ ? link_->name() : "none";
 void DiagEngine::lock() { xSemaphoreTakeRecursive(mtx_, portMAX_DELAY); }
 void DiagEngine::unlock() { xSemaphoreGiveRecursive(mtx_); }
 
+JobInfo* DiagEngine::ringFind(uint32_t id) {
+  for (uint8_t i = 0; i < kRing; i++)
+    if (ring_[i].id == id && id) return &ring_[i];
+  return nullptr;
+}
+
+bool DiagEngine::jobInfo(uint32_t id, JobInfo& out) {
+  JobInfo* r = ringFind(id);
+  if (!r) return false;
+  out = *r;
+  return true;
+}
+
 uint32_t DiagEngine::submit(Job j, uint32_t arg, const char* text) {
   lock();
-  // STOP always preempts (purge restore / live stop); others need a free slot.
-  bool busy = pending_ != Job::None || st_.job.state == JobState::Running;
-  if (busy && j != Job::Stop && j != Job::LiveStop) {
+  const bool urgent = j == Job::Stop || j == Job::LiveStop;
+  const bool hasText = text && text[0];
+  // Merge with an identical waiting job; a Connect also with the running one.
+  for (uint8_t i = 0; i < qCount_ && !hasText; i++)
+    if (q_[i].job == j && q_[i].arg == arg) {
+      uint32_t id = q_[i].id;
+      unlock();
+      return id;
+    }
+  if (j == Job::Connect && st_.job.job == Job::Connect && st_.job.state == JobState::Running) {
+    uint32_t id = st_.job.id;
+    unlock();
+    return id;
+  }
+  if (qCount_ >= kQueue && !urgent) {
     unlock();
     return 0;
   }
-  pending_ = j;
-  pendingArg_ = arg;
-  strlcpy(pendingText_, text ? text : "", sizeof pendingText_);
-  uint32_t id = nextJobId_++;
-  pendingId_ = id;
-  if (st_.job.state != JobState::Running) {
-    st_.job = JobInfo();
-    st_.job.id = id;
-    st_.job.job = j;
-    st_.job.state = JobState::Queued;
+  if (qCount_ >= kQueue) {  // urgent job: drop the last waiting one
+    JobInfo* r = ringFind(q_[kQueue - 1].id);
+    if (r) {
+      r->state = JobState::Failed;
+      strlcpy(r->message, "Отменено: выполняется STOP", sizeof r->message);
+    }
+    qCount_ = kQueue - 1;
   }
+  uint32_t id = nextJobId_++;
+  QJob qj;
+  qj.job = j;
+  qj.arg = arg;
+  qj.id = id;
+  strlcpy(qj.text, text ? text : "", sizeof qj.text);
+  if (urgent) {
+    memmove(&q_[1], &q_[0], qCount_ * sizeof(QJob));
+    q_[0] = qj;
+  } else {
+    q_[qCount_] = qj;
+  }
+  qCount_++;
+  JobInfo& r = ring_[ringNext_];
+  ringNext_ = (uint8_t)((ringNext_ + 1) % kRing);
+  r = JobInfo();
+  r.id = id;
+  r.job = j;
+  r.state = JobState::Queued;
   unlock();
   return id;
 }
@@ -107,10 +163,20 @@ void DiagEngine::finishJob(bool ok, const char* msg) {
   st_.job.state = ok ? JobState::Done : JobState::Failed;
   strlcpy(st_.job.message, msg ? msg : "", sizeof st_.job.message);
   st_.job.finishedMs = millis();
+  JobInfo* r = ringFind(st_.job.id);
+  if (r) *r = st_.job;
   st_.session = session_->state();
   st_.lastError = session_->lastError();
   st_.txCount = session_->txCount();
   st_.errCount = session_->errorCount();
+  unlock();
+}
+
+void DiagEngine::featMark(uint8_t f, bool ok) {
+  if (f >= prof::F_COUNT) return;
+  lock();
+  st_.feat[f].state = ok ? 1 : 2;
+  st_.feat[f].tMs = millis();
   unlock();
 }
 
@@ -129,11 +195,12 @@ void DiagEngine::readHardware() {
     const bool present = ftdi_->attached();
     const uint32_t count = ftdi_->attachCount();
     if (count != st_.adapter.attachCount || (st_.adapter.present && !present)) {
+      // Adapter re-attached / removed: the session is gone. Live Data stays
+      // wanted and resumes after the automatic reconnection.
       session_->disconnect();
       guard_.cancel();
       if (guard_.state() == guard::State::Active) guard_.finish(false);
       st_.plan = guard_.plan();
-      st_.liveActive = false;
       st_.session = session_->state();
       autoBackoffMs_ = HFM_AUTOCONNECT_MIN_MS;
       lastAutoMs_ = millis() - autoBackoffMs_;
@@ -186,6 +253,7 @@ void DiagEngine::reresolveProfile() {
   o.engineerMode = settings_->engineerMode;
   o.cylinders = vehicleCylinders();
   prof::resolve(st_.ident, o, st_.profile);
+  afterResolve();
   if (session_) applySettings();
   trace_.setEnabled(settings_->traceCapture);
   unlock();
@@ -199,42 +267,48 @@ bool DiagEngine::can(uint8_t f, char* msg, size_t n) {
   return c.allowed;
 }
 
-void DiagEngine::doConnect(char* msg, size_t n, bool& ok) {
-  LinkStatus s = session_->connect();
+void DiagEngine::doConnect(char* msg, size_t n, bool& ok, uint8_t attempts) {
+  connecting_ = true;
+  updateLink();
+  LinkStatus s = session_->connect(attempts);
+  connecting_ = false;
   ok = s == LinkStatus::Ok;
   lock();
   st_.session = session_->state();
   st_.connectedAtMs = session_->connectedAtMs();
   st_.lastError = s;
   unlock();
-  if (ok) return;
+  if (ok) {
+    everConnected_ = true;
+    return;
+  }
+  if (s == LinkStatus::LinkDown) {
+    adapterMissing(msg, n);
+    return;
+  }
   // Local echo alone cannot verify the vehicle wiring or ECU power.
   uint8_t echo = session_->lastSyncEcho();
   kwake::Diag wd;
-  if (ftdi_ && s == LinkStatus::NoSync && ftdi_->lastWake(wd)) {
-    kwake::Profile next = ftdi_->wakeProfile();
-    if (!wd.echo && !wd.breakOnRx)
-      snprintf(msg, n,
-               "Линия K-Line молчит: адаптер не принял ни свой BREAK, ни эхо AA — нет +12 В на адаптере или "
-               "K-Line не подключена");
-    else if (!wd.echo)
-      snprintf(msg, n, "BREAK на линии есть, эха AA нет (принято %u байт): проверьте K-Line и массу",
-               (unsigned)wd.rxCount);
-    else
-      snprintf(msg, n, "Адаптер в порядке (BREAK %s, эхо AA), ЭБУ не ответил 55; дальше BREAK %u мс, DTR %s, RTS %s",
-               wd.breakOnRx ? "на линии" : "не виден", (unsigned)next.breakMs,
-               (next.modem & kwake::kDtr) ? "вкл" : "выкл", (next.modem & kwake::kRts) ? "вкл" : "выкл");
-    return;
-  }
-  if (s == LinkStatus::NoSync && echo == 0xAA)
-    snprintf(msg, n,
-             "Нет ответа 55 (NO_SYNC): эхо AA получено; проверьте питание KKL и ЭБУ, массу, контакт HFM "
-             "и зажигание");
-  else if (s == LinkStatus::NoSync && echo == 0)
-    snprintf(msg, n, "Нет эха AA (NO_SYNC): проверьте питание адаптера и проводку K-Line");
+  bool haveWd = ftdi_ && ftdi_->lastWake(wd);
+  bool sawEcho = haveWd ? wd.echo : echo == 0xAA;
+  bool sawBreak = haveWd && wd.breakOnRx;
+  if (!sawEcho && !sawBreak && haveWd)
+    snprintf(msg, n, "Линия K-Line молчит: адаптер не принял свой BREAK и эхо AA — проверьте +12 В адаптера и провод K-Line");
+  else if (!sawEcho)
+    snprintf(msg, n, "Нет эха AA от адаптера — проверьте провод K-Line и массу");
   else
-    snprintf(msg, n, "Нет синхронизации AA/55 (%s, эхо %02X): проверьте питание, массу и K-Line", linkStatusCode(s),
-             echo);
+    snprintf(msg, n, "ЭБУ не ответил на пробуждение (эхо адаптера есть, ответа 55 нет) — проверьте зажигание");
+}
+
+static void rememberEcu(Settings* st, const char* fp, uint8_t set, uint8_t clear) {
+  if (strcmp(st->ecuFp, fp) != 0) {
+    strlcpy(st->ecuFp, fp, sizeof st->ecuFp);
+    st->ecuFlags = 0;
+  }
+  uint8_t f = (uint8_t)((st->ecuFlags | set) & ~clear);
+  if (f == st->ecuFlags) return;  // already stored
+  st->ecuFlags = f;
+  st->save();
 }
 
 void DiagEngine::doIdentify(char* msg, size_t n, bool& ok) {
@@ -245,38 +319,87 @@ void DiagEngine::doIdentify(char* msg, size_t n, bool& ok) {
   parseIdent(raw, ok ? 28 : 0, id);
   if (ok) {
     // F0:26 / F0:27 (ROM page, descriptor address) - read by the factory tester
-    // in the same telegram. Optional: a failure here does not invalidate the ID.
-    uint8_t b26 = 0, b27 = 0;
-    LinkStatus e = session_->prefix(0xF0);
-    if (e == LinkStatus::Ok) e = session_->selector(0x26, b26);
-    if (e == LinkStatus::Ok) e = session_->prefix(0xF0);
-    if (e == LinkStatus::Ok) e = session_->selector(0x27, b27);
-    if (e == LinkStatus::Ok) {
-      id.extPresent = true;
-      id.romPage = b26;
-      id.descAddr = b27;
-    } else {
-      session_->connect();  // re-sync after the optional read failed
+    // in the same telegram. Optional; an ECU that does not answer them is
+    // remembered (NVS) and the read session is resumed without a new BREAK.
+    bool skip = strcmp(settings_->ecuFp, id.fingerprint) == 0 && (settings_->ecuFlags & ECU_F_NO_F0EXT);
+    if (!skip) {
+      uint8_t b26 = 0, b27 = 0;
+      LinkStatus e = session_->prefix(0xF0);
+      if (e == LinkStatus::Ok) e = session_->selector(0x26, b26);
+      if (e == LinkStatus::Ok) e = session_->prefix(0xF0);
+      if (e == LinkStatus::Ok) e = session_->selector(0x27, b27);
+      if (e == LinkStatus::Ok) {
+        id.extPresent = true;
+        id.romPage = b26;
+        id.descAddr = b27;
+      } else {
+        rememberEcu(settings_, id.fingerprint, ECU_F_NO_F0EXT, 0);
+        if (!recoverRead()) {
+          char tmp[200];
+          bool ok2 = false;
+          doConnect(tmp, sizeof tmp, ok2, 2);
+        }
+      }
     }
   }
   lock();
-  if (ok) st_.ident = id;
+  if (ok) {
+    if (strcmp(st_.ident.fingerprint, id.fingerprint) != 0) {
+      // Another ECU: results of the previous one are not valid for it.
+      st_.dtc = DtcView();
+      st_.adapt = svc::Adaptations();
+      st_.coding = svc::Coding();
+      st_.vin = svc::Vin();
+      st_.live = live::Decoded();
+      st_.snap = live::Snapshot();
+      for (uint8_t f = 0; f < prof::F_COUNT; f++) st_.feat[f] = FeatRun();
+      extDisabled_ = false;
+    }
+    st_.ident = id;
+  }
   prof::ResolveOptions o;
   o.experimentalReads = settings_->experimentalReads;
   o.engineerMode = settings_->engineerMode;
   o.cylinders = vehicleCylinders();
   prof::resolve(st_.ident, o, st_.profile);
+  afterResolve();
   unlock();
-  if (!ok) snprintf(msg, n, "Ошибка чтения F0 (%s)", linkStatusCode(s));
-  else snprintf(msg, n, "%s", st_.profile.name);
+  featMark(prof::F_IDENT, ok);
+  if (!ok) snprintf(msg, n, "Ошибка чтения идентификации F0 (%s)", linkStatusCode(s));
+  else snprintf(msg, n, "ЭБУ %s · %s", id.partDisplay, id.identifier);
+}
+
+void DiagEngine::afterResolve() {
+  // Live-data address plan: by vendor; unknown vendor -> remembered probe
+  // result, otherwise the documented Bosch plan first.
+  st_.livePlanVdo = st_.profile.vdoUnits;
+  if (st_.profile.vdoCandidate && strcmp(settings_->ecuFp, st_.ident.fingerprint) == 0 &&
+      (settings_->ecuFlags & ECU_F_PLAN_KNOWN))
+    st_.livePlanVdo = (settings_->ecuFlags & ECU_F_PLAN_VDO) != 0 && settings_->experimentalReads;
+}
+
+bool DiagEngine::recoverRead() {
+  if (!session_->resyncAllowed()) return false;
+  bool ok = session_->resync() == LinkStatus::Ok;
+  lock();
+  if (ok) st_.resyncs++;
+  st_.session = session_->state();
+  st_.lastError = session_->lastError();
+  unlock();
+  return ok;
 }
 
 bool DiagEngine::ensureConnected(char* msg, size_t n) {
   if (session_->ready()) return true;
+  if (!adapterPresent()) {
+    adapterMissing(msg, n);
+    return false;
+  }
+  if (recoverRead()) return true;
   bool ok;
-  doConnect(msg, n, ok);
+  doConnect(msg, n, ok, 2);
   if (ok) doIdentify(msg, n, ok);
-  return ok;
+  return ok && session_->ready();
 }
 
 void DiagEngine::fillFacts(guard::Facts& f) {
@@ -314,6 +437,8 @@ void DiagEngine::execute(Job j, uint32_t arg, const char* text) {
   lock();
   st_.job.state = JobState::Running;
   st_.job.startedMs = millis();
+  JobInfo* rj = ringFind(st_.job.id);
+  if (rj) *rj = st_.job;
   unlock();
 
   switch (j) {
@@ -325,12 +450,21 @@ void DiagEngine::execute(Job j, uint32_t arg, const char* text) {
         adapterMissing(msg, sizeof msg);
         break;
       }
-      if (session_->ready()) session_->disconnect();
-      doConnect(msg, sizeof msg, ok);
+      // A running session is kept: a new BREAK into it would not be answered.
+      if (session_->ready()) {
+        snprintf(msg, sizeof msg, "ЭБУ уже на связи");
+        break;
+      }
+      if (recoverRead()) {
+        snprintf(msg, sizeof msg, "Связь с ЭБУ восстановлена");
+        break;
+      }
+      doConnect(msg, sizeof msg, ok, 2);
       if (ok) doIdentify(msg, sizeof msg, ok);
       break;
     case Job::Disconnect:
       userDisconnected_ = true;  // no auto-reconnect until "Connect" is pressed
+      everConnected_ = false;
       lock();
       st_.liveActive = false;
       unlock();
@@ -340,6 +474,7 @@ void DiagEngine::execute(Job j, uint32_t arg, const char* text) {
     case Job::Identify:
       if (!ensureConnected(msg, sizeof msg)) { ok = false; break; }
       doIdentify(msg, sizeof msg, ok);
+      if (ok && !session_->ready()) ensureConnected(msg, sizeof msg);
       break;
     case Job::ReadDtc: {
       if (!ensureConnected(msg, sizeof msg)) { ok = false; break; }
@@ -355,11 +490,14 @@ void DiagEngine::execute(Job j, uint32_t arg, const char* text) {
         st_.dtc.tMs = millis();
         st_.dtc.count = decodeAll(fm, st_.profile, st_.dtc.items, 48);
         st_.dtc.inferred = dtc::inferBankMapping(st_.dtc.items, st_.dtc.count);
-        snprintf(msg, sizeof msg, "Прочитано 32 байта F1, установлено битов: %u", st_.dtc.count);
+        if (st_.dtc.count) snprintf(msg, sizeof msg, "Память неисправностей прочитана: записей %u", st_.dtc.count);
+        else snprintf(msg, sizeof msg, "Память неисправностей прочитана: записей нет");
         unlock();
+        if (fm.extValid) featMark(prof::F_DTC_EXTENDED, true);
       } else {
-        snprintf(msg, sizeof msg, "Ошибка чтения F1 (%s)", linkStatusCode(s));
+        snprintf(msg, sizeof msg, "Ошибка чтения памяти неисправностей (%s)", linkStatusCode(s));
       }
+      featMark(prof::F_DTC_READ, ok);
       break;
     }
     case Job::ReadAdapt: {
@@ -370,7 +508,9 @@ void DiagEngine::execute(Job j, uint32_t arg, const char* text) {
       lock();
       if (ok) st_.adapt = a;
       unlock();
-      if (!ok) snprintf(msg, sizeof msg, "Ошибка чтения 24* 90/92/93 (%s)", linkStatusCode(s));
+      if (!ok) snprintf(msg, sizeof msg, "Ошибка чтения адаптаций 24* 90/92/93 (%s)", linkStatusCode(s));
+      else snprintf(msg, sizeof msg, "Самоадаптации прочитаны");
+      featMark(prof::F_ADAPT_READ, ok);
       break;
     }
     case Job::ReadCoding: {
@@ -381,7 +521,9 @@ void DiagEngine::execute(Job j, uint32_t arg, const char* text) {
       lock();
       if (ok) st_.coding = c;
       unlock();
-      if (!ok) snprintf(msg, sizeof msg, "Ошибка чтения 27* 02 24* F0 (%s)", linkStatusCode(s));
+      if (!ok) snprintf(msg, sizeof msg, "Ошибка чтения кодировки 27* 02 24* F0 (%s)", linkStatusCode(s));
+      else snprintf(msg, sizeof msg, "Кодировка прочитана");
+      featMark(prof::F_CODING_READ, ok);
       break;
     }
     case Job::ReadVin: {
@@ -394,9 +536,25 @@ void DiagEngine::execute(Job j, uint32_t arg, const char* text) {
       unlock();
       snprintf(msg, sizeof msg, ok ? (v.valid ? "VIN прочитан" : "VIN в ЭБУ не записан (00/FF)") : "Ошибка F9 (%s)",
                linkStatusCode(s));
+      featMark(prof::F_VIN_READ, ok);
       break;
     }
     case Job::LiveStart:
+      // While the link is recovering the request is kept: polling starts by
+      // itself after the automatic reconnection.
+      if (!session_->ready() && settings_->autoConnect && !userDisconnected_ && adapterPresent()) {
+        bool identified;
+        lock();
+        identified = st_.ident.present;
+        unlock();
+        if (identified && can(prof::F_LIVE_NATIVE, msg, sizeof msg)) {
+          lock();
+          st_.liveActive = true;
+          unlock();
+          snprintf(msg, sizeof msg, "Опрос начнётся после восстановления связи с ЭБУ");
+          break;
+        }
+      }
       if (!ensureConnected(msg, sizeof msg) || !can(prof::F_LIVE_NATIVE, msg, sizeof msg)) { ok = false; break; }
       lock();
       st_.liveActive = true;
@@ -416,11 +574,18 @@ void DiagEngine::execute(Job j, uint32_t arg, const char* text) {
       // Fresh read of engine state immediately before planning.
       if (st_.profile.caps[prof::F_LIVE_NATIVE].allowed) {
         live::Snapshot snap = st_.snap;
-        if (live::pollNative(*session_, snap) == LinkStatus::Ok) {
+        bool vdo = st_.livePlanVdo;
+        if (live::pollNative(*session_, snap, vdo) == LinkStatus::Ok) {
+          int16_t vi = settings_->vehicleIdx;
+          const prof::VehicleEntry* ve = vi >= 0 ? prof::vehicleByIndex((uint16_t)vi) : nullptr;
           lock();
           st_.snap = snap;
-          live::decode(snap, prof::NormGroup::None, st_.profile.vdoUnits, nullptr, st_.live);
+          prevLive_ = st_.live;
+          live::decode(snap, ve ? ve->norms : prof::NormGroup::None, vdo, &prevLive_, st_.live,
+                       st_.profile.variant.diagRaw);
           unlock();
+        } else {
+          recoverRead();
         }
       }
       readHardware();
@@ -476,6 +641,7 @@ void DiagEngine::execute(Job j, uint32_t arg, const char* text) {
                                                  : "Команды приняты, но память не пуста — неисправность активна?")
                                      : "ОШИБКА при стирании (%s). Состояние неизвестно — запись заблокирована.",
                  linkStatusCode(s));
+        featMark(prof::F_DTC_CLEAR, ok && verified);
         guard_.finish(ok);
       } else if (op == guard::Op::AdaptReset) {
         uint8_t r[10];
@@ -485,6 +651,7 @@ void DiagEngine::execute(Job j, uint32_t arg, const char* text) {
                                        "подтверждён ЭБУ — прочитайте адаптации повторно."
                                      : "ОШИБКА сброса (%s). Состояние неизвестно — запись заблокирована.",
                  linkStatusCode(s));
+        if (!ok) featMark(prof::F_ADAPT_RESET, false);  // success is confirmed only by a new readout
         guard_.finish(ok);
       } else {
         bool sonde = false;
@@ -495,6 +662,7 @@ void DiagEngine::execute(Job j, uint32_t arg, const char* text) {
         st_.purgeOn = false;
         st_.purgeActiveSinceMs = millis();
         unlock();
+        featMark(prof::F_PURGE_TEST, ok);
         if (!ok) {
           svc::purgeRestore(*session_, sonde);
           guard_.finish(false);
@@ -582,6 +750,7 @@ void DiagEngine::execute(Job j, uint32_t arg, const char* text) {
       kline_->close();
       snprintf(msg, sizeof msg, v.result.complete ? "Код N = %u" : "Код не распознан (импульсов: %u)", v.result.pulses);
       ok = v.result.complete;
+      featMark(prof::F_IMPULSE_READ, ok);
       break;
     }
     default:
@@ -597,40 +766,72 @@ void DiagEngine::livePoll() {
   live::Snapshot snap;
   lock();
   snap = st_.snap;
-  bool ext = st_.profile.caps[prof::F_LIVE_EXTENDED].allowed;
+  bool vdo = st_.livePlanVdo;
+  bool ext = st_.profile.caps[prof::F_LIVE_EXTENDED].allowed && !vdo && !extDisabled_;
+  bool probe = st_.profile.vdoCandidate && !(strcmp(settings_->ecuFp, st_.ident.fingerprint) == 0 &&
+                                             (settings_->ecuFlags & ECU_F_PLAN_KNOWN));
   int16_t vi = settings_->vehicleIdx;
-  bool vdo = st_.profile.vdoUnits;
   uint8_t diagRaw = st_.profile.variant.diagRaw;
+  char fp[24];
+  strlcpy(fp, st_.ident.fingerprint, sizeof fp);
   unlock();
-  // VDO candidate: VDO address plan (experimental prefixes); Bosch extended
+  // VDO plan: VDO address plan (experimental prefixes); Bosch extended
   // addresses do not apply to it.
   LinkStatus s = live::pollNative(*session_, snap, vdo);
-  if (s == LinkStatus::Ok && ext && !vdo) live::pollExtended(*session_, snap);
+  if (s == LinkStatus::Ok && ext) {
+    // Extended reads are optional (opt-in): two failures in a row switch them
+    // off for this ECU session instead of dropping the link every cycle.
+    if (live::pollExtended(*session_, snap) != LinkStatus::Ok) {
+      if (++extFails_ >= 2) extDisabled_ = true;
+      recoverRead();
+    } else {
+      extFails_ = 0;
+    }
+  }
   prof::NormGroup ng = prof::NormGroup::None;
   const prof::VehicleEntry* ve = vi >= 0 ? prof::vehicleByIndex((uint16_t)vi) : nullptr;
   if (ve) ng = ve->norms;
   lock();
   st_.snap = snap;
-  prevLive_ = st_.live;
-  live::decode(snap, ng, vdo, &prevLive_, st_.live, diagRaw);
-  st_.liveCycles++;
+  if (s == LinkStatus::Ok) {
+    // Only complete cycles replace the shown values; a failed cycle keeps the
+    // last ones (their age tells the UI they are not live).
+    prevLive_ = st_.live;
+    live::decode(snap, ng, vdo, &prevLive_, st_.live, diagRaw);
+    st_.liveCycles++;
+    st_.feat[prof::F_LIVE_NATIVE].state = 1;
+    st_.feat[prof::F_LIVE_NATIVE].tMs = millis();
+  }
   st_.session = session_->state();
   st_.txCount = session_->txCount();
   st_.errCount = session_->errorCount();
   unlock();
-  if (s != LinkStatus::Ok) {
-    // Read-only: re-initialise (connect() retries up to 3 times).
-    char msg[256];
-    bool ok;
-    doConnect(msg, sizeof msg, ok);
-    if (!ok) {
-      lock();
-      st_.liveActive = false;
-      unlock();
-    }
+  if (s == LinkStatus::Ok) {
+    if (probe) rememberEcu(settings_, fp, (uint8_t)(ECU_F_PLAN_KNOWN | (vdo ? ECU_F_PLAN_VDO : 0)), vdo ? 0 : ECU_F_PLAN_VDO);
+    if (st_.recording) recordRow();
     return;
   }
-  if (st_.recording) recordRow();
+  if (s == LinkStatus::NotAllowed) {
+    // The policy refuses this plan now (e.g. experimental reads switched
+    // off): nothing was sent, so stop polling instead of looping silently.
+    lock();
+    st_.liveActive = false;
+    snprintf(st_.autoMsg, sizeof st_.autoMsg, "Опрос Live Data остановлен: адреса этого ЭБУ требуют «Экспериментальное чтение»");
+    unlock();
+    return;
+  }
+  const bool firstGroupFailed = vdo ? !snap.vdoOk[0] : !snap.groupOk[0];
+  if (probe && firstGroupFailed) {
+    // Unknown vendor: the first group of this plan is not answered - try the
+    // other documented plan (VDO plan only with the experimental opt-in).
+    lock();
+    if (!vdo && settings_->experimentalReads) st_.livePlanVdo = true;
+    else if (vdo) st_.livePlanVdo = false;
+    unlock();
+  }
+  // Read-only: resume the session without a new BREAK; otherwise
+  // maintainLink() reconnects and polling continues afterwards.
+  recoverRead();
 }
 
 void DiagEngine::keepAlive() {
@@ -640,7 +841,9 @@ void DiagEngine::keepAlive() {
   uint8_t b;
   // Harmless read-only command (F0:00) instead of "10 00": 0x10 is
   // also an element of the DTC clear sequence (docs/DECISIONS.md D-006).
-  if (session_->prefix(0xF0) == LinkStatus::Ok) session_->selector(0x00, b);
+  LinkStatus s = session_->prefix(0xF0);
+  if (s == LinkStatus::Ok) s = session_->selector(0x00, b);
+  if (s != LinkStatus::Ok) recoverRead();
   lock();
   st_.session = session_->state();
   st_.lastError = session_->lastError();
@@ -721,7 +924,7 @@ bool DiagEngine::adapterPresent() {
   return kline_ != nullptr;
 }
 
-void DiagEngine::autoConnect() {
+void DiagEngine::maintainLink() {
   if (session_->ready() || !settings_->autoConnect || userDisconnected_) return;
   if (guard_.state() != guard::State::Idle && guard_.state() != guard::State::FaultStop) return;
   if (!adapterPresent()) {
@@ -732,54 +935,128 @@ void DiagEngine::autoConnect() {
     unlock();
     return;
   }
+  // 1. A read session lost by a byte error: resume without a new BREAK.
+  if (recoverRead()) {
+    lock();
+    st_.recoveries++;
+    st_.recoverAttempts = 0;
+    snprintf(st_.autoMsg, sizeof st_.autoMsg, "Связь восстановлена автоматически");
+    unlock();
+    return;
+  }
+  // 2. Line silence until the ECU dropped its session (not blocking: jobs
+  //    submitted meanwhile are executed).
+  uint32_t silence = session_->silenceNeededMs();
+  if (silence) return;
   uint32_t now = millis();
   if (now - lastAutoMs_ < autoBackoffMs_) return;
   lastAutoMs_ = now;
+  const bool recovering = everConnected_;
+  lock();
+  if (recovering) st_.recoverAttempts++;
+  unlock();
   char msg[256];
   bool ok = false;
-  doConnect(msg, sizeof msg, ok);
+  doConnect(msg, sizeof msg, ok, 1);
   if (ok) doIdentify(msg, sizeof msg, ok);
   lock();
   st_.autoAttempts++;
-  if (ok) {
+  if (ok && session_->ready()) {
     autoBackoffMs_ = HFM_AUTOCONNECT_MIN_MS;
-    snprintf(st_.autoMsg, sizeof st_.autoMsg, "Подключено автоматически: %s", msg);
+    if (recovering) st_.recoveries++;
+    st_.recoverAttempts = 0;
+    snprintf(st_.autoMsg, sizeof st_.autoMsg, recovering ? "Связь восстановлена автоматически" : "Подключено автоматически");
   } else {
     autoBackoffMs_ = autoBackoffMs_ * 2 > HFM_AUTOCONNECT_MAX_MS ? HFM_AUTOCONNECT_MAX_MS : autoBackoffMs_ * 2;
-    snprintf(st_.autoMsg, sizeof st_.autoMsg, "Автоподключение: %s; повтор через %lu с", msg,
-             (unsigned long)(autoBackoffMs_ / 1000));
+    strlcpy(st_.autoMsg, msg, sizeof st_.autoMsg);
   }
   unlock();
+}
+
+void DiagEngine::updateLink() {
+  lock();
+  SessionState ss = session_->state();
+  st_.session = ss;
+  st_.lastError = session_->lastError();
+  st_.resyncs = session_->resyncCount();
+  LinkPhase ph;
+  char m[200] = {0};
+  if (ftdi_ && !st_.adapter.present) {
+    ph = LinkPhase::NoAdapter;
+    snprintf(m, sizeof m, "Адаптер K-Line не обнаружен%s%s", st_.adapter.note[0] ? ": " : "", st_.adapter.note);
+  } else if (ss == SessionState::Ready) {
+    ph = LinkPhase::Ready;
+  } else if (guard_.state() == guard::State::FaultStop) {
+    ph = LinkPhase::Error;
+    snprintf(m, sizeof m, "FAULT_STOP: сервисная операция завершилась ошибкой — квитируйте и проверьте автомобиль");
+  } else if (connecting_) {
+    ph = everConnected_ ? LinkPhase::Recovering : LinkPhase::Connecting;
+    snprintf(m, sizeof m, everConnected_ ? "Восстановление связи с ЭБУ…" : "Подключение к ЭБУ…");
+  } else if (userDisconnected_) {
+    ph = LinkPhase::Paused;
+    snprintf(m, sizeof m, "Отключено. Автоподключение приостановлено до нажатия «Подключить»");
+  } else if (!settings_->autoConnect) {
+    ph = ss == SessionState::Error ? LinkPhase::Error : LinkPhase::Idle;
+    if (ss == SessionState::Error)
+      snprintf(m, sizeof m, "Связь с ЭБУ прервана (%s). Автоподключение выключено — нажмите «Подключить»",
+               linkStatusCode(session_->lastError()));
+    else
+      snprintf(m, sizeof m, "Не подключено");
+  } else {
+    ph = everConnected_ ? LinkPhase::Recovering : LinkPhase::Connecting;
+    if (everConnected_)
+      snprintf(m, sizeof m, "Связь с ЭБУ прервалась — восстанавливаю автоматически%s%s",
+               st_.autoMsg[0] ? ": " : "", st_.autoMsg);
+    else
+      snprintf(m, sizeof m, "%s", st_.autoMsg[0] ? st_.autoMsg : "Поиск ЭБУ…");
+  }
+  st_.link = ph;
+  strlcpy(st_.linkMsg, m, sizeof st_.linkMsg);
+  unlock();
+}
+
+void DiagEngine::persistLearned() {
+  uint32_t now = millis();
+  if (now - lastPersistMs_ < 2000) return;
+  lastPersistMs_ = now;
+  kwake::Profile g;
+  if (ftdi_ && ftdi_->goodProfile(g) &&
+      (g.breakMs != settings_->wakeLearnedBreak || g.modem != settings_->wakeLearnedModem)) {
+    settings_->wakeLearnedBreak = g.breakMs;
+    settings_->wakeLearnedModem = g.modem;
+    settings_->save();
+  }
 }
 
 void DiagEngine::run() {
   for (;;) {
     readHardware();
-    Job j = Job::None;
-    uint32_t arg = 0;
-    char text[64];
+    QJob qj;
+    bool have = false;
     lock();
-    if (pending_ != Job::None) {
-      j = pending_;
-      arg = pendingArg_;
-      strlcpy(text, pendingText_, sizeof text);
-      pending_ = Job::None;
+    if (qCount_) {
+      qj = q_[0];
+      memmove(&q_[0], &q_[1], (qCount_ - 1) * sizeof(QJob));
+      qCount_--;
+      have = true;
       st_.job = JobInfo();
-      st_.job.id = pendingId_;
-      st_.job.job = j;
+      st_.job.id = qj.id;
+      st_.job.job = qj.job;
       st_.job.state = JobState::Queued;
     }
     bool liveOn = st_.liveActive;
     unlock();
-    if (j != Job::None) {
-      execute(j, arg, text);
-    } else if (liveOn && session_->ready()) {
-      livePoll();
+    if (have) {
+      execute(qj.job, qj.arg, qj.text);
+    } else if (session_->ready()) {
+      if (liveOn) livePoll();
+      else keepAlive();
     } else {
-      keepAlive();
-      autoConnect();
+      maintainLink();
     }
     purgeWatchdog();
+    persistLearned();
+    updateLink();
     uint32_t now = millis();
     if (st_.recording && now - lastFlushMs_ > HFM_RECORD_FLUSH_MS) {
       lastFlushMs_ = now;
@@ -791,7 +1068,7 @@ void DiagEngine::run() {
       }
       unlock();
     }
-    vTaskDelay(pdMS_TO_TICKS(liveOn ? 1 : 10));
+    vTaskDelay(pdMS_TO_TICKS(liveOn && session_->ready() ? 1 : 10));
   }
 }
 #endif

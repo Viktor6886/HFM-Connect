@@ -102,8 +102,8 @@ struct EcuProfile {
   dtc::Variant variant;
   dtc::BankMapping bankMapping;
   Confidence bankMappingConf;
-  bool vdoUnits;          // VDO candidate: VDO live-data addresses, adaptation in %
-  bool vdoCandidate;      // not Bosch (F0:00..01 != 2C 42) but HFM diagnosis range
+  bool vdoUnits;          // vendor letter 'V': VDO live-data addresses, adaptation RAW
+  bool vdoCandidate;      // unknown vendor letter in the HFM range: live plan is probed
   Capability caps[F_COUNT];
 };
 

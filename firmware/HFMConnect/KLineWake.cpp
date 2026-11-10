@@ -96,10 +96,13 @@ void Planner::add(uint16_t breakMs, uint8_t modem) {
   n_++;
 }
 
+static bool same(const Profile& a, const Profile& b) { return a.breakMs == b.breakMs && a.modem == b.modem; }
+
 void Planner::configure(const Profile& user, bool autoTune) {
-  if (n_ && list_[0].breakMs == user.breakMs && list_[0].modem == user.modem && auto_ == autoTune) return;
+  if (n_ && same(list_[0], user) && auto_ == autoTune) return;  // unchanged: keep position and working profile
   n_ = idx_ = 0;
-  locked_ = false;
+  fails_ = 0;
+  haveGood_ = useGood_ = false;
   auto_ = autoTune;
   add(user.breakMs, user.modem);
   if (!autoTune) return;
@@ -109,16 +112,50 @@ void Planner::configure(const Profile& user, bool autoTune) {
   for (uint8_t m : kModems) add(user.breakMs, m);
 }
 
+void Planner::setLearned(const Profile& p) {
+  if (haveGood_ && same(good_, p)) return;
+  if (!auto_ && n_ && !same(list_[0], p)) return;  // fixed profile: the configured one only
+  good_ = p;
+  haveGood_ = true;
+  fails_ = 0;
+  useGood_ = false;
+}
+
+const Profile& Planner::current() const {
+  if (haveGood_ && (fails_ < kUnlockAfter || useGood_ || !auto_)) return good_;
+  return list_[idx_];
+}
+
+void Planner::advance() {
+  if (!auto_ || !n_) return;
+  for (uint8_t k = 0; k < n_; k++) {
+    idx_ = (uint8_t)((idx_ + 1) % n_);
+    if (!haveGood_ || !same(list_[idx_], good_)) return;
+  }
+}
+
 void Planner::result(bool ok) {
   if (ok) {
-    locked_ = true;
+    good_ = current();
+    haveGood_ = true;
+    fails_ = 0;
+    useGood_ = false;
     return;
   }
-  if (locked_) {  // one failure (ignition off, unplugged) does not drop a working profile
-    locked_ = false;
+  if (!haveGood_) {
+    advance();
     return;
   }
-  if (auto_ && n_) idx_ = (uint8_t)((idx_ + 1) % n_);
+  if (fails_ < 0xFFFF) fails_++;
+  if (fails_ < kUnlockAfter || !auto_) return;
+  // Long silence with the working profile: alternate it with the others.
+  if (fails_ == kUnlockAfter) {
+    useGood_ = false;
+    if (same(list_[idx_], good_)) advance();
+    return;
+  }
+  if (!useGood_) advance();
+  useGood_ = !useGood_;
 }
 
 }  // namespace kwake

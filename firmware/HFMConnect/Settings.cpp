@@ -8,8 +8,20 @@
 Settings AppSettings;
 
 static Preferences prefs;
+static SemaphoreHandle_t gMtx = nullptr;
+
+namespace {
+struct PrefsLock {
+  PrefsLock() {
+    if (!gMtx) gMtx = xSemaphoreCreateMutex();
+    xSemaphoreTake(gMtx, portMAX_DELAY);
+  }
+  ~PrefsLock() { xSemaphoreGive(gMtx); }
+};
+}  // namespace
 
 void Settings::load() {
+  PrefsLock guard;
   prefs.begin("hfm", true);
   breakMs = prefs.getUShort("brk", 177);
   postBreakMs = prefs.getUShort("pbrk", 214);
@@ -31,12 +43,28 @@ void Settings::load() {
   prefs.getString("stapass", staPass, sizeof staPass);
   impPressMs = prefs.getUShort("imppr", 3000);
   impEndGapMs = prefs.getUShort("impgap", 2500);
+  uiTheme = prefs.getUChar("theme", 0) % 3;
+  if (!prefs.getString("lsel", liveSel, sizeof liveSel)) strlcpy(liveSel, "rpm,maf,o2_mv,lambda", sizeof liveSel);
+  if (!prefs.getString("lcat", liveCat, sizeof liveCat)) strlcpy(liveCat, "all", sizeof liveCat);
+  prefs.getString("code9", code9, sizeof code9);
+  wakeLearnedBreak = prefs.getUShort("wlbrk", 0);
+  wakeLearnedModem = prefs.getUChar("wlmod", 0) & 3;
+  prefs.getString("ecufp", ecuFp, sizeof ecuFp);
+  ecuFlags = prefs.getUChar("ecufl", 0);
   prefs.end();
-  if (strlen(apPass) < 8) strlcpy(apPass, HFM_AP_DEFAULT_PASS, sizeof apPass);
+  // Previous default AP password -> new default; a user password is kept.
+  bool migrate = strcmp(apPass, HFM_AP_OLD_DEFAULT_PASS) == 0;
+  if (migrate || strlen(apPass) < 8) strlcpy(apPass, HFM_AP_DEFAULT_PASS, sizeof apPass);
+  if (migrate) {
+    prefs.begin("hfm", false);
+    prefs.putString("appass", apPass);
+    prefs.end();
+  }
   batteryManualConfirm = false;  // never persisted: must be confirmed per session
 }
 
 void Settings::save() {
+  PrefsLock guard;
   prefs.begin("hfm", false);
   prefs.putUShort("brk", breakMs);
   prefs.putUShort("pbrk", postBreakMs);
@@ -58,13 +86,24 @@ void Settings::save() {
   prefs.putString("stapass", staPass);
   prefs.putUShort("imppr", impPressMs);
   prefs.putUShort("impgap", impEndGapMs);
+  prefs.putUChar("theme", uiTheme);
+  prefs.putString("lsel", liveSel);
+  prefs.putString("lcat", liveCat);
+  prefs.putString("code9", code9);
+  prefs.putUShort("wlbrk", wakeLearnedBreak);
+  prefs.putUChar("wlmod", wakeLearnedModem);
+  prefs.putString("ecufp", ecuFp);
+  prefs.putUChar("ecufl", ecuFlags);
   prefs.end();
 }
 
 void Settings::factoryReset() {
-  prefs.begin("hfm", false);
-  prefs.clear();
-  prefs.end();
+  {
+    PrefsLock guard;
+    prefs.begin("hfm", false);
+    prefs.clear();
+    prefs.end();
+  }
   *this = Settings();
   load();
 }

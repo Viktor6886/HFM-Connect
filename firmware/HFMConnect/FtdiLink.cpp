@@ -697,11 +697,15 @@ int FtdiLink::Line::read(uint8_t& b, uint32_t timeoutMs) {
   return f_.attached_ ? 0 : -1;
 }
 
-void FtdiLink::setWakeConfig(uint16_t breakMs, uint8_t modem, bool autoTune) {
+void FtdiLink::setWakeConfig(uint16_t breakMs, uint8_t modem, bool autoTune, uint16_t learnedBreakMs,
+                             uint8_t learnedModem) {
   portENTER_CRITICAL(&wakeMux_);
   wakeUser_.breakMs = breakMs;
   wakeUser_.modem = modem & (kwake::kDtr | kwake::kRts);
   wakeAuto_ = autoTune;
+  haveLearned_ = learnedBreakMs != 0;
+  wakeLearned_.breakMs = learnedBreakMs;
+  wakeLearned_.modem = learnedModem & (kwake::kDtr | kwake::kRts);
   portEXIT_CRITICAL(&wakeMux_);
   wakeConfigChanged_ = true;
 }
@@ -710,6 +714,13 @@ bool FtdiLink::lastWake(kwake::Diag& d) const {
   portENTER_CRITICAL(&wakeMux_);
   bool have = haveWake_;
   if (have) d = lastWake_;
+  portEXIT_CRITICAL(&wakeMux_);
+  return have;
+}
+
+bool FtdiLink::goodProfile(kwake::Profile& p) const {
+  portENTER_CRITICAL(&wakeMux_);
+  bool have = planner_.good(p);
   portEXIT_CRITICAL(&wakeMux_);
   return have;
 }
@@ -727,7 +738,10 @@ LinkStatus FtdiLink::wakeup(const LinkTiming& t, uint8_t& echo, uint8_t& sync) {
   echo = sync = 0;
   if (!isOpen()) return LinkStatus::LinkDown;
   portENTER_CRITICAL(&wakeMux_);
-  if (wakeConfigChanged_.exchange(false)) planner_.configure(wakeUser_, wakeAuto_);
+  if (wakeConfigChanged_.exchange(false)) {
+    planner_.configure(wakeUser_, wakeAuto_);
+    if (haveLearned_) planner_.setLearned(wakeLearned_);
+  }
   kwake::Profile p = planner_.current();
   portEXIT_CRITICAL(&wakeMux_);
   // AA at the configured BREAK + pause from the start of BREAK (177 + 214 =

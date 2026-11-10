@@ -38,8 +38,17 @@ void SimEcu::setScenario(Scenario s) {
 }
 
 LinkStatus SimEcu::wakeup(const LinkTiming& t, uint8_t& echo, uint8_t& sync) {
+  uint32_t start = nowMs();
   sleepMs(t.breakMs + t.postBreakMs);
   if (!open_) return LinkStatus::LinkDown;
+  if (inject_.sessionTimeoutMs && initialized_ && start - lastByteMs_ < inject_.sessionTimeoutMs) {
+    // Still in session: BREAK and AA are read as session bytes.
+    echo = 0xAA;
+    sync = 0x2C;
+    sleepMs(t.byteDeadlineMs);
+    lastByteMs_ = nowMs();
+    return LinkStatus::NoSync;
+  }
   if (inject_.noSync) {
     echo = 0xAA;
     sync = 0;
@@ -49,6 +58,7 @@ LinkStatus SimEcu::wakeup(const LinkTiming& t, uint8_t& echo, uint8_t& sync) {
   echo = 0xAA;
   sync = 0x55;
   initialized_ = true;
+  lastByteMs_ = nowMs();
   pageSet_ = false;
   controlStage_ = 0;
   return LinkStatus::Ok;
@@ -119,7 +129,10 @@ LinkStatus SimEcu::exchange(uint8_t tx, Parity p, uint16_t deadlineMs, uint8_t& 
   resp = 0;
   if (!open_) return LinkStatus::LinkDown;
   int32_t n = (int32_t)count_++;
+  if (inject_.sessionTimeoutMs && initialized_ && nowMs() - lastByteMs_ >= inject_.sessionTimeoutMs)
+    initialized_ = false;  // session timed out
   clockUs_ += 3600;  // ~3 byte times at 9600 Bd + ECU latency
+  lastByteMs_ = nowMs();
   if (!initialized_) {
     clockUs_ += (uint64_t)deadlineMs * 1000;
     return LinkStatus::Timeout;

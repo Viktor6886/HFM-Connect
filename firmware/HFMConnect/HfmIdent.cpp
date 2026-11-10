@@ -25,8 +25,20 @@ bool parseIdent(const uint8_t* raw, uint8_t len, EcuIdent& o) {
   if (len < 28) return false;
   o.present = true;
 
-  o.vendorKnown = (raw[0] == 0x2C && raw[1] == 0x42);
-  snprintf(o.vendor, sizeof o.vendor, "%s", o.vendorKnown ? "BOSCH" : "UNKNOWN");
+  // Vendor and system group exactly as the PC tester decodes the 16-bit
+  // manufacturer word (vendor routine 0x4810f4, see docs/PROTOCOL.md s.5).
+  switch (raw[1]) {
+    case 'B': o.vendorId = 1; break;
+    case 'V': o.vendorId = 2; break;
+    case 'S': o.vendorId = 3; break;
+    default: o.vendorId = 0;
+  }
+  if (raw[0] == 0x27 || raw[0] == 0x2C) o.systemGroup = 1;
+  else if (raw[0] == 0x21 || raw[0] == 0x23) o.systemGroup = 2;
+  static const char* const kVendors[] = {"UNKNOWN", "BOSCH", "VDO", "SIEMENS"};
+  o.vendorKnown = o.vendorId != 0;
+  snprintf(o.vendor, sizeof o.vendor, "%s", kVendors[o.vendorId]);
+  snprintf(o.vendorCode, sizeof o.vendorCode, "%02X %02X", raw[0], raw[1]);
 
   char id[11];
   copyAscii(raw + 2, 10, id);

@@ -66,23 +66,38 @@ LinkStatus run(LineOps& io, const Profile& p, uint16_t aaAtMs, Diag& d);
 
 // Order of profiles tried while the ECU stays silent. The configured profile
 // comes first; then the BREAK lengths of the PC tester (0xa5 = 165 ms default,
-// 0xa0 = 160 ms, 0x82 = 130 ms option), then DTR/RTS variants. A profile that
-// woke the ECU is kept.
+// 0xa0 = 160 ms, 0x82 = 130 ms option), then DTR/RTS variants.
+//
+// A profile that woke the ECU once is kept: a later silence is almost always
+// the ECU (ignition off, its session still running), not the adapter. Only
+// after kUnlockAfter failures in a row the planner alternates between the
+// working profile and the next alternative, so the working one is retried at
+// least every second attempt. A profile learned earlier (NVS) starts as the
+// working one.
 class Planner {
  public:
+  static const uint16_t kUnlockAfter = 12;
   void configure(const Profile& user, bool autoTune);
-  const Profile& current() const { return list_[idx_]; }
+  void setLearned(const Profile& p);
+  const Profile& current() const;
   void result(bool ok);
   bool autoTune() const { return auto_; }
-  bool locked() const { return locked_; }
+  bool locked() const { return haveGood_ && fails_ < kUnlockAfter; }
+  bool good(Profile& out) const {
+    if (haveGood_) out = good_;
+    return haveGood_;
+  }
   uint8_t index() const { return idx_; }
   uint8_t count() const { return n_; }
 
  private:
   void add(uint16_t breakMs, uint8_t modem);
+  void advance();
   Profile list_[10];
+  Profile good_;
   uint8_t n_ = 0, idx_ = 0;
-  bool auto_ = true, locked_ = false;
+  uint16_t fails_ = 0;
+  bool auto_ = true, haveGood_ = false, useGood_ = false;
 };
 
 }  // namespace kwake

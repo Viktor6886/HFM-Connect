@@ -166,9 +166,11 @@ TEST(profile_generic_bosch_blocks_writes_even_in_engineer_mode) {
 TEST(profile_unknown_vendor_needs_experimental_optin) {
   uint8_t raw[28];
   memcpy(raw, kGolden, 28);
-  raw[0] = 0x11;
+  raw[1] = 0x11;  // vendor letter not B/V/S
   EcuIdent id;
   parseIdent(raw, 28, id);
+  CHECK(!id.vendorKnown);
+  CHECK_STR(id.vendorCode, "2C 11");
   prof::EcuProfile p;
   prof::ResolveOptions o;
   prof::resolve(id, o, p);
@@ -177,8 +179,40 @@ TEST(profile_unknown_vendor_needs_experimental_optin) {
   prof::resolve(id, o, p);
   CHECK(p.caps[prof::F_DTC_READ].allowed);
   CHECK(p.caps[prof::F_DTC_READ].conf == Confidence::GIP);
-  CHECK(p.vdoCandidate);  // non-Bosch in the HFM range: VDO candidate
-  CHECK(p.vdoUnits);
+  CHECK(p.vdoCandidate);  // unknown vendor in the HFM range: live plan probed
+  CHECK(!p.vdoUnits);     // Bosch plan first
+  CHECK_EQ(p.variant.manufacturer, 0);
+}
+
+TEST(profile_vendor_letter_as_pc_tester) {
+  // Byte 0 other than 2C with vendor letter 'B' is still Bosch (PC tester rule).
+  uint8_t raw[28];
+  memcpy(raw, kGolden, 28);
+  raw[0] = 0x27;
+  raw[26] = 0x40;
+  EcuIdent id;
+  parseIdent(raw, 28, id);
+  CHECK(id.vendorKnown);
+  CHECK_EQ(id.vendorId, 1);
+  CHECK_EQ(id.systemGroup, 1);
+  CHECK_STR(id.vendor, "BOSCH");
+  prof::EcuProfile p;
+  prof::ResolveOptions o;
+  prof::resolve(id, o, p);
+  CHECK(p.resolved && !p.referenceEcu && !p.vdoCandidate && !p.vdoUnits);
+  CHECK(p.caps[prof::F_DTC_READ].allowed && p.caps[prof::F_LIVE_NATIVE].allowed);
+  CHECK_EQ(p.variant.manufacturer, 1);
+  // 'V' = VDO: HFM reads allowed, VDO live addresses only with the opt-in.
+  raw[1] = 'V';
+  parseIdent(raw, 28, id);
+  CHECK_STR(id.vendor, "VDO");
+  prof::resolve(id, o, p);
+  CHECK(p.resolved && p.vdoUnits && !p.vdoCandidate);
+  CHECK(p.caps[prof::F_DTC_READ].allowed);
+  CHECK(!p.caps[prof::F_LIVE_NATIVE].allowed);
+  o.experimentalReads = true;
+  prof::resolve(id, o, p);
+  CHECK(p.caps[prof::F_LIVE_NATIVE].allowed);
   CHECK_EQ(p.variant.manufacturer, 0);
 }
 

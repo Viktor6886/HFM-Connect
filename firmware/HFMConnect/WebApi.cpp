@@ -55,7 +55,8 @@ static void writeIdent(JsonWriter& w, const EngineState& s) {
   w.kv("present", id.present);
   w.key("raw").hexBytes(id.raw, id.rawLen);
   if (id.present) {
-    w.kv("vendor", id.vendor).kv("vendor_known", id.vendorKnown);
+    w.kv("vendor", id.vendor).kv("vendor_known", id.vendorKnown).kv("vendor_code", id.vendorCode);
+    w.kv("system_group", (unsigned)id.systemGroup);
     w.kv("identifier", id.identifier).kv("part", id.partDisplay).kv("part_valid", id.partValid);
     if (id.hwWeek > 0) { char t[8]; snprintf(t, sizeof t, "%02d/%02d", id.hwWeek, id.hwYear); w.kv("hw_date", t); }
     else w.kvNull("hw_date");
@@ -77,13 +78,17 @@ static void writeIdent(JsonWriter& w, const EngineState& s) {
   w.key("diag_raw").hex(p.variant.diagRaw);
   w.kv("vendor", p.variant.manufacturer == 1 ? "B" : "V").kv("cylinders", (unsigned)p.variant.cylinders);
   w.kv("dtc_map", vm ? vm->id : "GENERIC").endObject();
-  w.kv("vdo_candidate", p.vdoCandidate);
+  w.kv("vdo_candidate", p.vdoCandidate).kv("vdo_units", p.vdoUnits).kv("live_plan", s.livePlanVdo ? "vdo" : "bosch");
   w.key("caps").beginArray();
   for (uint8_t f = 0; f < prof::F_COUNT; f++) {
     w.beginObject();
     w.kv("id", prof::featureCode(f)).kv("name", prof::featureName(f));
     w.kv("allowed", p.caps[f].allowed).kv("conf", conf(p.caps[f].conf)).kv("write", prof::featureIsWrite(f));
     w.kv("reason", p.caps[f].reason ? p.caps[f].reason : "");
+    // What really happened on this ECU (not only the expected support).
+    static const char* const kRun[] = {"never", "ok", "failed"};
+    w.kv("run", kRun[s.feat[f].state < 3 ? s.feat[f].state : 0]);
+    w.kv("run_age_s", s.feat[f].state ? (uint32_t)((millis() - s.feat[f].tMs) / 1000) : 0u);
     w.endObject();
   }
   w.endArray();
@@ -219,12 +224,25 @@ static void writeLive(JsonWriter& w, const EngineState& s, bool withDefs) {
   w.kv("active", s.liveActive).kv("seq", d.seq).kv("cycles", s.liveCycles);
   w.kv("age_ms", d.tMs ? (uint32_t)(millis() - d.tMs) : 0xFFFFFFFFu);
   w.kv("cycle_ms", (unsigned)s.snap.cycleMs);
+  w.kv("link_ready", s.session == SessionState::Ready);
   w.kv("warm_idle", d.conditionsWarmIdle).kv("warm_running", d.conditionsWarmRunning);
+  int16_t vi = AppSettings.vehicleIdx;
+  w.kv("norms_vehicle", vi >= 0);
+  // Groups of the address plan actually polled (Bosch full8 or VDO).
+  w.kv("plan", s.snap.vdoPlan ? "vdo" : "bosch");
   w.key("groups").beginArray();
-  for (uint8_t g = 0; g < live::G_COUNT; g++) {
-    const live::GroupDef& gd = live::group(g);
-    w.beginObject().kv("name", gd.name).key("prefix").hex(gd.prefix).kv("ok", s.snap.groupOk[g]);
-    w.key("raw").hexBytes(s.snap.g[g], gd.n).endObject();
+  if (s.snap.vdoPlan) {
+    for (uint8_t g = 0; g < live::V_COUNT; g++) {
+      const live::GroupDef& gd = live::vdoGroup(g);
+      w.beginObject().kv("name", gd.name).key("prefix").hex(gd.prefix).kv("ok", s.snap.vdoOk[g]);
+      w.key("raw").hexBytes(s.snap.vdo[g], gd.n).endObject();
+    }
+  } else {
+    for (uint8_t g = 0; g < live::G_COUNT; g++) {
+      const live::GroupDef& gd = live::group(g);
+      w.beginObject().kv("name", gd.name).key("prefix").hex(gd.prefix).kv("ok", s.snap.groupOk[g]);
+      w.key("raw").hexBytes(s.snap.g[g], gd.n).endObject();
+    }
   }
   w.endArray();
   w.key("values").beginArray();
@@ -293,6 +311,14 @@ static void writeServices(JsonWriter& w, const EngineState& s) {
 
 static void writeStatus(JsonWriter& w, const EngineState& s) {
   w.kv("fw", HFM_FW_VERSION).kv("uptime_s", (uint32_t)(millis() / 1000));
+  // One link state for the whole UI (D-027).
+  w.kv("link", linkPhaseCode(s.link)).kv("link_text", s.linkMsg);
+  w.kv("recover_attempts", s.recoverAttempts).kv("recoveries", s.recoveries).kv("resyncs", s.resyncs);
+  w.kv("queue", (unsigned)Engine.queued());
+  if (s.ident.present) {
+    w.kv("ecu_part", s.ident.partDisplay).kv("ecu_identifier", s.ident.identifier);
+    w.kv("ecu_diag", s.ident.diagDisplay).kv("ecu_vendor", s.ident.vendorKnown ? s.ident.vendor : "");
+  }
   w.kv("session_id", Engine.sessionId());
   w.kv("transport", Engine.transportName());
   w.kv("session", sessionStateCode(s.session)).kv("last_error", linkStatusCode(s.lastError));
@@ -552,6 +578,19 @@ static void hReport() {
   endChunked(w);
 }
 
+static void hJobGet() {
+  uint32_t id = strtoul(server.arg("id").c_str(), nullptr, 10);
+  JobInfo j;
+  Engine.lock();
+  bool have = Engine.jobInfo(id, j);
+  Engine.unlock();
+  if (!have) return sendError(404, "unknown job");
+  JsonWriter w(512);
+  w.beginObject().kv("id", j.id).kv("job", jobCode(j.job)).kv("state", jobStateCode(j.state));
+  w.kv("message", j.message).endObject();
+  sendSmall(w);
+}
+
 static void hJob() {
   String j = server.arg("job");
   static const struct { const char* name; Job job; } map[] = {
@@ -581,7 +620,7 @@ static void hJob() {
   uint32_t id = Engine.submit(job, arg, text.c_str());
   JsonWriter w;
   w.beginObject().kv("ok", id != 0).kv("id", id);
-  if (!id) w.kv("error", "Устройство занято другой операцией");
+  if (!id) w.kv("error", "Очередь операций заполнена — повторите через несколько секунд");
   w.endObject();
   sendSmall(w, id ? 200 : 409);
 }
@@ -602,8 +641,10 @@ static void hSettingsGet() {
   w.kv("sta_ssid", s.staSsid);
   w.kv("imp_press_ms", (unsigned)s.impPressMs).kv("imp_end_gap_ms", (unsigned)s.impEndGapMs);
   w.kv("vbat_adc", HFM_VBAT_ADC_PIN >= 0);
-  w.key("hw").beginObject().kv("kline_tx", HFM_KLINE_TX_PIN).kv("kline_rx", HFM_KLINE_RX_PIN);
-  w.kv("write_en", HFM_WRITE_EN_PIN).kv("vbat_adc", HFM_VBAT_ADC_PIN).endObject();
+  static const char* const kThemes[] = {"auto", "light", "dark"};
+  w.kv("ui_theme", kThemes[s.uiTheme % 3]).kv("live_sel", s.liveSel).kv("live_cat", s.liveCat);
+  w.kv("code9", s.code9);
+  w.kv("wake_learned", s.wakeLearnedBreak != 0);
   w.endObject();
   sendSmall(w);
 }
@@ -616,11 +657,33 @@ static bool argBool(const char* k, bool cur) {
 
 static void hSettingsPost() {
   Settings& s = AppSettings;
+  const uint16_t oldBrk = s.breakMs;
+  const uint8_t oldModem = s.ftdiModem;
+  const bool oldAuto = s.wakeAuto;
   if (server.hasArg("break_ms")) s.breakMs = (uint16_t)constrain(server.arg("break_ms").toInt(), 25, 500);
   if (server.hasArg("post_break_ms")) s.postBreakMs = (uint16_t)constrain(server.arg("post_break_ms").toInt(), 25, 2000);
   if (server.hasArg("byte_timeout_ms")) s.byteTimeoutMs = (uint16_t)constrain(server.arg("byte_timeout_ms").toInt(), 100, 3000);
   if (server.hasArg("ftdi_modem")) s.ftdiModem = (uint8_t)(server.arg("ftdi_modem").toInt() & 3);
   s.wakeAuto = argBool("wake_auto", s.wakeAuto);
+  // A changed wake-up profile replaces the one learned on the vehicle.
+  if (s.breakMs != oldBrk || s.ftdiModem != oldModem || s.wakeAuto != oldAuto) {
+    s.wakeLearnedBreak = 0;
+    s.wakeLearnedModem = 0;
+  }
+  if (server.hasArg("ui_theme")) {
+    String t = server.arg("ui_theme");
+    s.uiTheme = t == "light" ? 1 : (t == "dark" ? 2 : 0);
+  }
+  if (server.hasArg("live_sel")) strlcpy(s.liveSel, server.arg("live_sel").c_str(), sizeof s.liveSel);
+  if (server.hasArg("live_cat")) strlcpy(s.liveCat, server.arg("live_cat").c_str(), sizeof s.liveCat);
+  if (server.hasArg("code9")) {
+    String c = server.arg("code9");
+    char d[10] = {0};
+    uint8_t k = 0;
+    for (unsigned i = 0; i < c.length() && k < 9; i++)
+      if (c[i] >= '0' && c[i] <= '9') d[k++] = c[i];
+    strlcpy(s.code9, d, sizeof s.code9);
+  }
   s.experimentalReads = argBool("experimental_reads", s.experimentalReads);
   s.engineerMode = argBool("engineer_mode", s.engineerMode);
   s.keepAlive = argBool("keep_alive", s.keepAlive);
@@ -753,6 +816,7 @@ void webBegin() {
   server.on("/api/report", HTTP_GET, hReport);
   server.on("/api/report/save", HTTP_POST, hReportSave);
   server.on("/api/job", HTTP_POST, hJob);
+  server.on("/api/job", HTTP_GET, hJobGet);
   server.on("/api/settings", HTTP_GET, hSettingsGet);
   server.on("/api/settings", HTTP_POST, hSettingsPost);
   server.on("/api/record", HTTP_POST, hRecord);

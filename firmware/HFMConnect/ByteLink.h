@@ -15,6 +15,12 @@ struct LinkTiming {
   uint16_t byteDeadlineMs = 750;  // per echo+response pair
   uint16_t syncRetries = 3;       // up to 3 initialisation attempts
   uint16_t syncRetryPauseMs = 1000;
+  // Line silence before a new BREAK once bytes were sent (D-027): an ECU still
+  // in its diagnostic session treats BREAK + AA as session bytes and never
+  // answers 55; the PC tester keeps a session alive with a byte every 1300 ms,
+  // so a longer silence lets the ECU drop the session first. Grows by 1 s per
+  // failed wake-up (up to +4 s). GIP: the ECU session timeout is not documented.
+  uint16_t resyncSilenceMs = 2500;
 };
 
 class ByteLink {

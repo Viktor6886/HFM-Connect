@@ -170,14 +170,42 @@ TEST(wake_planner_order_rotation_and_lock) {
   pl.result(false);
   CHECK(pl.current().breakMs == 177 && pl.current().modem == 3);
   pl.result(true);  // works: kept
-  pl.result(false); // one failure keeps it
+  CHECK(pl.locked());
+  Profile g;
+  CHECK(pl.good(g) && g.modem == 3);
+  for (int i = 0; i < Planner::kUnlockAfter - 1; i++) pl.result(false);
+  CHECK(pl.locked() && pl.current().modem == 3);  // silence of the ECU does not drop it
+  pl.configure(user, true);  // same settings: working profile kept
   CHECK(pl.current().modem == 3);
+  pl.result(false);  // 12th failure: alternate the working profile with the others
+  CHECK(!pl.locked());
+  CHECK(pl.current().modem != 3);
   pl.result(false);
-  CHECK(pl.current().modem == kDtr);
-  pl.configure(user, true);  // same settings: position kept
-  CHECK(pl.current().modem == kDtr);
+  CHECK(pl.current().modem == 3);  // every second attempt: the working profile
+  pl.result(false);
+  CHECK(pl.current().modem != 3);
+  pl.result(true);
+  CHECK(pl.locked());
   Planner fixed;
   fixed.configure(user, false);
   fixed.result(false);
   CHECK(fixed.count() == 1 && fixed.current().breakMs == 177);
+}
+
+TEST(wake_planner_learned_profile_first) {
+  Planner pl;
+  Profile user;
+  pl.configure(user, true);
+  Profile learned;
+  learned.breakMs = 160;
+  pl.setLearned(learned);
+  CHECK(pl.locked());
+  CHECK(pl.current().breakMs == 160);
+  pl.result(false);
+  CHECK(pl.current().breakMs == 160);
+  Profile other;
+  other.breakMs = 130;
+  pl.configure(other, true);  // user changed the settings: learned profile dropped
+  CHECK(!pl.locked());
+  CHECK(pl.current().breakMs == 130);
 }

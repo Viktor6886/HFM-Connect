@@ -44,21 +44,35 @@ LinkStatus HfmSession::fail(LinkStatus st) {
   return st;
 }
 
-LinkStatus HfmSession::connect() {
+uint32_t HfmSession::silenceNeededMs() {
+  if (!lineUsed_) return 0;
+  uint32_t need = (uint32_t)timing_.resyncSilenceMs + (uint32_t)(wakeFails_ < 4 ? wakeFails_ : 4) * 1000u;
+  uint32_t el = link_.nowMs() - lastLineMs_;
+  return el >= need ? 0 : need - el;
+}
+
+LinkStatus HfmSession::connect(uint8_t attemptsWanted) {
   state_ = SessionState::Connecting;
   pageValid_ = false;
   writeToken_ = 0;
+  lastWasWrite_ = false;
   if (!link_.isOpen() && !link_.open()) return fail(LinkStatus::LinkDown);
   LinkStatus st = LinkStatus::NoSync;
-  uint16_t attempts = timing_.syncRetries ? timing_.syncRetries : 1;
+  uint16_t attempts = attemptsWanted ? attemptsWanted : (timing_.syncRetries ? timing_.syncRetries : 1);
   for (uint16_t i = 0; i < attempts; i++) {
-    if (i) link_.sleepMs(timing_.syncRetryPauseMs);
+    uint32_t wait = silenceNeededMs();
+    if (i && wait < timing_.syncRetryPauseMs) wait = timing_.syncRetryPauseMs;
+    if (wait) link_.sleepMs(wait);
     trace_.append(link_.nowUs(), TracePhase::Break, Parity::None, 0, 0, 0, LinkStatus::Ok, CommandRisk::Read, 0);
     syncEcho_ = syncByte_ = 0;
     st = link_.wakeup(timing_, syncEcho_, syncByte_);
+    lineUsed_ = true;
+    lastLineMs_ = link_.nowMs();
     uint8_t n = (uint8_t)((syncEcho_ ? 1 : 0) + (syncByte_ ? 1 : 0));
     trace_.append(link_.nowUs(), TracePhase::Sync, Parity::Space, 0xAA, syncEcho_, syncByte_, st, CommandRisk::Read, n);
     if (st == LinkStatus::Ok) break;
+    if (wakeFails_ < 0xFF) wakeFails_++;
+    if (st == LinkStatus::LinkDown) break;
   }
   if (st != LinkStatus::Ok) {
     lastError_ = st;
@@ -66,10 +80,40 @@ LinkStatus HfmSession::connect() {
     state_ = SessionState::Error;
     return st;
   }
+  wakeFails_ = 0;
   state_ = SessionState::Ready;
   lastError_ = LinkStatus::Ok;
   connectedAtMs_ = lastActivityMs_ = link_.nowMs();
   return st;
+}
+
+bool HfmSession::resyncAllowed() const {
+  if (state_ != SessionState::Error || !link_.isOpen()) return false;
+  if (writeToken_ || pageIsWrite_ || lastWasWrite_) return false;  // never resume around a write
+  return lastError_ == LinkStatus::Timeout || lastError_ == LinkStatus::EchoMismatch ||
+         lastError_ == LinkStatus::BadAck;
+}
+
+LinkStatus HfmSession::resync() {
+  if (!resyncAllowed()) return LinkStatus::NotAllowed;
+  // Let a late echo/reply of the failed byte arrive (exchange() purges it).
+  link_.sleepMs(300);
+  uint8_t ack = 0;
+  LinkStatus st = xchg(0xF0, Parity::None, TracePhase::Prefix, CommandRisk::Read, ack);
+  if (st != LinkStatus::Ok) {
+    lastError_ = st;
+    errCount_++;
+    pageValid_ = false;
+    state_ = SessionState::Error;
+    return st;
+  }
+  state_ = SessionState::Ready;
+  lastError_ = LinkStatus::Ok;
+  page_ = 0xF0;
+  pageValid_ = true;
+  pageIsWrite_ = false;
+  resyncCount_++;
+  return LinkStatus::Ok;
 }
 
 void HfmSession::disconnect() {
@@ -85,6 +129,8 @@ LinkStatus HfmSession::xchg(uint8_t tx, Parity par, TracePhase ph, CommandRisk r
   LinkStatus st = link_.exchange(tx, par, timing_.byteDeadlineMs, echo, resp);
   txCount_++;
   lastActivityMs_ = link_.nowMs();
+  lineUsed_ = true;
+  lastLineMs_ = lastActivityMs_;
   uint8_t n = 2;
   if (st == LinkStatus::Timeout) n = (uint8_t)(echo == tx ? 1 : 0);
   if (st == LinkStatus::Ok && echo != tx) st = LinkStatus::EchoMismatch;
@@ -102,6 +148,7 @@ LinkStatus HfmSession::prefix(uint8_t op) {
   if (pc == PrefixClass::Write) {
     if (!writeToken_) return fail(LinkStatus::NotAllowed);
     risk = CommandRisk::Write;
+    lastWasWrite_ = true;
   }
   uint8_t ack = 0;
   LinkStatus st = xchg(op, Parity::None, TracePhase::Prefix, risk, ack);
@@ -109,6 +156,7 @@ LinkStatus HfmSession::prefix(uint8_t op) {
   page_ = op;
   pageValid_ = true;
   pageIsWrite_ = (pc == PrefixClass::Write);
+  if (pageIsWrite_) lastWasWrite_ = true;
   return LinkStatus::Ok;
 }
 

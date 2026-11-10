@@ -99,7 +99,11 @@ class FtdiLink : public ByteLink {
 
   // Wake-up profile: configured BREAK length and DTR/RTS state, optionally
   // followed by the alternatives of kwake::Planner while the ECU is silent.
-  void setWakeConfig(uint16_t breakMs, uint8_t modem, bool autoTune);
+  // learnedBreakMs = 0: no learned profile (NVS).
+  void setWakeConfig(uint16_t breakMs, uint8_t modem, bool autoTune, uint16_t learnedBreakMs = 0,
+                     uint8_t learnedModem = 0);
+  // Profile that woke the ECU (to be stored in NVS); false if none yet.
+  bool goodProfile(kwake::Profile& p) const;
   // Last wake-up attempt (false before the first one) and the profile in use.
   bool lastWake(kwake::Diag& d) const;
   kwake::Profile wakeProfile() const;
@@ -196,6 +200,8 @@ class FtdiLink : public ByteLink {
   uint8_t modem_ = 0xFF;  // DTR/RTS state applied to the chip (0xFF = unknown)
   // Wake-up: requested configuration (any task) and planner (engine task only).
   kwake::Profile wakeUser_;
+  kwake::Profile wakeLearned_;
+  bool haveLearned_ = false;
   bool wakeAuto_ = true;
   std::atomic<bool> wakeConfigChanged_{true};
   kwake::Planner planner_;

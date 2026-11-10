@@ -1,6 +1,8 @@
 // HfmIdent.h - parsing of the 28-byte F0 identification block.
 // Layout per REV 1.1 s.15:
-//   0-1   manufacturer code (2C 42 = BOSCH)
+//   0-1   manufacturer code: byte 1 = vendor letter, as the PC tester decodes
+//         it ('B' BOSCH, 'V' VDO, 'S' SIEMENS); byte 0 = system group
+//         (0x27/0x2C -> 1, 0x21/0x23 -> 2). 2C 42 = BOSCH (reference ECU).
 //   2-11  ASCII identifier, shown as "XX XXXXX XXX"
 //   12-21 ASCII ECU part number (10 digits), shown as "013 545 13 32"
 //   22-23 hardware date week/year (BCD)
@@ -18,7 +20,10 @@ struct EcuIdent {
   uint8_t rawLen = 0;
 
   bool vendorKnown = false;
-  char vendor[12] = {0};     // "BOSCH" or "UNKNOWN"
+  uint8_t vendorId = 0;      // 0 unknown, 1 BOSCH, 2 VDO, 3 SIEMENS (byte 1 letter)
+  uint8_t systemGroup = 0;   // byte 0: 1 (0x27/0x2C), 2 (0x21/0x23), 0 other
+  char vendor[12] = {0};     // "BOSCH" / "VDO" / "SIEMENS" / "UNKNOWN"
+  char vendorCode[6] = {0};  // raw bytes 0-1, "2C 42"
   char identifier[16] = {0}; // "M2 28320 VR0"
   char partNumber[16] = {0}; // "0135451332"
   char partDisplay[20] = {0};// "013 545 13 32"

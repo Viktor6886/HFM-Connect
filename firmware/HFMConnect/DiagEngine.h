@@ -32,6 +32,16 @@ struct JobInfo {
   uint32_t startedMs = 0, finishedMs = 0;
 };
 
+// Single state of the diagnostic link shown by the UI (D-027).
+enum class LinkPhase : uint8_t { NoAdapter, Idle, Paused, Connecting, Recovering, Ready, Error };
+const char* linkPhaseCode(LinkPhase p);
+
+// Runtime result of a feature (capability matrix: what really worked).
+struct FeatRun {
+  uint8_t state = 0;  // 0 not run, 1 worked, 2 failed
+  uint32_t tMs = 0;
+};
+
 struct DtcView {
   bool valid = false;
   svc::FaultMemory fm;
@@ -75,6 +85,11 @@ struct AdapterInfo {
 
 struct EngineState {
   // link/session
+  LinkPhase link = LinkPhase::Idle;
+  char linkMsg[200] = {0};
+  uint32_t recoverAttempts = 0;  // wake-ups since the link was lost
+  uint32_t recoveries = 0;       // automatic reconnections after a loss
+  uint32_t resyncs = 0;          // sessions resumed without a new BREAK
   SessionState session = SessionState::Disconnected;
   LinkStatus lastError = LinkStatus::Ok;
   uint32_t connectedAtMs = 0;
@@ -87,10 +102,12 @@ struct EngineState {
   svc::Adaptations adapt;
   svc::Coding coding;
   svc::Vin vin;
-  bool liveActive = false;
-  live::Snapshot snap;
-  live::Decoded live;
+  bool liveActive = false;      // polling wanted by the user (kept while the link recovers)
+  live::Snapshot snap;          // last poll cycle (may be partial)
+  live::Decoded live;           // last COMPLETE cycle (kept when a cycle fails)
   uint32_t liveCycles = 0;
+  bool livePlanVdo = false;     // address plan in use
+  FeatRun feat[prof::F_COUNT];
   // services
   guard::Plan plan;
   bool purgeOn = false;
@@ -118,8 +135,13 @@ class DiagEngine {
  public:
   void begin(Settings* settings);
 
-  // Submit a job; returns job id (0 if another job is queued/running).
+  // Queue a job; returns its id (0 = queue full). Connect and repeated
+  // identical jobs are merged with the one already waiting; STOP and
+  // LIVE_STOP go first.
   uint32_t submit(Job j, uint32_t arg = 0, const char* text = nullptr);
+  // Copy of a recent job by id (false if unknown/too old). Call under lock().
+  bool jobInfo(uint32_t id, JobInfo& out);
+  uint8_t queued() const { return qCount_; }
 
   void lock();
   void unlock();
@@ -139,11 +161,17 @@ class DiagEngine {
   void run();
   void execute(Job j, uint32_t arg, const char* text);
   bool ensureConnected(char* msg, size_t n);
-  void doConnect(char* msg, size_t n, bool& ok);
+  void doConnect(char* msg, size_t n, bool& ok, uint8_t attempts = 0);
   void doIdentify(char* msg, size_t n, bool& ok);
+  bool recoverRead();
+  void afterResolve();
   void livePoll();
   void keepAlive();
-  void autoConnect();
+  void maintainLink();
+  void updateLink();
+  void persistLearned();
+  void featMark(uint8_t f, bool ok);
+  JobInfo* ringFind(uint32_t id);
   uint8_t vehicleCylinders();
   bool adapterPresent();
   void adapterMissing(char* msg, size_t n);
@@ -162,22 +190,33 @@ class DiagEngine {
   KLineUart* kline_ = nullptr;
   FtdiLink* ftdi_ = nullptr;
   bool userDisconnected_ = false;
+  bool everConnected_ = false;   // a session existed since boot / adapter attach
+  bool connecting_ = false;      // wake-up in progress
   uint32_t lastAutoMs_ = 0;
   uint32_t autoBackoffMs_ = 2000;
   HfmSession* session_ = nullptr;
   guard::ServiceGuard guard_;
   EngineState st_;
-  volatile Job pending_ = Job::None;
-  uint32_t pendingArg_ = 0;
-  uint32_t pendingId_ = 0;
-  char pendingText_[64] = {0};
+  struct QJob {
+    Job job;
+    uint32_t arg, id;
+    char text[64];
+  };
+  static const uint8_t kQueue = 6, kRing = 10;
+  QJob q_[kQueue];
+  uint8_t qCount_ = 0;
+  JobInfo ring_[kRing];
+  uint8_t ringNext_ = 0;
   uint32_t nextJobId_ = 1;
+  uint32_t lastPersistMs_ = 0;
   uint32_t lastKeepAliveMs_ = 0;
   uint32_t lastLiveMs_ = 0;
   uint32_t lastFlushMs_ = 0;
   char sessionId_[20] = {0};
   std::string recBuf_;
   live::Decoded prevLive_;
+  uint8_t extFails_ = 0;
+  bool extDisabled_ = false;
 };
 
 extern DiagEngine Engine;

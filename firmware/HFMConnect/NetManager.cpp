@@ -24,9 +24,7 @@ void netApply() {
 }
 
 void netBegin() {
-  uint8_t mac[6];
-  WiFi.macAddress(mac);
-  snprintf(apSsid, sizeof apSsid, "%s%02X%02X", HFM_AP_SSID_PREFIX, mac[4], mac[5]);
+  strlcpy(apSsid, HFM_AP_SSID, sizeof apSsid);
   WiFi.persistent(false);
   WiFi.setSleep(false);
   netApply();

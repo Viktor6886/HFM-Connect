@@ -44,6 +44,84 @@ TEST(no_sync_retries_three_times_then_error) {
   CHECK(r.sim.nowMs() >= 2 * 1000);  // two retry pauses
 }
 
+TEST(reconnect_keeps_line_silent_until_ecu_left_session) {
+  Rig r;
+  SimEcu::Inject inj;
+  inj.sessionTimeoutMs = 2000;
+  r.sim.setInject(inj);
+  CHECK(r.s.connect() == LinkStatus::Ok);
+  CHECK_EQ(r.s.silenceNeededMs(), (uint32_t)r.s.timing().resyncSilenceMs);  // just synchronised
+  uint8_t d;
+  CHECK(r.s.prefix(0xF0) == LinkStatus::Ok);
+  r.s.disconnect();
+  r.s.link().open();
+  // Immediate wake-up without silence: the ECU is still in session -> no 55.
+  LinkTiming t = r.s.timing();
+  t.resyncSilenceMs = 0;
+  t.syncRetries = 1;
+  r.s.setTiming(t);
+  CHECK(r.s.connect() == LinkStatus::NoSync);
+  CHECK_EQ(r.s.wakeFailStreak(), 1);
+  // Default silence (2.5 s + 1 s per failure) lets the session time out.
+  r.s.setTiming(LinkTiming());
+  uint32_t t0 = r.sim.nowMs();
+  CHECK(r.s.connect(1) == LinkStatus::Ok);
+  CHECK(r.sim.nowMs() - t0 >= 3500);
+  CHECK_EQ(r.s.wakeFailStreak(), 0);
+  CHECK(r.s.selector(0x00, d) == LinkStatus::NotAllowed);  // no page after a new wake-up
+}
+
+TEST(resync_resumes_read_session_without_break) {
+  Rig r;
+  SimEcu::Inject inj;
+  inj.sessionTimeoutMs = 2000;
+  r.sim.setInject(inj);
+  CHECK(r.s.connect() == LinkStatus::Ok);
+  inj.timeoutAt = (int32_t)r.sim.exchanges() + 1;
+  r.sim.setInject(inj);
+  uint8_t id[28];
+  CHECK(r.s.readIdent(id, 28) == LinkStatus::Timeout);
+  CHECK(r.s.state() == SessionState::Error);
+  CHECK(r.s.resyncAllowed());
+  CHECK(r.s.resync() == LinkStatus::Ok);
+  CHECK(r.s.ready());
+  CHECK_EQ(r.s.resyncCount(), 1u);
+  CHECK(r.s.readIdent(id, 28) == LinkStatus::Ok);
+  CHECK_EQ(id[0], 0x2C);
+  TraceEvent ev[200];
+  uint16_t n = r.trace.copySince(0, ev, 200);
+  uint16_t breaks = 0;
+  for (uint16_t i = 0; i < n; i++)
+    if (ev[i].phase == (uint8_t)TracePhase::Break) breaks++;
+  CHECK_EQ(breaks, 1);  // resumed without a new BREAK
+}
+
+TEST(resync_fails_when_ecu_left_session_and_never_after_write) {
+  Rig r;
+  SimEcu::Inject inj;
+  inj.sessionTimeoutMs = 500;
+  r.sim.setInject(inj);
+  CHECK(r.s.connect() == LinkStatus::Ok);
+  inj.timeoutAt = (int32_t)r.sim.exchanges();
+  r.sim.setInject(inj);
+  CHECK(r.s.prefix(0xF0) == LinkStatus::Timeout);
+  r.sim.sleepMs(1000);
+  CHECK(r.s.resync() == LinkStatus::Timeout);
+  CHECK(r.s.state() == SessionState::Error);
+  // After a write page the session is never resumed.
+  Rig w;
+  CHECK(w.s.connect() == LinkStatus::Ok);
+  w.s.armWrite(1);
+  CHECK(w.s.prefix(0xCF) == LinkStatus::Ok);
+  w.s.disarmWrite();
+  SimEcu::Inject wi;
+  wi.timeoutAt = (int32_t)w.sim.exchanges();
+  w.sim.setInject(wi);
+  CHECK(w.s.prefix(0xF0) == LinkStatus::Timeout);
+  CHECK(!w.s.resyncAllowed());
+  CHECK(w.s.resync() == LinkStatus::NotAllowed);
+}
+
 TEST(ident_read_28_bytes_and_trace) {
   Rig r;
   r.s.connect();

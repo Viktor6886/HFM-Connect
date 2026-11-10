@@ -16,6 +16,10 @@ class SimEcu : public ByteLink {
     int32_t timeoutAt = -1;
     int32_t badAckAt = -1;
     bool noSync = false;
+    // ECU session model: the ECU leaves its session after this much line
+    // silence; a BREAK/AA inside a running session is taken as session bytes
+    // (no 55). 0 = model off.
+    uint32_t sessionTimeoutMs = 0;
   };
 
   SimEcu();
@@ -34,7 +38,11 @@ class SimEcu : public ByteLink {
 
   // ByteLink
   bool open() override { open_ = true; return true; }
-  void close() override { open_ = false; initialized_ = false; }
+  // Closing our side does not end the ECU session when the session model is on.
+  void close() override {
+    open_ = false;
+    if (!inject_.sessionTimeoutMs) initialized_ = false;
+  }
   bool isOpen() const override { return open_; }
   LinkStatus wakeup(const LinkTiming& t, uint8_t& echo, uint8_t& sync) override;
   LinkStatus exchange(uint8_t tx, Parity p, uint16_t deadlineMs, uint8_t& echo, uint8_t& resp) override;
@@ -62,6 +70,7 @@ class SimEcu : public ByteLink {
   uint8_t ovPage_[8] = {0}, ovSel_[8] = {0}, ovVal_[8] = {0};
   uint8_t ovN_ = 0;
   uint32_t count_ = 0;
+  uint32_t lastByteMs_ = 0;
   uint32_t startMs_ = 0;
   uint8_t lastWritePrefix_ = 0;
   uint8_t controlStage_ = 0;

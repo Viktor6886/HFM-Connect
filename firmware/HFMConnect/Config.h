@@ -3,7 +3,7 @@
 // See docs/HARDWARE.md for the reference schematic.
 #pragma once
 
-#define HFM_FW_VERSION "0.4.0"
+#define HFM_FW_VERSION "0.5.0"
 #define HFM_FW_NAME "HFM Connect"
 
 // ---- K-Line transport ----------------------------------------------------------
@@ -52,10 +52,13 @@
 #define HFM_USE_RGB_LED 1
 
 // ---- Wi-Fi ------------------------------------------------------------------------
-// Default access point; change the password in Settings on first start.
-// This default is public by design (documented) - it is not a secret.
-#define HFM_AP_SSID_PREFIX "HFM-Connect-"
-#define HFM_AP_DEFAULT_PASS "hfm12345"
+// Access point name (no MAC suffix) and default password; the password can be
+// changed in Settings. This default is public by design (documented) - it is
+// not a secret. Devices that still use the previous default password are
+// switched to the new one at boot; a password set by the user is kept.
+#define HFM_AP_SSID "HFM Connect"
+#define HFM_AP_DEFAULT_PASS "12345678"
+#define HFM_AP_OLD_DEFAULT_PASS "hfm12345"
 #define HFM_MDNS_NAME "hfm"
 #define HFM_HTTP_PORT 80
 
@@ -64,7 +67,9 @@
 #define HFM_ENGINE_TASK_STACK 12288
 #define HFM_KEEPALIVE_MS 700        // idle read F0:00 while connected (REV 1.1 idle limit 1300 ms)
 #define HFM_AUTOCONNECT_MIN_MS 2000  // auto-connect retry interval after boot / adapter plug-in
-#define HFM_AUTOCONNECT_MAX_MS 15000 // back-off limit while the ECU does not answer
+#define HFM_AUTOCONNECT_MAX_MS 10000 // back-off limit while the ECU does not answer
+// Line silence before a new BREAK after bytes were sent (LinkTiming, D-027).
+#define HFM_RESYNC_SILENCE_MS 2500
 #define HFM_LIVE_MIN_CYCLE_MS 100   // polling interval 0.1 s (REV 1.1)
 #define HFM_RECORD_FLUSH_MS 2000
 

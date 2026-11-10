@@ -8,7 +8,10 @@
 //   * only whitelisted prefixes are ever transmitted (no 0x00..0xFF scanning);
 //   * state-changing prefixes require an armed write token (ServiceGuard);
 //   * any echo/ACK/timeout error drops the session to Error, invalidates the
-//     page context and is never retried automatically.
+//     page context and is never retried automatically;
+//   * a READ session may be resumed by resync(): one read prefix (F0 -> 0F)
+//     re-establishes a known page without a new BREAK. Never after a write
+//     page or an armed write token (D-027).
 #pragma once
 #include "ByteLink.h"
 #include "TraceLog.h"
@@ -45,9 +48,17 @@ class HfmSession {
   void setTiming(const LinkTiming& t) { timing_ = t; }
   const LinkTiming& timing() const { return timing_; }
 
-  // Opens the link and performs BREAK/AA/55 with the configured retries.
-  LinkStatus connect();
+  // Opens the link and performs BREAK/AA/55 (attempts: 0 = configured
+  // retries). Before every BREAK the line is kept silent for silenceNeededMs().
+  LinkStatus connect(uint8_t attempts = 0);
   void disconnect();
+  // Remaining line silence required before the next BREAK (0 = may wake now).
+  uint32_t silenceNeededMs();
+  // Read-only resume after a byte error: F0 prefix, expects echo + ACK 0F.
+  LinkStatus resync();
+  bool resyncAllowed() const;
+  uint32_t resyncCount() const { return resyncCount_; }
+  uint8_t wakeFailStreak() const { return wakeFails_; }
 
   SessionState state() const { return state_; }
   bool ready() const { return state_ == SessionState::Ready; }
@@ -107,4 +118,9 @@ class HfmSession {
   uint32_t connectedAtMs_ = 0;
   uint8_t syncEcho_ = 0;
   uint8_t syncByte_ = 0;
+  bool lineUsed_ = false;       // bytes were sent since boot
+  uint32_t lastLineMs_ = 0;     // end of the last byte/wake-up on the line
+  uint8_t wakeFails_ = 0;       // failed wake-ups in a row
+  uint32_t resyncCount_ = 0;
+  bool lastWasWrite_ = false;   // last prefix was a write page (no resync)
 };
