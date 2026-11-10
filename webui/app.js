@@ -298,6 +298,7 @@ R.connect = async () => {
       <div class="small muted">USB K-Line адаптер (FTDI) в разъёме USB (OTG) ESP32-S3. Тайминги линии настраиваются в «Настройках» (BREAK, пауза, тайм-аут байта).</div>
       <div class="btns mt2" id="connBtns"></div>
     </div>
+    <h2 class="section">Пробуждение ЭБУ (последняя попытка)</h2><div class="card pad" id="wakeBox"></div>
     <h2 class="section">Состояние канала</h2><div class="card pad" id="linkBox"></div>
     <h2 class="section">USB-диагностика</h2>
     <div class="card pad"><div class="small muted">Все USB-устройства, которые определил USB-хост (хаб тоже), и последние сообщения USB-стека. Адаптер FT232R — VID:PID 0403:6001.</div>
@@ -327,6 +328,16 @@ R.connect = async () => {
       ? `<button class="btn sec" onclick="job('identify',{},this)">Повторить идентификацию</button><button class="btn red" onclick="job('disconnect',{},this)">Отключить</button>`
       : `<button class="btn full" onclick="job('connect',{},this)">Подключить</button>`;
     const a = s.adapter || {};
+    const w = a.wake || {}, l = w.last;
+    const onoff = v => v ? 'вкл' : 'выкл';
+    const yes = (v, t, f) => v ? `<span style="color:var(--green)">${t}</span>` : `<span style="color:var(--red)">${f}</span>`;
+    $('#wakeBox').innerHTML = !l ? '<div class="small muted">Попыток ещё не было: ждём адаптер.</div>' : kvTable([
+      ['Результат', l.ok ? yes(true, `ЭБУ ответил 55 (байт ${l.step} из AA 00 00 AA)`) : yes(false, '', 'ЭБУ не ответил 55')],
+      ['BREAK дошёл до линии', yes(l.break_on_line, 'да (адаптер принял его как 00)', 'нет — линия не опускалась или нет +12 В')],
+      ['Эхо AA от адаптера', yes(l.echo, 'да', 'нет')],
+      ['Профиль', `BREAK ${l.break_ms} мс (факт ${l.break_actual_ms}) · DTR ${onoff(l.dtr)} · RTS ${onoff(l.rts)} · AA через ${l.aa_at_ms} мс`],
+      ['Передано / принято', `${esc(l.tx)} / ${esc(l.rx || '—')}`],
+      ['Следующая попытка', `BREAK ${w.next_break_ms} мс · DTR ${onoff(w.next_dtr)} · RTS ${onoff(w.next_rts)}${w.locked ? ' · рабочий профиль' : w.auto ? ' · автоподбор' : ''} · попыток ${w.attempts}`]]);
     $('#linkBox').innerHTML = kvTable([
       ['Адаптер', a.present ? `${esc(a.chip)} · ${esc(a.vid_pid)}${a.configured ? '' : ' · не настроен'}` : 'не обнаружен: ' + esc(a.note || 'ожидание USB-устройства')],
       ['Автоподключение', s.auto_connect ? esc(s.auto_msg || 'включено') + (s.auto_attempts ? ` · попыток ${s.auto_attempts}` : '') : 'выключено в настройках'],
@@ -830,8 +841,11 @@ R.settings = async () => {
       <div><div class="small muted">BREAK, мс</div><input class="field" id="tBrk" type="number" value="${s.break_ms}"></div>
       <div><div class="small muted">Пауза после BREAK, мс</div><input class="field" id="tPb" type="number" value="${s.post_break_ms}"></div>
       <div><div class="small muted">Тайм-аут эхо+ответ, мс</div><input class="field" id="tTo" type="number" value="${s.byte_timeout_ms}"></div></div>
+      <div class="grid c2 mt"><div><div class="small muted">DTR / RTS адаптера FTDI</div><select class="field" id="tModem">
+        ${[[0, 'выключены (как в ПК-тестере, по умолчанию)'], [1, 'DTR вкл'], [2, 'RTS вкл'], [3, 'DTR и RTS вкл']].map(([v, t]) => `<option value="${v}"${s.ftdi_modem === v ? ' selected' : ''}>${t}</option>`).join('')}</select></div>
+        <div><div class="small muted">Автоподбор</div><label class="flex"><input type="checkbox" id="tAuto"${s.wake_auto ? ' checked' : ''}> пробовать BREAK 165/160/130 мс и DTR/RTS, пока ЭБУ молчит</label></div></div>
       <div class="btns mt"><button class="btn sec" id="tSave">Сохранить</button><button class="btn sec" id="tDef">По умолчанию (177/214/750)</button></div>
-      <p class="small muted">Исходный профиль протокола: 177 / 214 / 750 мс. Меняйте, только если синхронизация AA 55 нестабильна на вашем адаптере; результат проверяйте по RAW-журналу.</p></div>
+      <p class="small muted">Исходный профиль протокола: 177 / 214 / 750 мс; AA уходит через BREAK + паузу (391 мс) от начала BREAK. Рабочий профиль автоподбора виден на странице «Подключение».</p></div>
     <h2 class="section">Wi-Fi</h2>
     <div class="card pad">
       <div class="small muted">Точка доступа: <b>${esc(s.ap_ssid)}</b>${s.ap_default_pass ? ' · <span style="color:var(--orange)">используется пароль по умолчанию — смените его</span>' : ''}</div>
@@ -855,8 +869,8 @@ R.settings = async () => {
   }));
   ['impPr', 'impGap'].forEach(id => $('#' + id).addEventListener('change', () => post('settings', {imp_press_ms: $('#impPr').value, imp_end_gap_ms: $('#impGap').value}).then(() => toast('Сохранено'))));
   const saveT = async v => { await post('settings', v); toast('Тайминги сохранены'); R.settings(); };
-  $('#tSave').addEventListener('click', () => saveT({break_ms: $('#tBrk').value, post_break_ms: $('#tPb').value, byte_timeout_ms: $('#tTo').value}));
-  $('#tDef').addEventListener('click', () => saveT({break_ms: 177, post_break_ms: 214, byte_timeout_ms: 750}));
+  $('#tSave').addEventListener('click', () => saveT({break_ms: $('#tBrk').value, post_break_ms: $('#tPb').value, byte_timeout_ms: $('#tTo').value, ftdi_modem: $('#tModem').value, wake_auto: $('#tAuto').checked ? 1 : 0}));
+  $('#tDef').addEventListener('click', () => saveT({break_ms: 177, post_break_ms: 214, byte_timeout_ms: 750, ftdi_modem: 0, wake_auto: 1}));
   $('#netSave').addEventListener('click', async () => {
     const p = {sta_ssid: $('#staSsid').value, sta_pass: $('#staPass').value};
     if ($('#apPass').value) {

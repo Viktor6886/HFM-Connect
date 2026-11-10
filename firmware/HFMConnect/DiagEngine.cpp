@@ -69,6 +69,7 @@ void DiagEngine::applySettings() {
   t.byteDeadlineMs = settings_->byteTimeoutMs;
   session_->setTiming(t);
   session_->setExperimentalReads(settings_->experimentalReads);
+  if (ftdi_) ftdi_->setWakeConfig(settings_->breakMs, settings_->ftdiModem, settings_->wakeAuto);
 }
 
 const char* DiagEngine::transportName() { return link_ ? link_->name() : "none"; }
@@ -152,6 +153,10 @@ void DiagEngine::readHardware() {
     st_.adapter.seenVid = ftdi_->seenVid();
     st_.adapter.seenPid = ftdi_->seenPid();
     ftdi_->note(st_.adapter.note, sizeof st_.adapter.note);
+    st_.adapter.haveWake = ftdi_->lastWake(st_.adapter.wake);
+    st_.adapter.wakeNext = ftdi_->wakeProfile();
+    st_.adapter.wakeLocked = ftdi_->wakeLocked();
+    st_.adapter.wakeAttempts = ftdi_->wakeAttempts();
     FtdiLink::PortInfo pi = ftdi_->portInfo();
     st_.adapter.phyOtg = pi.phyOtg;
     st_.adapter.portPowered = pi.powered;
@@ -205,6 +210,22 @@ void DiagEngine::doConnect(char* msg, size_t n, bool& ok) {
   if (ok) return;
   // Local echo alone cannot verify the vehicle wiring or ECU power.
   uint8_t echo = session_->lastSyncEcho();
+  kwake::Diag wd;
+  if (ftdi_ && s == LinkStatus::NoSync && ftdi_->lastWake(wd)) {
+    kwake::Profile next = ftdi_->wakeProfile();
+    if (!wd.echo && !wd.breakOnRx)
+      snprintf(msg, n,
+               "Линия K-Line молчит: адаптер не принял ни свой BREAK, ни эхо AA — нет +12 В на адаптере или "
+               "K-Line не подключена");
+    else if (!wd.echo)
+      snprintf(msg, n, "BREAK на линии есть, эха AA нет (принято %u байт): проверьте K-Line и массу",
+               (unsigned)wd.rxCount);
+    else
+      snprintf(msg, n, "Адаптер в порядке (BREAK %s, эхо AA), ЭБУ не ответил 55; дальше BREAK %u мс, DTR %s, RTS %s",
+               wd.breakOnRx ? "на линии" : "не виден", (unsigned)next.breakMs,
+               (next.modem & kwake::kDtr) ? "вкл" : "выкл", (next.modem & kwake::kRts) ? "вкл" : "выкл");
+    return;
+  }
   if (s == LinkStatus::NoSync && echo == 0xAA)
     snprintf(msg, n,
              "Нет ответа 55 (NO_SYNC): эхо AA получено; проверьте питание KKL и ЭБУ, массу, контакт HFM "

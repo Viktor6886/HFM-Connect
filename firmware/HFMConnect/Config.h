@@ -3,7 +3,7 @@
 // See docs/HARDWARE.md for the reference schematic.
 #pragma once
 
-#define HFM_FW_VERSION "0.3.7"
+#define HFM_FW_VERSION "0.4.0"
 #define HFM_FW_NAME "HFM Connect"
 
 // ---- K-Line transport ----------------------------------------------------------
@@ -14,8 +14,13 @@
 // 0 = external K-Line transceiver on UART1 (pins below).
 #define HFM_TRANSPORT_FTDI 1
 #define HFM_FTDI_LATENCY_MS 1   // FTDI latency timer: fast echo/response delivery
-#define HFM_FTDI_DTR 1          // assert DTR (many KKL cables enable the K-Line driver with it)
-#define HFM_FTDI_RTS 1          // assert RTS
+// DTR/RTS default (bit0 DTR, bit1 RTS asserted): 0 = both deasserted, as the PC
+// tools that work with FT232RL KKL cables leave them (D2XX: not touched;
+// Win32: DTR_CONTROL_DISABLE / RTS_CONTROL_DISABLE). Changeable in settings.
+#define HFM_FTDI_MODEM 0
+// Delay before the USB root port is powered: lets a hub and the adapter
+// behind it settle before the first enumeration.
+#define HFM_USB_START_DELAY_MS 1500
 
 // ---- K-Line transceiver (L9637D / MC33290 / SN65HVDA195 class) ----------------
 // UART1 of the ESP32-S3; TX drives the transceiver TXD input, RX reads RXD.

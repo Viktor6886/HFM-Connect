@@ -8,6 +8,8 @@ struct Settings {
   uint16_t breakMs = 177;
   uint16_t postBreakMs = 214;
   uint16_t byteTimeoutMs = 750;
+  uint8_t ftdiModem = 0;            // DTR (bit0) / RTS (bit1) asserted on the FTDI adapter
+  bool wakeAuto = true;             // try other BREAK / DTR / RTS profiles while the ECU is silent
   bool experimentalReads = false;   // unknown-ECU reads, extended recipes, VIN, ext DTC
   bool engineerMode = false;        // REK-quarantined service ops (reference ECU only)
   bool keepAlive = true;            // idle F0:00 read while connected

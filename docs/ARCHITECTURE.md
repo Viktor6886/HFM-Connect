@@ -33,6 +33,7 @@
 | Транзакции | HfmSession, TraceLog | ByteLink | любая |
 | Интерпретация | HfmDecode, HfmIdent, HfmDtc, DtcCatalog, HfmProfiles, HfmLive | Типы | любая |
 | Сервисы | HfmServices, ServiceGuard, ImpulseDecoder | Транзакции, Интерпретация | любая |
+| Пробуждение K-Line (FTDI) | KLineWake (алгоритм ПК-тестера, перебор профилей) | Транспорт | любая |
 | Тестовые модели | SimEcu, ReplayLink (только `tests/host/`) | ByteLink | ПК |
 | Аппаратура | KLineUart | ByteLink, ESP-IDF uart | Arduino |
 | Приложение | DiagEngine, WebApi, NetManager, Settings, HFMConnect.ino | всё | Arduino |

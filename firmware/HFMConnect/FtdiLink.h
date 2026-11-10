@@ -2,14 +2,15 @@
 // (FT232R/FT232RL "KKL" cables, FT-X), using the ESP32-S3 USB OTG port in
 // host mode (ESP-IDF usb_host library from the Arduino core). Arduino only.
 //
-// The FTDI chip provides exactly what the HFM line needs:
-//   * 9600 Bd, 8 data bits, parity NONE for prefixes and SPACE for selectors
-//     (SIO_SET_DATA, parity code 4) - no EVEN/ODD emulation needed;
-//   * BREAK (SIO_SET_DATA bit 14) for the 177 ms wake-up;
-//   * every bulk IN packet carries 2 status bytes (modem, line status with
-//     parity/framing/break flags) followed by the received data.
-// The adapter is detected on plug-in (hot-plug supported); the diagnostic
-// engine connects automatically when it appears.
+// The adapter is driven like the PC tester that works with it (D2XX calls
+// FT_SetBaudRate / FT_SetDataCharacteristics / FT_SetBreakOn/Off, DTR and RTS
+// left deasserted): 9600 Bd, 8 data bits, parity NONE for prefixes and SPACE
+// for selectors (SIO_SET_DATA), BREAK via SIO_SET_DATA bit 14. Every bulk IN
+// packet carries 2 status bytes (modem, line status with parity/framing/break
+// flags) followed by the received data. The wake-up sequence itself is in
+// KLineWake (platform independent, host-tested).
+// The adapter is detected on plug-in (hot-plug supported, also behind a hub);
+// the diagnostic engine connects automatically when it appears.
 #pragma once
 #ifdef ARDUINO
 #include <Arduino.h>
@@ -18,6 +19,7 @@
 #include <atomic>
 
 #include "ByteLink.h"
+#include "KLineWake.h"
 #include "UsbRetry.h"
 #include "usb/usb_host.h"
 
@@ -95,7 +97,34 @@ class FtdiLink : public ByteLink {
   uint32_t reenumCount() const { return reenumCount_; }
   uint32_t enumFailures() const { return enumFailures_; }
 
+  // Wake-up profile: configured BREAK length and DTR/RTS state, optionally
+  // followed by the alternatives of kwake::Planner while the ECU is silent.
+  void setWakeConfig(uint16_t breakMs, uint8_t modem, bool autoTune);
+  // Last wake-up attempt (false before the first one) and the profile in use.
+  bool lastWake(kwake::Diag& d) const;
+  kwake::Profile wakeProfile() const;
+  bool wakeLocked() const { return wakeLocked_; }
+  uint32_t wakeAttempts() const { return wakeAttempts_; }
+
  private:
+  // kwake::LineOps over this adapter (used inside wakeup(), under ioMtx_).
+  class Line : public kwake::LineOps {
+   public:
+    explicit Line(FtdiLink& f) : f_(f) {}
+    bool setModem(uint8_t modem) override;
+    bool setBreak(bool on) override;
+    bool setSpace9600() override;
+    bool write(uint8_t b) override;
+    int read(uint8_t& b, uint32_t timeoutMs) override;
+    uint32_t breakFlags() override { return f_.breakSeen_; }
+    uint32_t now() override { return millis(); }
+    void sleep(uint32_t ms) override { delay(ms); }
+   private:
+    FtdiLink& f_;
+  };
+  bool setModemLines(uint8_t modem);
+  bool setBaud9600();
+
   static void hostTask(void* arg);
   static void clientTask(void* arg);
   static void clientEvent(const usb_host_client_event_msg_t* msg, void* arg);
@@ -164,5 +193,16 @@ class FtdiLink : public ByteLink {
   Parity curParity_ = Parity::None;
   bool curBreak_ = false;
   bool lineKnown_ = false;
+  uint8_t modem_ = 0xFF;  // DTR/RTS state applied to the chip (0xFF = unknown)
+  // Wake-up: requested configuration (any task) and planner (engine task only).
+  kwake::Profile wakeUser_;
+  bool wakeAuto_ = true;
+  std::atomic<bool> wakeConfigChanged_{true};
+  kwake::Planner planner_;
+  kwake::Diag lastWake_;
+  bool haveWake_ = false;
+  std::atomic<bool> wakeLocked_{false};
+  std::atomic<uint32_t> wakeAttempts_{0};
+  mutable portMUX_TYPE wakeMux_ = portMUX_INITIALIZER_UNLOCKED;
 };
 #endif

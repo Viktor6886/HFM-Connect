@@ -280,6 +280,10 @@ void FtdiLink::clientEvent(const usb_host_client_event_msg_t* msg, void* arg) {
 
 void FtdiLink::clientTask(void* arg) {
   FtdiLink* self = static_cast<FtdiLink*>(arg);
+  // Power the root port only after the hub and the adapter behind it have
+  // settled: the first descriptor request to a device that has just powered
+  // up behind a hub fails ("CHECK_SHORT_DEV_DESC FAILED", port disabled).
+  vTaskDelay(pdMS_TO_TICKS(HFM_USB_START_DELAY_MS));
   if (usb_host_lib_set_root_port_power(true) != ESP_OK) {
     self->portOff_ = true;
     self->retry_.failed(millis());
@@ -586,18 +590,33 @@ bool FtdiLink::setLine(Parity p, bool brk) {
   return true;
 }
 
-bool FtdiLink::configure() {
+bool FtdiLink::setBaud9600() {
   uint32_t enc = ftdiDivisor(9600);
   uint16_t bValue = (uint16_t)(enc & 0xFFFF);
   uint16_t bIndex = isMultiPort(bcd_) ? (uint16_t)(((enc >> 8) & 0xFF00) | port_) : (uint16_t)(enc >> 16);
-  bool ok = ctrl(SIO_RESET, SIO_RESET_SIO, port_) &&
-            ctrl(SIO_SET_BAUDRATE, bValue, bIndex) &&
-            ctrl(SIO_SET_FLOW_CTRL, 0, port_) &&
-            ctrl(SIO_SET_LATENCY_TIMER, HFM_FTDI_LATENCY_MS, port_) &&
-            // DTR and RTS asserted (one request each): many KKL cables use
-            // these lines to enable or power the K-Line stage.
-            ctrl(SIO_MODEM_CTRL, (uint16_t)(0x0100 | (HFM_FTDI_DTR ? 1 : 0)), port_) &&
-            ctrl(SIO_MODEM_CTRL, (uint16_t)(0x0200 | (HFM_FTDI_RTS ? 2 : 0)), port_) &&
+  return ctrl(SIO_SET_BAUDRATE, bValue, bIndex);
+}
+
+// SIO_MODEM_CTRL: high byte = lines to change (bit0 DTR, bit1 RTS), low byte
+// = new state (1 = asserted, pin low). One request per line, as libftdi does.
+bool FtdiLink::setModemLines(uint8_t modem) {
+  if (modem == modem_) return true;
+  bool ok = ctrl(SIO_MODEM_CTRL, (uint16_t)(0x0100 | (modem & kwake::kDtr)), port_) &&
+            ctrl(SIO_MODEM_CTRL, (uint16_t)(0x0200 | (modem & kwake::kRts)), port_);
+  modem_ = ok ? modem : 0xFF;
+  return ok;
+}
+
+// Same order as the PC tester after FT_Open: flow control off, 9600 Bd,
+// 8N1, timeouts, latency timer. DTR/RTS follow the wake-up profile
+// (deasserted by default, like both reference tools).
+bool FtdiLink::configure() {
+  modem_ = 0xFF;
+  portENTER_CRITICAL(&wakeMux_);
+  uint8_t modem = planner_.count() ? planner_.current().modem : wakeUser_.modem;
+  portEXIT_CRITICAL(&wakeMux_);
+  bool ok = ctrl(SIO_RESET, SIO_RESET_SIO, port_) && ctrl(SIO_SET_FLOW_CTRL, 0, port_) && setBaud9600() &&
+            ctrl(SIO_SET_LATENCY_TIMER, HFM_FTDI_LATENCY_MS, port_) && setModemLines(modem) &&
             ctrl(SIO_RESET, SIO_RESET_PURGE_RX, port_) && ctrl(SIO_RESET, SIO_RESET_PURGE_TX, port_);
   lineKnown_ = false;
   ok = ok && setLine(Parity::None, false);
@@ -664,38 +683,77 @@ int FtdiLink::readBytes(uint8_t* buf, int n, uint32_t timeoutMs) {
   return got;
 }
 
+bool FtdiLink::Line::setModem(uint8_t modem) { return f_.setModemLines(modem); }
+bool FtdiLink::Line::setBreak(bool on) { return f_.setLine(Parity::None, on); }
+bool FtdiLink::Line::setSpace9600() {
+  // The tester applies baud rate and data format again after the BREAK.
+  f_.lineKnown_ = false;
+  return f_.setBaud9600() && f_.setLine(Parity::Space, false);
+}
+bool FtdiLink::Line::write(uint8_t b) { return f_.writeByte(b); }
+int FtdiLink::Line::read(uint8_t& b, uint32_t timeoutMs) {
+  if (!f_.attached_) return -1;
+  if (f_.readBytes(&b, 1, timeoutMs) == 1) return 1;
+  return f_.attached_ ? 0 : -1;
+}
+
+void FtdiLink::setWakeConfig(uint16_t breakMs, uint8_t modem, bool autoTune) {
+  portENTER_CRITICAL(&wakeMux_);
+  wakeUser_.breakMs = breakMs;
+  wakeUser_.modem = modem & (kwake::kDtr | kwake::kRts);
+  wakeAuto_ = autoTune;
+  portEXIT_CRITICAL(&wakeMux_);
+  wakeConfigChanged_ = true;
+}
+
+bool FtdiLink::lastWake(kwake::Diag& d) const {
+  portENTER_CRITICAL(&wakeMux_);
+  bool have = haveWake_;
+  if (have) d = lastWake_;
+  portEXIT_CRITICAL(&wakeMux_);
+  return have;
+}
+
+kwake::Profile FtdiLink::wakeProfile() const {
+  portENTER_CRITICAL(&wakeMux_);
+  kwake::Profile p = planner_.count() ? planner_.current() : wakeUser_;
+  portEXIT_CRITICAL(&wakeMux_);
+  return p;
+}
+
 LinkStatus FtdiLink::wakeup(const LinkTiming& t, uint8_t& echo, uint8_t& sync) {
   if (!ioMtx_) return LinkStatus::LinkDown;
   IoGuard guard(ioMtx_);
   echo = sync = 0;
   if (!isOpen()) return LinkStatus::LinkDown;
-  if (!setLine(Parity::None, true)) return LinkStatus::LinkDown;  // BREAK: K-Line held low
-  delay(t.breakMs);
-  if (!setLine(Parity::None, false)) return LinkStatus::LinkDown;
-  delay(t.postBreakMs);
+  portENTER_CRITICAL(&wakeMux_);
+  if (wakeConfigChanged_.exchange(false)) planner_.configure(wakeUser_, wakeAuto_);
+  kwake::Profile p = planner_.current();
+  portEXIT_CRITICAL(&wakeMux_);
+  // AA at the configured BREAK + pause from the start of BREAK (177 + 214 =
+  // 391 ms, the tester uses 390 ms), whatever BREAK length the profile has.
+  uint32_t aaAt = (uint32_t)t.breakMs + t.postBreakMs;
+  if (aaAt < (uint32_t)p.breakMs + 20) aaAt = p.breakMs + 20;
+  if (aaAt > 2000) aaAt = 2000;
+  kwake::Diag d;
+  Line line(*this);
+  LinkStatus st = kwake::run(line, p, (uint16_t)aaAt, d);
+  wakeAttempts_++;
+  portENTER_CRITICAL(&wakeMux_);
+  if (st != LinkStatus::LinkDown) planner_.result(st == LinkStatus::Ok);
+  wakeLocked_ = planner_.locked();
+  lastWake_ = d;
+  haveWake_ = true;
+  portEXIT_CRITICAL(&wakeMux_);
   purgeRx();
-  if (!setLine(Parity::Space, false) || !writeByte(0xAA)) return LinkStatus::LinkDown;
-  // Look for the AA (echo) 55 (ECU) pair among the first bytes; a stray
-  // byte left by the BREAK edge is tolerated.
-  uint8_t buf[4] = {0, 0, 0, 0};
-  int n = 0;
-  uint32_t t0 = millis();
-  while (n < 4 && millis() - t0 < t.byteDeadlineMs) {
-    if (readBytes(buf + n, 1, 20) == 1) {
-      n++;
-      if (n >= 2 && buf[n - 2] == 0xAA && buf[n - 1] == 0x55) break;
-    }
-    if (!attached_) return LinkStatus::LinkDown;
-  }
-  for (int i = 0; i + 1 < n; i++)
-    if (buf[i] == 0xAA && buf[i + 1] == 0x55) {
-      echo = 0xAA;
-      sync = 0x55;
-      return LinkStatus::Ok;
-    }
-  if (n >= 1) echo = buf[0];
-  if (n >= 2) sync = buf[1];
-  return LinkStatus::NoSync;
+  char m[96];
+  snprintf(m, sizeof m, "wake BREAK %u ms DTR %u RTS %u: break on line %s, echo %s, ECU %02X -> %s", (unsigned)p.breakMs,
+           (p.modem & kwake::kDtr) ? 1 : 0, (p.modem & kwake::kRts) ? 1 : 0, d.breakOnRx ? "yes" : "no",
+           d.echo ? "AA" : "none", (unsigned)d.ecuByte, linkStatusCode(st));
+  logLine(m);
+  echo = d.echo ? 0xAA : 0;
+  sync = d.ok ? 0x55 : d.ecuByte;
+  return st;
 }
 
 LinkStatus FtdiLink::exchange(uint8_t tx, Parity p, uint16_t deadlineMs, uint8_t& echo, uint8_t& resp) {

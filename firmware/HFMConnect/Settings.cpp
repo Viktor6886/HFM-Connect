@@ -14,6 +14,8 @@ void Settings::load() {
   breakMs = prefs.getUShort("brk", 177);
   postBreakMs = prefs.getUShort("pbrk", 214);
   byteTimeoutMs = prefs.getUShort("bto", 750);
+  ftdiModem = prefs.getUChar("fmod", HFM_FTDI_MODEM) & 3;
+  wakeAuto = prefs.getBool("wauto", true);
   experimentalReads = prefs.getBool("exp", false);
   engineerMode = prefs.getBool("eng", false);
   keepAlive = prefs.getBool("ka", true);
@@ -39,6 +41,8 @@ void Settings::save() {
   prefs.putUShort("brk", breakMs);
   prefs.putUShort("pbrk", postBreakMs);
   prefs.putUShort("bto", byteTimeoutMs);
+  prefs.putUChar("fmod", ftdiModem);
+  prefs.putBool("wauto", wakeAuto);
   prefs.putBool("exp", experimentalReads);
   prefs.putBool("eng", engineerMode);
   prefs.putBool("ka", keepAlive);

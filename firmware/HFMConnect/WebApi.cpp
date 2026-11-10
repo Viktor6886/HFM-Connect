@@ -310,7 +310,24 @@ static void writeStatus(JsonWriter& w, const EngineState& s) {
   w.kv("dev_events", s.adapter.deviceEvents).kv("seen_vid_pid", (s.adapter.seenVid || s.adapter.seenPid) ? vp : "");
   w.kv("note", s.adapter.note).kv("phy_otg", s.adapter.phyOtg).kv("port_powered", s.adapter.portPowered);
   w.kv("port_connected", s.adapter.portConnected).kv("dp", (s.adapter.lineState & 1) != 0);
-  w.kv("dm", (s.adapter.lineState & 2) != 0).endObject();
+  w.kv("dm", (s.adapter.lineState & 2) != 0);
+  // K-Line wake-up: profile used next and what the last attempt saw on the line.
+  const kwake::Profile& np = s.adapter.wakeNext;
+  w.key("wake").beginObject().kv("auto", AppSettings.wakeAuto).kv("locked", s.adapter.wakeLocked);
+  w.kv("attempts", s.adapter.wakeAttempts).kv("next_break_ms", (unsigned)np.breakMs);
+  w.kv("next_dtr", (np.modem & kwake::kDtr) != 0).kv("next_rts", (np.modem & kwake::kRts) != 0);
+  if (s.adapter.haveWake) {
+    const kwake::Diag& d = s.adapter.wake;
+    char rx[3 * sizeof d.rx + 1] = {0}, tx[3 * sizeof d.tx + 1] = {0};
+    for (uint8_t i = 0; i < d.rxCount; i++) snprintf(rx + 3 * i, 4, i ? " %02X" : "%02X", d.rx[i]);
+    for (uint8_t i = 0; i < d.txCount; i++) snprintf(tx + 3 * i, 4, i ? " %02X" : "%02X", d.tx[i]);
+    w.key("last").beginObject().kv("break_ms", (unsigned)d.profile.breakMs);
+    w.kv("dtr", (d.profile.modem & kwake::kDtr) != 0).kv("rts", (d.profile.modem & kwake::kRts) != 0);
+    w.kv("break_actual_ms", (unsigned)d.breakActualMs).kv("break_on_line", d.breakOnRx).kv("echo", d.echo);
+    w.kv("ok", d.ok).kv("step", (unsigned)d.step).kv("ecu_byte", (unsigned)d.ecuByte);
+    w.kv("aa_at_ms", (unsigned)d.aaAtMs).kv("tx", tx).kv("rx", rx).endObject();
+  }
+  w.endObject().endObject();
   w.kv("auto_connect", AppSettings.autoConnect).kv("auto_msg", s.autoMsg).kv("auto_attempts", s.autoAttempts);
   w.kv("interlock", s.interlock);
   if (s.batteryV >= 0) w.kv("battery_v", (double)s.batteryV, 2); else w.kvNull("battery_v");
@@ -575,6 +592,7 @@ static void hSettingsGet() {
   w.beginObject();
   w.kv("break_ms", (unsigned)s.breakMs).kv("post_break_ms", (unsigned)s.postBreakMs);
   w.kv("byte_timeout_ms", (unsigned)s.byteTimeoutMs);
+  w.kv("ftdi_modem", (unsigned)s.ftdiModem).kv("wake_auto", s.wakeAuto);
   w.kv("experimental_reads", s.experimentalReads).kv("engineer_mode", s.engineerMode);
   w.kv("auto_connect", s.autoConnect).kv("keep_alive", s.keepAlive).kv("impulse_enabled", s.impulseEnabled).kv("trace_capture", s.traceCapture);
   w.kv("battery_manual_confirm", s.batteryManualConfirm);
@@ -601,6 +619,8 @@ static void hSettingsPost() {
   if (server.hasArg("break_ms")) s.breakMs = (uint16_t)constrain(server.arg("break_ms").toInt(), 25, 500);
   if (server.hasArg("post_break_ms")) s.postBreakMs = (uint16_t)constrain(server.arg("post_break_ms").toInt(), 25, 2000);
   if (server.hasArg("byte_timeout_ms")) s.byteTimeoutMs = (uint16_t)constrain(server.arg("byte_timeout_ms").toInt(), 100, 3000);
+  if (server.hasArg("ftdi_modem")) s.ftdiModem = (uint8_t)(server.arg("ftdi_modem").toInt() & 3);
+  s.wakeAuto = argBool("wake_auto", s.wakeAuto);
   s.experimentalReads = argBool("experimental_reads", s.experimentalReads);
   s.engineerMode = argBool("engineer_mode", s.engineerMode);
   s.keepAlive = argBool("keep_alive", s.keepAlive);

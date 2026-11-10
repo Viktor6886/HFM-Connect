@@ -28,11 +28,12 @@ ESP32-S3 с USB K-Line адаптером FTDI (USB-хост, по умолча�
 
 ## Архитектурные правила
 
-- Платформонезависимое ядро (`Hfm*.cpp`, `TraceLog`, `ServiceGuard`, `ImpulseDecoder`)
+- Платформонезависимое ядро (`Hfm*.cpp`, `TraceLog`, `ServiceGuard`, `ImpulseDecoder`, `KLineWake`)
   **не включает Arduino.h**; Arduino-код — в `#ifdef ARDUINO`.
 - Только `DiagEngine` владеет K-Line; HTTP — через `submit(Job)` и снимки под `lock()`.
 - Транспорт: `FtdiLink` (USB-хост, `HFM_TRANSPORT_FTDI 1`) или `KLineUart`; оба — `ByteLink`.
   Сборка с FTDI: «USB CDC On Boot: Disabled», «USB Mode: Hardware CDC and JTAG» (D-021).
+  Пробуждение и DTR/RTS — как у работающего ПК-тестера (`KLineWake`, D-026, PROTOCOL §2.1).
 - Коды DTC — по заводской карте варианта (`dtc::selectMap`), ремапы — по позиции (D-022).
 - Внешние библиотеки Arduino не добавлять (D-002). JSON — `JsonWriter`.
 - Главный файл прошивки: `firmware/HFMConnect/HFMConnect.ino`; модули — рядом (Arduino IDE).

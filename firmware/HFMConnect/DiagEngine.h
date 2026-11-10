@@ -8,6 +8,7 @@
 #include "HfmLive.h"
 #include "HfmServices.h"
 #include "ImpulseDecoder.h"
+#include "KLineWake.h"
 #include "ServiceGuard.h"
 #include "Settings.h"
 
@@ -64,6 +65,12 @@ struct AdapterInfo {
   char note[160] = {0};         // why no adapter is attached ("" when attached)
   bool phyOtg = false, portPowered = false, portConnected = false;
   uint8_t lineState = 0;        // D+ (bit0), D- (bit1)
+  // K-Line wake-up: last attempt and the profile used next.
+  bool haveWake = false;
+  kwake::Diag wake;
+  kwake::Profile wakeNext;
+  bool wakeLocked = false;
+  uint32_t wakeAttempts = 0;
 };
 
 struct EngineState {
