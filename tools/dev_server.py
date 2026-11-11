@@ -21,7 +21,8 @@ SET = {"break_ms": 177, "post_break_ms": 214, "byte_timeout_ms": 750, "ftdi_mode
        "production_ym": 199301, "vin": "***", "mask_vin": True, "ap_ssid": "HFM Connect", "ap_default_pass": True,
        "sta_ssid": "", "imp_press_ms": 3000, "imp_end_gap_ms": 2500, "vbat_adc": False, "ui_theme": "auto",
        "live_sel": "rpm,maf,o2_mv,lambda", "live_cat": "all", "code9": "", "wake_learned": True,
-       "sound_level": 2, "light_level": 2, "dtc_on_connect": True, "buzzer_fitted": True, "led_fitted": True}
+       "sound_level": 2, "light_level": 2, "dtc_on_connect": True, "buzzer_fitted": True, "led_fitted": True,
+       "oled": {"built": True, "on": True, "type": 0, "flip": False, "level": 2, "present": True, "address": "0x3C", "frames": 120}}
 STATE = {"live": False}
 
 PARAMS = [("rpm", "Обороты двигателя", "об/мин", 0, 0, 7000, 0, False, 600, 800),

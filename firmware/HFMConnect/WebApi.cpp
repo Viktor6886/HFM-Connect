@@ -10,6 +10,7 @@
 #include "FtdiLink.h"
 #include "JsonWriter.h"
 #include "NetManager.h"
+#include "OledDisplay.h"
 #include "Settings.h"
 #include "ImpulseDecoder.h"
 #include "Indicator.h"
@@ -652,6 +653,14 @@ static void hSettingsGet() {
   w.kv("code9", s.code9);
   w.kv("sound_level", (unsigned)s.soundLevel).kv("light_level", (unsigned)s.lightLevel);
   w.kv("dtc_on_connect", s.dtcOnConnect);
+  {
+    OledStatus o = oledStatus();
+    char adr[8];
+    snprintf(adr, sizeof adr, "0x%02X", o.address);
+    w.key("oled").beginObject().kv("built", o.built).kv("on", s.oledOn).kv("type", (unsigned)s.oledType);
+    w.kv("flip", s.oledFlip).kv("level", (unsigned)s.oledLevel).kv("present", o.present);
+    w.kv("address", o.present ? adr : "").kv("frames", o.frames).endObject();
+  }
   w.kv("buzzer_fitted", HFM_BUZZER_PIN >= 0).kv("led_fitted", HFM_LED_R_PIN >= 0);
   w.kv("wake_learned", s.wakeLearnedBreak != 0);
   w.endObject();
@@ -688,6 +697,11 @@ static void hSettingsPost() {
   if (server.hasArg("light_level")) s.lightLevel = (uint8_t)constrain(server.arg("light_level").toInt(), 0, 3);
   s.dtcOnConnect = argBool("dtc_on_connect", s.dtcOnConnect);
   indicatorSetLevels(s.soundLevel, s.lightLevel);
+  s.oledOn = argBool("oled_on", s.oledOn);
+  s.oledFlip = argBool("oled_flip", s.oledFlip);
+  if (server.hasArg("oled_type")) s.oledType = server.arg("oled_type").toInt() ? 1 : 0;
+  if (server.hasArg("oled_level")) s.oledLevel = (uint8_t)constrain(server.arg("oled_level").toInt(), 1, 3);
+  oledConfigure(s.oledOn, s.oledType, s.oledFlip, s.oledLevel);
   if (server.hasArg("live_cat")) strlcpy(s.liveCat, server.arg("live_cat").c_str(), sizeof s.liveCat);
   if (server.hasArg("code9")) {
     String c = server.arg("code9");

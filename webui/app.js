@@ -1219,6 +1219,7 @@ async function buildReport(btn) {
 R.settings = async () => {
   const s = await loadSettings(true);
   const sw = (k, title, sub, danger) => `<label class="row"><div class="grow"><div class="t" ${danger ? 'style="color:var(--red)"' : ''}>${title}</div>${sub ? `<div class="s">${sub}</div>` : ''}</div><span class="switch"><input type="checkbox" data-k="${k}" ${s[k] ? 'checked' : ''}><span></span></span></label>`;
+  const swv = (k, on, title, sub) => `<label class="row"><div class="grow"><div class="t">${title}</div>${sub ? `<div class="s">${sub}</div>` : ''}</div><span class="switch"><input type="checkbox" data-k="${k}" ${on ? 'checked' : ''}><span></span></span></label>`;
   const theme = s.ui_theme || LS.get('theme', 'auto');
   page('Настройки', `
     <h2 class="section">Оформление</h2>
@@ -1240,6 +1241,18 @@ R.settings = async () => {
       <div class="seg mt" id="ledSeg">${LEVELS.map((t, i) => `<button data-v="${i}" class="${s.light_level === i ? 'on' : ''}">${t}</button>`).join('')}</div>
       <div class="btns mt"><button class="btn sm sec" data-test="sound">Проверить звук</button><button class="btn sm sec" data-test="dtc">Звук «ошибки»</button><button class="btn sm sec" data-test="light">Проверить цвета</button></div>
       <p class="small muted">Звуки: подключение — восходящий аккорд; восстановление — короткая трель вверх; отключение и обрыв — нисходящие; нет ошибок — арпеджио вверх; есть ошибки — двойное «динь-дон»; адаптер подключён/отключён — короткий щелчок. Цвета: синее дыхание — поиск ЭБУ, зелёный — на связи, бирюзовый со вспышками — опрос Live Data, двойная янтарная вспышка — в памяти есть ошибки, янтарное дыхание — восстановление, красное — нет адаптера / ошибка.</p></div>
+    ${s.oled && s.oled.built ? `<h2 class="section">Дисплей OLED</h2>
+    <div class="list">
+      ${swv('oled_on', s.oled.on, 'Дисплей включён', s.oled.present ? 'Найден на шине I²C по адресу ' + esc(s.oled.address) : 'Не обнаружен на шине I²C — сканер работает без него')}
+      ${swv('oled_flip', s.oled.flip, 'Повернуть на 180°', 'Если дисплей установлен «вверх ногами»')}
+    </div>
+    <div class="card pad mt">
+      <div class="small muted">Контроллер дисплея</div>
+      <div class="seg mt" id="oledType">${['SSD1306', 'SH1106'].map((t, i) => `<button data-v="${i}" class="${s.oled.type === i ? 'on' : ''}">${t}</button>`).join('')}</div>
+      <div class="small muted mt2">Яркость</div>
+      <div class="seg mt" id="oledLevel">${['Низкая', 'Средняя', 'Высокая'].map((t, i) => `<button data-v="${i + 1}" class="${s.oled.level === i + 1 ? 'on' : ''}">${t}</button>`).join('')}</div>
+      <p class="small muted">Если изображение сдвинуто или справа полоса «мусора» — выберите другой контроллер (у дисплеев 0,96" обычно SSD1306, у 1,3" — SH1106). Дисплей только показывает состояние: команд ЭБУ он не отправляет.</p>
+    </div>` : ''}
     <h2 class="section">Сервисные операции</h2>
     <div class="list">
       ${sw('engineer_mode', 'Режим инженера', 'Разрешает карантинные рецепты РЕК только для эталонного ЭБУ 013 545 13 32 / 41-00. Дополнительно нужен ключ WRITE-EN.', true)}
@@ -1266,7 +1279,7 @@ R.settings = async () => {
       <input class="field mt" id="staPass" type="password" placeholder="Пароль">
       <button class="btn full mt" id="netSave">Сохранить сеть</button>
       <p class="small muted">Адрес: http://192.168.4.1/ или http://hfm.local/</p></div>`);
-  [['#sndSeg', 'sound_level'], ['#ledSeg', 'light_level']].forEach(([sel, key]) => document.querySelectorAll(sel + ' button').forEach(b => b.addEventListener('click', async () => {
+  [['#sndSeg', 'sound_level'], ['#ledSeg', 'light_level'], ['#oledType', 'oled_type'], ['#oledLevel', 'oled_level']].forEach(([sel, key]) => document.querySelectorAll(sel + ' button').forEach(b => b.addEventListener('click', async () => {
     document.querySelectorAll(sel + ' button').forEach(x => x.classList.toggle('on', x === b));
     try { await post('settings', {[key]: b.dataset.v}); if (key === 'sound_level' && b.dataset.v !== '0') post('indicator/test', {what: 'sound'}).catch(() => {}); } catch (e) { toast(e.message, true); }
   })));

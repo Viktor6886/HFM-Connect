@@ -17,6 +17,7 @@
 #include "DiagEngine.h"
 #include "Indicator.h"
 #include "NetManager.h"
+#include "OledDisplay.h"
 #include "Settings.h"
 #include "WebApi.h"
 
@@ -39,6 +40,8 @@ void setup() {
   Engine.begin(&AppSettings);  // drives the K-Line TX idle HIGH as early as possible
   indicatorSetLevels(AppSettings.soundLevel, AppSettings.lightLevel);
   indicatorBegin();            // piezo + RGB LED follow the engine state (own task)
+  oledConfigure(AppSettings.oledOn, AppSettings.oledType, AppSettings.oledFlip, AppSettings.oledLevel);
+  oledBegin();                 // OLED: own low-priority task, output only (no-op without HFM_OLED_ENABLE)
   netBegin();
   webBegin();
 

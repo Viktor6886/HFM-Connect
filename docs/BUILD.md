@@ -59,12 +59,34 @@ python tools/build_webui.py
 
 Скрипт склеивает файлы, сжимает gzip и пишет `firmware/HFMConnect/WebUiAssets.h`.
 
+## OLED-дисплей: библиотека и схема разделов
+
+Прошивка с дисплеем (`HFM_OLED_ENABLE 1` в `Config.h`, по умолчанию) требует:
+
+1. Библиотеку **U8g2** (Arduino IDE: *Инструменты → Управление библиотеками → U8g2*).
+2. Схему разделов ***Tools → Partition Scheme → Huge APP (3MB No OTA/1MB SPIFFS)***: с
+   дисплеем прошивка занимает 1 342 320 Б и в раздел 1,25 МБ схемы по умолчанию не
+   помещается (в Huge APP — 42 %). Настройки (NVS) при смене схемы сохраняются; LittleFS
+   форматируется заново — записи и отчёты с устройства скачайте заранее.
+
+Без дисплея: `#define HFM_OLED_ENABLE 0` в `Config.h` — библиотека U8g2 не нужна, схема
+разделов по умолчанию подходит.
+
+Просмотр экранов на ПК без дисплея: `python tools/oled_preview.py` →
+`build/oled_preview/screens.png` (нужны U8g2, Pillow и компилятор C/C++ или `ziglang`).
+Изображения: `python tools/gen_oled_bitmaps.py` → `OledBitmaps.h`.
+
 ## arduino-cli (CI и командная строка)
 
 ```bash
 arduino-cli core install esp32:esp32
-arduino-cli compile --fqbn esp32:esp32:esp32s3:PartitionScheme=default,CDCOnBoot=default firmware/HFMConnect
-arduino-cli upload  --fqbn esp32:esp32:esp32s3 -p COM5 firmware/HFMConnect
+arduino-cli lib install U8g2
+# с дисплеем (по умолчанию)
+arduino-cli compile --fqbn esp32:esp32:esp32s3:PartitionScheme=huge_app,CDCOnBoot=default firmware/HFMConnect
+# без дисплея
+arduino-cli compile --fqbn esp32:esp32:esp32s3:PartitionScheme=default,CDCOnBoot=default \
+  --build-property "compiler.cpp.extra_flags=-DHFM_OLED_ENABLE=0" firmware/HFMConnect
+arduino-cli upload  --fqbn esp32:esp32:esp32s3:PartitionScheme=huge_app -p COM5 firmware/HFMConnect
 ```
 
 ## Host-тесты (без ESP32)
@@ -86,8 +108,8 @@ Data, 9-значный код, рабочий профиль пробужден�
 
 ## Запас памяти программы
 
-С 0.7.0 прошивка занимает **98 %** раздела приложения схемы «Default 4MB with spiffs»
-(свободно ≈ 25 КБ; справочник `/ref.json` — ≈ 43 КБ gzip, индикация — ≈ 19 КБ). Сборка
-со схемой по умолчанию проходит; если следующая доработка не поместится, выберите *Tools → Partition Scheme → Huge APP (3MB No OTA/1MB SPIFFS)*:
+С 0.8.0 сборка с OLED-дисплеем идёт со схемой Huge APP (42 % из 3 МБ). Без дисплея
+прошивка занимает 98 % раздела схемы «Default 4MB with spiffs». При переходе на
+*Tools → Partition Scheme → Huge APP (3MB No OTA/1MB SPIFFS)*:
 раздел NVS остаётся на месте (настройки сохраняются), LittleFS форматируется заново
 (записи и отчёты на устройстве будут удалены — скачайте их заранее).

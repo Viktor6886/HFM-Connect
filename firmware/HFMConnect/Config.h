@@ -3,7 +3,7 @@
 // See docs/HARDWARE.md for the reference schematic.
 #pragma once
 
-#define HFM_FW_VERSION "0.7.0"
+#define HFM_FW_VERSION "0.8.0"
 #define HFM_FW_NAME "HFM Connect"
 
 // ---- K-Line transport ----------------------------------------------------------
@@ -66,6 +66,18 @@
 // Passive piezo (no built-in generator): GPIO -> 100 Ohm -> piezo -> GND, or via an
 // NPN/MOSFET stage for more volume. -1 = not fitted.
 #define HFM_BUZZER_PIN 8
+
+// ---- OLED display (optional, docs/HARDWARE.md "OLED-дисплей") ---------------------
+// 0.96" 128x64, I2C, 4 pins. Output only: it shows the state of the diagnostic engine and
+// never talks to the ECU. Needs the U8g2 library (Arduino Library Manager) and the
+// partition scheme "Huge APP" (docs/BUILD.md). 0 = build without display and library.
+#ifndef HFM_OLED_ENABLE
+#define HFM_OLED_ENABLE 1
+#endif
+#define HFM_OLED_SDA_PIN 11       // GPIO8 (default I2C SDA) is taken by the piezo
+#define HFM_OLED_SCL_PIN 9
+#define HFM_OLED_CONTROLLER 0     // default: 0 = SSD1306, 1 = SH1106 (also in Settings)
+#define HFM_OLED_I2C_HZ 400000
 
 // ---- Wi-Fi ------------------------------------------------------------------------
 // Access point name (no MAC suffix) and default password; the password can be

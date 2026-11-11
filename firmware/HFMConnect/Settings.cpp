@@ -47,6 +47,11 @@ void Settings::load() {
   soundLevel = prefs.getUChar("snd", 2) & 3;
   lightLevel = prefs.getUChar("light", 2) & 3;
   dtcOnConnect = prefs.getBool("dtcconn", true);
+  oledOn = prefs.getBool("oledon", true);
+  oledType = prefs.getUChar("oledt", HFM_OLED_CONTROLLER) ? 1 : 0;
+  oledFlip = prefs.getBool("oledf", false);
+  oledLevel = prefs.getUChar("oledl", 2);
+  if (oledLevel < 1 || oledLevel > 3) oledLevel = 2;
   if (!prefs.getString("lsel", liveSel, sizeof liveSel)) strlcpy(liveSel, "rpm,maf,o2_mv,lambda", sizeof liveSel);
   if (!prefs.getString("lcat", liveCat, sizeof liveCat)) strlcpy(liveCat, "all", sizeof liveCat);
   prefs.getString("code9", code9, sizeof code9);
@@ -93,6 +98,10 @@ void Settings::save() {
   prefs.putUChar("snd", soundLevel);
   prefs.putUChar("light", lightLevel);
   prefs.putBool("dtcconn", dtcOnConnect);
+  prefs.putBool("oledon", oledOn);
+  prefs.putUChar("oledt", oledType);
+  prefs.putBool("oledf", oledFlip);
+  prefs.putUChar("oledl", oledLevel);
   prefs.putString("lsel", liveSel);
   prefs.putString("lcat", liveCat);
   prefs.putString("code9", code9);

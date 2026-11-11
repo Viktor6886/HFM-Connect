@@ -32,6 +32,10 @@ struct Settings {
   uint8_t soundLevel = 2;           // piezo: 0 off, 1 low, 2 medium, 3 high
   uint8_t lightLevel = 2;           // RGB LED: 0 off, 1 low, 2 medium, 3 high
   bool dtcOnConnect = true;         // read the fault memory after connecting
+  bool oledOn = true;               // OLED display on
+  uint8_t oledType = 0;             // 0 SSD1306, 1 SH1106
+  bool oledFlip = false;            // rotate the picture by 180 degrees
+  uint8_t oledLevel = 2;            // brightness 1..3
   // WebUI (stored on the device, not in the browser)
   uint8_t uiTheme = 0;              // 0 auto, 1 light, 2 dark
   char liveSel[72] = "rpm,maf,o2_mv,lambda";  // chart parameters, comma separated

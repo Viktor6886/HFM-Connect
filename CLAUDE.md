@@ -46,7 +46,11 @@ ESP32-S3 с USB K-Line адаптером FTDI (USB-хост, по умолча�
 - Индикация (D-031): `Indicator` — своя задача, только читает `EngineState`; к K-Line не
   обращается. Пищалка и светодиоды на разных таймерах LEDC (разная разрядность).
 - Коды DTC — по заводской карте варианта (`dtc::selectMap`), ремапы — по позиции (D-022).
-- Внешние библиотеки Arduino не добавлять (D-002). JSON — `JsonWriter`.
+- Внешние библиотеки Arduino не добавлять (D-002). JSON — `JsonWriter`. Единственное
+  исключение — U8g2 для OLED (D-032), только при `HFM_OLED_ENABLE 1`.
+- OLED (D-032): `OledModel` (без Arduino, host-тесты) → `OledRender` (C-API U8g2) →
+  `OledDisplay` (своя задача). Только вывод: к движку обращается лишь за снимком состояния.
+  Сборка с дисплеем — схема разделов Huge APP. Кадры на ПК: `python tools/oled_preview.py`.
 - Главный файл прошивки: `firmware/HFMConnect/HFMConnect.ino`; модули — рядом (Arduino IDE).
 - После правки `webui/*` — `python tools/build_webui.py` (CI проверяет актуальность).
 - После правки `data/protocol/dtc.csv` — `python tools/gen_dtc_catalog.py`.
@@ -68,7 +72,7 @@ python tools/run_host_tests.py
 python tools/check_tables.py
 python tools/build_webui.py --check
 node --check webui/app.js
-arduino-cli compile --fqbn esp32:esp32:esp32s3 firmware/HFMConnect   # если доступен
+arduino-cli compile --fqbn esp32:esp32:esp32s3:PartitionScheme=huge_app firmware/HFMConnect   # если доступен
 ```
 
 ## Завершение сессии (обязательно)
@@ -77,8 +81,8 @@ arduino-cli compile --fqbn esp32:esp32:esp32s3 firmware/HFMConnect   # если 
    DECISIONS, TESTING (результаты), ROADMAP.
 2. Обновить `docs/SESSION_HANDOFF.md`: что сделано, какие файлы изменены, что проверено,
    какие ошибки остались, следующие шаги.
-3. Прогнать тесты, commit, push. Коммиты заканчиваются строкой
-   `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`.
+3. Прогнать тесты, commit, push. Коммиты заканчиваются строкой `Co-Authored-By` с моделью
+   текущей сессии (её задаёт среда; сейчас `Co-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>`).
 4. Нерешённое — GitHub Issues (`gh issue create`), метки `hardware-verification`, `protocol`,
    `enhancement`, `bug`.
 
