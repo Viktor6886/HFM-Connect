@@ -12,6 +12,7 @@
 #include "NetManager.h"
 #include "Settings.h"
 #include "ImpulseDecoder.h"
+#include "Indicator.h"
 #include "WebUiAssets.h"
 
 static WebServer server(HFM_HTTP_PORT);
@@ -649,6 +650,9 @@ static void hSettingsGet() {
   static const char* const kThemes[] = {"auto", "light", "dark"};
   w.kv("ui_theme", kThemes[s.uiTheme % 3]).kv("live_sel", s.liveSel).kv("live_cat", s.liveCat);
   w.kv("code9", s.code9);
+  w.kv("sound_level", (unsigned)s.soundLevel).kv("light_level", (unsigned)s.lightLevel);
+  w.kv("dtc_on_connect", s.dtcOnConnect);
+  w.kv("buzzer_fitted", HFM_BUZZER_PIN >= 0).kv("led_fitted", HFM_LED_R_PIN >= 0);
   w.kv("wake_learned", s.wakeLearnedBreak != 0);
   w.endObject();
   sendSmall(w);
@@ -680,6 +684,10 @@ static void hSettingsPost() {
     s.uiTheme = t == "light" ? 1 : (t == "dark" ? 2 : 0);
   }
   if (server.hasArg("live_sel")) strlcpy(s.liveSel, server.arg("live_sel").c_str(), sizeof s.liveSel);
+  if (server.hasArg("sound_level")) s.soundLevel = (uint8_t)constrain(server.arg("sound_level").toInt(), 0, 3);
+  if (server.hasArg("light_level")) s.lightLevel = (uint8_t)constrain(server.arg("light_level").toInt(), 0, 3);
+  s.dtcOnConnect = argBool("dtc_on_connect", s.dtcOnConnect);
+  indicatorSetLevels(s.soundLevel, s.lightLevel);
   if (server.hasArg("live_cat")) strlcpy(s.liveCat, server.arg("live_cat").c_str(), sizeof s.liveCat);
   if (server.hasArg("code9")) {
     String c = server.arg("code9");
@@ -804,6 +812,17 @@ static void hNotFound() {
   server.send(302, "text/plain", "");
 }
 
+// Settings: sound / light check (does not touch the ECU).
+static void hIndicatorTest() {
+  String what = server.arg("what");
+  if (what == "light") indicatorTestLight();
+  else if (what == "dtc") indicatorPlay(server.arg("faults") == "1" ? Sound::DtcPresent : Sound::DtcNone);
+  else indicatorPlay(Sound::Test);
+  JsonWriter w;
+  w.beginObject().kv("ok", true).endObject();
+  sendSmall(w);
+}
+
 static void hReboot() {
   JsonWriter w;
   w.beginObject().kv("ok", true).endObject();
@@ -837,6 +856,7 @@ void webBegin() {
   server.on("/api/file", HTTP_GET, hFile);
   server.on("/api/file/delete", HTTP_POST, hFileDelete);
   server.on("/api/reboot", HTTP_POST, hReboot);
+  server.on("/api/indicator/test", HTTP_POST, hIndicatorTest);
   server.onNotFound(hNotFound);
   server.begin();
 }

@@ -3,7 +3,7 @@
 // See docs/HARDWARE.md for the reference schematic.
 #pragma once
 
-#define HFM_FW_VERSION "0.6.0"
+#define HFM_FW_VERSION "0.7.0"
 #define HFM_FW_NAME "HFM Connect"
 
 // ---- K-Line transport ----------------------------------------------------------
@@ -47,9 +47,25 @@
 #define HFM_VBAT_DIVIDER 5.545f  // (100k + 22k) / 22k
 #define HFM_VBAT_CAL 1.000f
 
-// ---- Status LED -------------------------------------------------------------------
-// Uses the on-board RGB LED (RGB_BUILTIN) if the board defines it.
-#define HFM_USE_RGB_LED 1
+// ---- Indication (docs/HARDWARE.md "Индикация") ---------------------------------
+// On-board addressable RGB LED (WS2812) mirrors the external LED. ESP32-S3 Zero: GPIO21;
+// ESP32-S3-DevKitC-1: GPIO48 (the "ESP32S3 Dev Module" board setting assumes 48).
+// -1 = none. Set HFM_ONBOARD_RGB_SWAP_RG to 1 if red and green appear swapped.
+#define HFM_ONBOARD_RGB_PIN 21
+#define HFM_ONBOARD_RGB_SWAP_RG 0
+// External RGB LED, common cathode (common pin to GND), one resistor per colour:
+// R 220 Ohm, G 100 Ohm, B 100 Ohm (about 5 mA each at 3.3 V). -1 = not fitted.
+#define HFM_LED_R_PIN 5
+#define HFM_LED_G_PIN 6
+#define HFM_LED_B_PIN 7
+#define HFM_LED_COMMON_ANODE 0   // 1 = common pin to 3.3 V (inverted PWM)
+// Colour balance in % (green and blue dice look brighter than red at equal current).
+#define HFM_LED_GAIN_R 100
+#define HFM_LED_GAIN_G 55
+#define HFM_LED_GAIN_B 70
+// Passive piezo (no built-in generator): GPIO -> 100 Ohm -> piezo -> GND, or via an
+// NPN/MOSFET stage for more volume. -1 = not fitted.
+#define HFM_BUZZER_PIN 8
 
 // ---- Wi-Fi ------------------------------------------------------------------------
 // Access point name (no MAC suffix) and default password; the password can be

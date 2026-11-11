@@ -44,6 +44,9 @@ void Settings::load() {
   impPressMs = prefs.getUShort("imppr", 3000);
   impEndGapMs = prefs.getUShort("impgap", 2500);
   uiTheme = prefs.getUChar("theme", 0) % 3;
+  soundLevel = prefs.getUChar("snd", 2) & 3;
+  lightLevel = prefs.getUChar("light", 2) & 3;
+  dtcOnConnect = prefs.getBool("dtcconn", true);
   if (!prefs.getString("lsel", liveSel, sizeof liveSel)) strlcpy(liveSel, "rpm,maf,o2_mv,lambda", sizeof liveSel);
   if (!prefs.getString("lcat", liveCat, sizeof liveCat)) strlcpy(liveCat, "all", sizeof liveCat);
   prefs.getString("code9", code9, sizeof code9);
@@ -87,6 +90,9 @@ void Settings::save() {
   prefs.putUShort("imppr", impPressMs);
   prefs.putUShort("impgap", impEndGapMs);
   prefs.putUChar("theme", uiTheme);
+  prefs.putUChar("snd", soundLevel);
+  prefs.putUChar("light", lightLevel);
+  prefs.putBool("dtcconn", dtcOnConnect);
   prefs.putString("lsel", liveSel);
   prefs.putString("lcat", liveCat);
   prefs.putString("code9", code9);

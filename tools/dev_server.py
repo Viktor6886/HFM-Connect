@@ -20,7 +20,8 @@ SET = {"break_ms": 177, "post_break_ms": 214, "byte_timeout_ms": 750, "ftdi_mode
        "impulse_enabled": False, "trace_capture": True, "battery_manual_confirm": False, "vehicle_idx": 2,
        "production_ym": 199301, "vin": "***", "mask_vin": True, "ap_ssid": "HFM Connect", "ap_default_pass": True,
        "sta_ssid": "", "imp_press_ms": 3000, "imp_end_gap_ms": 2500, "vbat_adc": False, "ui_theme": "auto",
-       "live_sel": "rpm,maf,o2_mv,lambda", "live_cat": "all", "code9": "", "wake_learned": True}
+       "live_sel": "rpm,maf,o2_mv,lambda", "live_cat": "all", "code9": "", "wake_learned": True,
+       "sound_level": 2, "light_level": 2, "dtc_on_connect": True, "buzzer_fitted": True, "led_fitted": True}
 STATE = {"live": False}
 
 PARAMS = [("rpm", "Обороты двигателя", "об/мин", 0, 0, 7000, 0, False, 600, 800),
@@ -147,7 +148,7 @@ class H(BaseHTTPRequestHandler):
             return self.send({"ok": True, "id": i})
         if u.path == "/api/settings":
             for k, v in f.items():
-                SET[k] = v if k in ("ui_theme", "live_sel", "live_cat", "code9", "sta_ssid") else SET.get(k)
+                SET[k] = v if k in ("ui_theme", "live_sel", "live_cat", "code9", "sta_ssid") else (int(v) if k in ("sound_level", "light_level") else SET.get(k))
             return self.send({"ok": True})
         self.send({"ok": True})
 

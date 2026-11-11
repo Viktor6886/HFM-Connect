@@ -28,6 +28,10 @@ struct Settings {
   // impulse thresholds
   uint16_t impPressMs = 3000;
   uint16_t impEndGapMs = 2500;
+  // Indication and behaviour
+  uint8_t soundLevel = 2;           // piezo: 0 off, 1 low, 2 medium, 3 high
+  uint8_t lightLevel = 2;           // RGB LED: 0 off, 1 low, 2 medium, 3 high
+  bool dtcOnConnect = true;         // read the fault memory after connecting
   // WebUI (stored on the device, not in the browser)
   uint8_t uiTheme = 0;              // 0 auto, 1 light, 2 dark
   char liveSel[72] = "rpm,maf,o2_mv,lambda";  // chart parameters, comma separated

@@ -378,6 +378,47 @@ void DiagEngine::afterResolve() {
     st_.livePlanVdo = (settings_->ecuFlags & ECU_F_PLAN_VDO) != 0 && settings_->experimentalReads;
 }
 
+static uint16_t decodeAll(const svc::FaultMemory& fm, const prof::EcuProfile& p, dtc::Decoded* out, uint16_t max);
+
+// Fault memory F1 (read only). A partial readout is never shown as "no faults".
+bool DiagEngine::readDtc(char* msg, size_t n) {
+  bool ext = st_.profile.caps[prof::F_DTC_EXTENDED].allowed;
+  svc::FaultMemory fm;
+  LinkStatus s = svc::readFaultMemory(*session_, fm, ext);
+  bool ok = fm.valid;
+  if (ok) {
+    lock();
+    st_.dtc.fm = fm;
+    st_.dtc.valid = true;
+    st_.dtc.tMs = millis();
+    st_.dtc.count = decodeAll(fm, st_.profile, st_.dtc.items, 48);
+    st_.dtc.inferred = dtc::inferBankMapping(st_.dtc.items, st_.dtc.count);
+    if (st_.dtc.count) snprintf(msg, n, "Память неисправностей прочитана: записей %u", st_.dtc.count);
+    else snprintf(msg, n, "Память неисправностей прочитана: записей нет");
+    unlock();
+    if (fm.extValid) featMark(prof::F_DTC_EXTENDED, true);
+  } else {
+    snprintf(msg, n, "Ошибка чтения памяти неисправностей (%s)", linkStatusCode(s));
+    recoverRead();
+  }
+  featMark(prof::F_DTC_READ, ok);
+  return ok;
+}
+
+// Optional read of the fault memory right after a connection (setting), so the
+// result is known (and signalled) without another tap. Not after an automatic
+// recovery when a readout of this ECU already exists.
+void DiagEngine::dtcAfterConnect(bool recovering) {
+  if (!settings_->dtcOnConnect || !session_->ready()) return;
+  lock();
+  bool allowed = st_.profile.caps[prof::F_DTC_READ].allowed;
+  bool have = st_.dtc.valid;
+  unlock();
+  if (!allowed || (recovering && have)) return;
+  char m[160];
+  readDtc(m, sizeof m);
+}
+
 bool DiagEngine::recoverRead() {
   if (!session_->resyncAllowed()) return false;
   bool ok = session_->resync() == LinkStatus::Ok;
@@ -461,6 +502,16 @@ void DiagEngine::execute(Job j, uint32_t arg, const char* text) {
       }
       doConnect(msg, sizeof msg, ok, 2);
       if (ok) doIdentify(msg, sizeof msg, ok);
+      if (ok && !session_->ready()) {
+        ok = false;
+        snprintf(msg, sizeof msg, "ЭБУ ответил, но связь прервалась после идентификации — восстанавливается автоматически");
+      }
+      if (ok) {
+        char keep[256];
+        strlcpy(keep, msg, sizeof keep);
+        dtcAfterConnect(false);
+        strlcpy(msg, keep, sizeof msg);
+      }
       break;
     case Job::Disconnect:
       userDisconnected_ = true;  // no auto-reconnect until "Connect" is pressed
@@ -479,25 +530,7 @@ void DiagEngine::execute(Job j, uint32_t arg, const char* text) {
     case Job::ReadDtc: {
       if (!ensureConnected(msg, sizeof msg)) { ok = false; break; }
       if (!can(prof::F_DTC_READ, msg, sizeof msg)) { ok = false; break; }
-      bool ext = st_.profile.caps[prof::F_DTC_EXTENDED].allowed;
-      svc::FaultMemory fm;
-      LinkStatus s = svc::readFaultMemory(*session_, fm, ext);
-      ok = fm.valid;
-      if (ok) {
-        lock();
-        st_.dtc.fm = fm;
-        st_.dtc.valid = true;
-        st_.dtc.tMs = millis();
-        st_.dtc.count = decodeAll(fm, st_.profile, st_.dtc.items, 48);
-        st_.dtc.inferred = dtc::inferBankMapping(st_.dtc.items, st_.dtc.count);
-        if (st_.dtc.count) snprintf(msg, sizeof msg, "Память неисправностей прочитана: записей %u", st_.dtc.count);
-        else snprintf(msg, sizeof msg, "Память неисправностей прочитана: записей нет");
-        unlock();
-        if (fm.extValid) featMark(prof::F_DTC_EXTENDED, true);
-      } else {
-        snprintf(msg, sizeof msg, "Ошибка чтения памяти неисправностей (%s)", linkStatusCode(s));
-      }
-      featMark(prof::F_DTC_READ, ok);
+      ok = readDtc(msg, sizeof msg);
       break;
     }
     case Job::ReadAdapt: {
@@ -851,6 +884,13 @@ void DiagEngine::keepAlive() {
 }
 
 void DiagEngine::purgeWatchdog() {
+  if (guard_.state() == guard::State::Prepared && st_.plan.ok && (int32_t)(millis() - st_.plan.expiresMs) > 0) {
+    guard_.cancel();  // confirmation window (20 s) passed without execution
+    lock();
+    st_.plan = guard_.plan();
+    unlock();
+    return;
+  }
   if (guard_.state() != guard::State::Active) return;
   uint32_t now = millis();
   bool timeoutOn = st_.purgeOn && now - st_.purgeOnSinceMs > 30000;
@@ -926,6 +966,14 @@ bool DiagEngine::adapterPresent() {
 
 void DiagEngine::maintainLink() {
   if (session_->ready() || !settings_->autoConnect || userDisconnected_) return;
+  if (guard_.state() == guard::State::Prepared) {
+    // A service plan prepared on the lost session is void (it would also block
+    // the recovery forever: the plan only expires when it is executed).
+    guard_.cancel();
+    lock();
+    st_.plan = guard_.plan();
+    unlock();
+  }
   if (guard_.state() != guard::State::Idle && guard_.state() != guard::State::FaultStop) return;
   if (!adapterPresent()) {
     char why[256];
@@ -959,6 +1007,7 @@ void DiagEngine::maintainLink() {
   bool ok = false;
   doConnect(msg, sizeof msg, ok, 1);
   if (ok) doIdentify(msg, sizeof msg, ok);
+  if (ok && session_->ready()) dtcAfterConnect(recovering);
   lock();
   st_.autoAttempts++;
   if (ok && session_->ready()) {
@@ -1012,6 +1061,9 @@ void DiagEngine::updateLink() {
   }
   st_.link = ph;
   strlcpy(st_.linkMsg, m, sizeof st_.linkMsg);
+  st_.faultStop = guard_.state() == guard::State::FaultStop;
+  st_.serviceActive = guard_.state() == guard::State::Executing || guard_.state() == guard::State::Active ||
+                      guard_.state() == guard::State::Restoring;
   unlock();
 }
 

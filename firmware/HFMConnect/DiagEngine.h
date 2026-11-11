@@ -90,6 +90,8 @@ struct EngineState {
   uint32_t recoverAttempts = 0;  // wake-ups since the link was lost
   uint32_t recoveries = 0;       // automatic reconnections after a loss
   uint32_t resyncs = 0;          // sessions resumed without a new BREAK
+  bool faultStop = false;        // ServiceGuard FAULT_STOP (indication)
+  bool serviceActive = false;    // a state-changing service operation is running
   SessionState session = SessionState::Disconnected;
   LinkStatus lastError = LinkStatus::Ok;
   uint32_t connectedAtMs = 0;
@@ -163,6 +165,8 @@ class DiagEngine {
   bool ensureConnected(char* msg, size_t n);
   void doConnect(char* msg, size_t n, bool& ok, uint8_t attempts = 0);
   void doIdentify(char* msg, size_t n, bool& ok);
+  bool readDtc(char* msg, size_t n);
+  void dtcAfterConnect(bool recovering);
   bool recoverRead();
   void afterResolve();
   void livePoll();

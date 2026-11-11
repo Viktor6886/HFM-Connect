@@ -15,6 +15,7 @@
 
 #include "Config.h"
 #include "DiagEngine.h"
+#include "Indicator.h"
 #include "NetManager.h"
 #include "Settings.h"
 #include "WebApi.h"
@@ -28,23 +29,16 @@
 #error "FTDI-адаптер: установите Инструменты -> USB Mode: Hardware CDC and JTAG (не USB-OTG/TinyUSB)"
 #endif
 
-static void ledColor(uint8_t r, uint8_t g, uint8_t b) {
-#if HFM_USE_RGB_LED && defined(RGB_BUILTIN)
-  rgbLedWrite(RGB_BUILTIN, r, g, b);
-#else
-  (void)r; (void)g; (void)b;
-#endif
-}
-
 void setup() {
   Serial.begin(HFM_SERIAL_BAUD);
   delay(200);
   Serial.printf("\n%s %s starting\n", HFM_FW_NAME, HFM_FW_VERSION);
-  ledColor(0, 0, 16);
 
   if (!LittleFS.begin(true)) Serial.println("LittleFS mount failed (recordings/reports disabled)");
   AppSettings.load();
   Engine.begin(&AppSettings);  // drives the K-Line TX idle HIGH as early as possible
+  indicatorSetLevels(AppSettings.soundLevel, AppSettings.lightLevel);
+  indicatorBegin();            // piezo + RGB LED follow the engine state (own task)
   netBegin();
   webBegin();
 
@@ -56,18 +50,5 @@ void loop() {
   netLoop();
   webLoop();
 
-  // Status LED: blue = idle, green = ECU session, yellow = live polling,
-  // red = session error.
-  static uint32_t lastLed = 0;
-  if (millis() - lastLed > 250) {
-    lastLed = millis();
-    Engine.lock();
-    SessionState s = Engine.state().session;
-    bool liveOn = Engine.state().liveActive;
-    Engine.unlock();
-    if (s == SessionState::Error) ledColor(24, 0, 0);
-    else if (s == SessionState::Ready) liveOn ? ledColor(16, 12, 0) : ledColor(0, 16, 0);
-    else ledColor(0, 0, 8);
-  }
   delay(2);
 }

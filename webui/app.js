@@ -711,6 +711,7 @@ const EXPECT = {
   camshaft: 'M104.995: < 2000 выкл, > 2000 вкл, > 4000 выкл'
 };
 const STALE_MS = 3000;
+const LEVELS = ['Выкл', 'Тихо', 'Средне', 'Громко'];
 
 R.live = async () => {
   if (!S.defs) S.defs = (await api('live?defs=1')).live.values;
@@ -1226,10 +1227,19 @@ R.settings = async () => {
     <div class="list">
       ${sw('experimental_reads', 'Экспериментальное чтение', 'Чтение у нераспознанных ЭБУ, Live Data варианта VDO, расширенные рецепты (скорость, нижний O2, CTP/T50), VIN F9, биты DTC 129–152. Уровень ГИП.')}
       ${sw('auto_connect', 'Автоподключение', 'Подключаться к ЭБУ автоматически и восстанавливать связь после обрыва')}
+      ${sw('dtc_on_connect', 'Читать ошибки при подключении', 'Сразу после подключения прочитать память неисправностей (только чтение) — результат виден и слышен без лишних нажатий')}
       ${sw('keep_alive', 'Keep-alive (F0:00)', 'Безопасное чтение раз в 0,7 с при простое')}
       ${sw('trace_capture', 'RAW журнал TX/RX', 'Кольцевой буфер в ОЗУ (1536 событий)')}
       ${sw('mask_vin', 'Скрывать VIN в отчётах', '')}
     </div>
+    <h2 class="section">Индикация</h2>
+    <div class="card pad">
+      <div class="small muted">Звук (пьезоизлучатель)${s.buzzer_fitted ? '' : ' — не задан в Config.h'}</div>
+      <div class="seg mt" id="sndSeg">${LEVELS.map((t, i) => `<button data-v="${i}" class="${s.sound_level === i ? 'on' : ''}">${t}</button>`).join('')}</div>
+      <div class="small muted mt2">Яркость светодиода${s.led_fitted ? '' : ' — внешний RGB не задан в Config.h'}</div>
+      <div class="seg mt" id="ledSeg">${LEVELS.map((t, i) => `<button data-v="${i}" class="${s.light_level === i ? 'on' : ''}">${t}</button>`).join('')}</div>
+      <div class="btns mt"><button class="btn sm sec" data-test="sound">Проверить звук</button><button class="btn sm sec" data-test="dtc">Звук «ошибки»</button><button class="btn sm sec" data-test="light">Проверить цвета</button></div>
+      <p class="small muted">Звуки: подключение — восходящий аккорд; восстановление — короткая трель вверх; отключение и обрыв — нисходящие; нет ошибок — арпеджио вверх; есть ошибки — двойное «динь-дон»; адаптер подключён/отключён — короткий щелчок. Цвета: синее дыхание — поиск ЭБУ, зелёный — на связи, бирюзовый со вспышками — опрос Live Data, двойная янтарная вспышка — в памяти есть ошибки, янтарное дыхание — восстановление, красное — нет адаптера / ошибка.</p></div>
     <h2 class="section">Сервисные операции</h2>
     <div class="list">
       ${sw('engineer_mode', 'Режим инженера', 'Разрешает карантинные рецепты РЕК только для эталонного ЭБУ 013 545 13 32 / 41-00. Дополнительно нужен ключ WRITE-EN.', true)}
@@ -1256,6 +1266,14 @@ R.settings = async () => {
       <input class="field mt" id="staPass" type="password" placeholder="Пароль">
       <button class="btn full mt" id="netSave">Сохранить сеть</button>
       <p class="small muted">Адрес: http://192.168.4.1/ или http://hfm.local/</p></div>`);
+  [['#sndSeg', 'sound_level'], ['#ledSeg', 'light_level']].forEach(([sel, key]) => document.querySelectorAll(sel + ' button').forEach(b => b.addEventListener('click', async () => {
+    document.querySelectorAll(sel + ' button').forEach(x => x.classList.toggle('on', x === b));
+    try { await post('settings', {[key]: b.dataset.v}); if (key === 'sound_level' && b.dataset.v !== '0') post('indicator/test', {what: 'sound'}).catch(() => {}); } catch (e) { toast(e.message, true); }
+  })));
+  document.querySelectorAll('[data-test]').forEach(b => b.addEventListener('click', () => {
+    const w = b.dataset.test;
+    post('indicator/test', w === 'dtc' ? {what: 'dtc', faults: 1} : {what: w}).catch(e => toast(e.message, true));
+  }));
   document.querySelectorAll('#thSeg button').forEach(b => b.addEventListener('click', async () => {
     applyTheme(b.dataset.t);
     document.querySelectorAll('#thSeg button').forEach(x => x.classList.toggle('on', x === b));

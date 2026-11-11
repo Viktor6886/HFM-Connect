@@ -43,6 +43,8 @@ ESP32-S3 с USB K-Line адаптером FTDI (USB-хост, по умолча�
 - Справочник карточек (D-030): `data/reference/hfm_reference.json` (импорт
   `tools/import_reference.py`), встраивается `build_webui.py` как `/ref.json`. Тексты кодов
   ядра — `dtc.csv`. Справочник не добавляет команд: новые адреса — только с источником.
+- Индикация (D-031): `Indicator` — своя задача, только читает `EngineState`; к K-Line не
+  обращается. Пищалка и светодиоды на разных таймерах LEDC (разная разрядность).
 - Коды DTC — по заводской карте варианта (`dtc::selectMap`), ремапы — по позиции (D-022).
 - Внешние библиотеки Arduino не добавлять (D-002). JSON — `JsonWriter`.
 - Главный файл прошивки: `firmware/HFMConnect/HFMConnect.ino`; модули — рядом (Arduino IDE).
