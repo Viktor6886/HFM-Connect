@@ -50,6 +50,20 @@ uint16_t applyRemaps(uint16_t pos, uint16_t code, const Variant& v) {
   return out;
 }
 
+const char* remapRule(uint16_t pos, const Variant& v) {
+  if (pos < 1 || pos > 152) return "";
+  const char* rule = "";
+  uint16_t c = kBase[pos - 1], n;
+  if (v.cylinders == 4 && (n = mapGet(kGroupO, pos, c)) != c) { c = n; rule = "GROUP_O"; }
+  if (v.diagRaw == 0x49 && v.manufacturer == 1 && v.cylinders != 4 && (n = mapGet(kDiag49BoschH, pos, c)) != c) {
+    c = n;
+    rule = "DIAG49_BOSCH_H";
+  }
+  if (v.diagRaw >= 0x49 && (n = mapGet(kDiag49Plus, pos, c)) != c) { c = n; rule = "DIAG49_PLUS"; }
+  if (v.diagRaw >= 0x50 && v.diagRaw <= 0x55 && (n = mapGet(kDiag50to55, pos, c)) != c) { c = n; rule = "DIAG50_55"; }
+  return rule;
+}
+
 const DtcVariantMap* selectMap(const Variant& v) {
   if (v.cylinders != 4 && v.cylinders != 6) return nullptr;
   char vend = v.manufacturer == 1 ? 'B' : 'V';

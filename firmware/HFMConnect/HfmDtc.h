@@ -42,6 +42,9 @@ uint16_t baseForPosition(uint16_t pos);
 // Generic positional overrides (REV 1.1 s.14) used when no factory map is
 // selected: tables are keyed by BIT POSITION (not by code), applied in order.
 uint16_t applyRemaps(uint16_t pos, uint16_t code, const Variant& v);
+// Id of the last remap rule that changed the code of this position ("" = none);
+// only relevant when no factory variant map applies.
+const char* remapRule(uint16_t pos, const Variant& v);
 // Catalog lookup (nullptr if not in the 163-entry catalog).
 const DtcCatalogEntry* lookup(uint16_t code);
 

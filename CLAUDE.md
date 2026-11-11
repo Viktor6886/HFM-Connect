@@ -40,6 +40,9 @@ ESP32-S3 с USB K-Line адаптером FTDI (USB-хост, по умолча�
 - Одно состояние связи для UI (`EngineState.link`), очередь заданий, статус задания по id
   (`GET /api/job?id=`). Настройки WebUI хранятся в NVS, не в браузере (D-029).
 - Просмотр WebUI без устройства: `python tools/dev_server.py 8080` (синтетические данные).
+- Справочник карточек (D-030): `data/reference/hfm_reference.json` (импорт
+  `tools/import_reference.py`), встраивается `build_webui.py` как `/ref.json`. Тексты кодов
+  ядра — `dtc.csv`. Справочник не добавляет команд: новые адреса — только с источником.
 - Коды DTC — по заводской карте варианта (`dtc::selectMap`), ремапы — по позиции (D-022).
 - Внешние библиотеки Arduino не добавлять (D-002). JSON — `JsonWriter`.
 - Главный файл прошивки: `firmware/HFMConnect/HFMConnect.ino`; модули — рядом (Arduino IDE).

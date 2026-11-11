@@ -136,13 +136,17 @@ static void writeDtc(JsonWriter& w, const EngineState& s) {
   // Effective bank orientation: the factory intermittent-fault rule observed
   // in this readout wins over the profile assumption.
   bool byRule = d.inferred != dtc::BankMapping::Unknown;
-  dtc::BankMapping eff = byRule ? d.inferred : s.profile.bankMapping;
-  const char* effConf = byRule ? "ZAV" : conf(s.profile.bankMappingConf);
+  // Banks are named current/stored only when proven for this readout (factory
+  // intermittent-fault rule) or by the reference profile (REK); a profile
+  // assumption (GIP) keeps the neutral names Bank A / Bank B (REV 1.2 E-06, C-01).
+  bool proven = byRule || s.profile.bankMappingConf == Confidence::REK;
+  dtc::BankMapping eff = byRule ? d.inferred : (proven ? s.profile.bankMapping : dtc::BankMapping::Unknown);
+  const char* effConf = byRule ? "ZAV" : (proven ? conf(s.profile.bankMappingConf) : "GIP");
   const char* effBasis =
       byRule ? "Определено по этому чтению: перемежающиеся неисправности бывают только в сохранённых (OEM 11/3)"
-             : (s.profile.bankMapping == dtc::BankMapping::Unknown
-                    ? "Назначение банков не определено"
-                    : "Предположение профиля; подтверждается автоматически при появлении перемежающейся неисправности");
+             : (proven ? "Профиль эталонного ЭБУ (РЕК)"
+                       : "Назначение банков для этого ЭБУ не подтверждено: показаны банки A и B. Определится "
+                         "автоматически, если в чтении появится перемежающаяся неисправность");
   bool m111 = vehicleIsM111();
   w.key("dtc").beginObject();
   w.kv("valid", d.valid);
@@ -169,11 +173,12 @@ static void writeDtc(JsonWriter& w, const EngineState& s) {
       w.kv("bit", (unsigned)x.bit).kv("pos", (unsigned)x.position);
       w.kv("base", (unsigned)x.baseCode).kv("code", (unsigned)x.code).kv("remapped", x.remapped);
       w.kv("map", x.mapId ? x.mapId : "GENERIC");
+      w.kv("rule", x.mapId ? "" : dtc::remapRule(x.position, s.profile.variant));
       const char* alt = m111 ? dtc::m111Text(x.code) : nullptr;
       if (x.entry) {
-        static const char* const srcNames[] = {"oem", "reference", "reconcile", "unverified", "app_label"};
+        static const char* const srcNames[] = {"oem", "reference", "reconcile", "unverified", "app_label", "candidate"};
         w.kv("text", alt ? alt : x.entry->ru).kv("text_en", x.entry->en);
-        w.kv("source", alt ? "oem_m111" : srcNames[x.entry->source < 5 ? x.entry->source : 3]);
+        w.kv("source", alt ? "oem_m111" : srcNames[x.entry->source < 6 ? x.entry->source : 3]);
         w.kv("intermittent", (x.entry->flags & DTC_F_INTERMITTENT) != 0);
         w.kv("not_w124", (x.entry->flags & DTC_F_NOT_W124) != 0);
       } else {
@@ -779,6 +784,13 @@ static void hReportSave() {
   sendSmall(w, ok ? 200 : 500);
 }
 
+// Reference catalogue (DTC cards, Live Data cards, scenarios): static, gzip.
+static void hRef() {
+  server.sendHeader("Content-Encoding", "gzip");
+  server.sendHeader("Cache-Control", "public, max-age=31536000, immutable");
+  server.send_P(200, "application/json; charset=utf-8", (const char*)WEBUI_REF_GZ, WEBUI_REF_GZ_LEN);
+}
+
 static void hIndex() {
   server.sendHeader("Content-Encoding", "gzip");
   server.sendHeader("Cache-Control", "no-cache");
@@ -803,6 +815,7 @@ static void hReboot() {
 void webBegin() {
   server.on("/", HTTP_GET, hIndex);
   server.on("/index.html", HTTP_GET, hIndex);
+  server.on("/ref.json", HTTP_GET, hRef);
   server.on("/api/status", HTTP_GET, hStatus);
   server.on("/api/usb", HTTP_GET, hUsb);
   server.on("/api/usb/reset", HTTP_POST, hUsbReset);

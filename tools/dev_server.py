@@ -8,6 +8,9 @@ from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
 
 WEB = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "webui")
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import build_webui  # noqa: E402  (reference catalogue exactly as embedded in the firmware)
+REF = build_webui.reference()
 PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 8080
 T0 = time.time()
 JOBS = {}
@@ -83,11 +86,11 @@ def ecu():
 
 
 def dtc():
-    return {"dtc": {"valid": True, "bank_mapping": "A_STORED_B_CURRENT", "bank_mapping_conf": "GIP", "bank_mapping_basis": "Предположение профиля",
-                    "m111_texts": False, "dtc_map": "B104", "cylinders": 6, "vendor": "B", "diag_raw": "40", "age_ms": 70000,
+    return {"dtc": {"valid": True, "bank_mapping": "UNKNOWN", "bank_mapping_conf": "GIP", "bank_mapping_basis": "Назначение банков для этого ЭБУ не подтверждено",
+                    "m111_texts": False, "dtc_map": "CB1E", "cylinders": 6, "vendor": "B", "diag_raw": "40", "age_ms": 70000,
                     "bank_a": "40 00 08 00 00 00 00 00 00 00 00 00 00 00 00 00", "bank_b": "40 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00", "ext_valid": False,
-                    "items": [{"bank": "stored", "index": "00", "bit": 6, "pos": 7, "base": 7, "code": 10, "remapped": False, "map": "B104", "text": "Датчик расхода воздуха", "source": "oem", "intermittent": False},
-                              {"bank": "current", "index": "10", "bit": 6, "pos": 7, "base": 7, "code": 10, "remapped": False, "map": "B104", "text": "Датчик расхода воздуха", "source": "oem", "intermittent": True}]}}
+                    "items": [{"bank": "bank_a", "index": "00", "bit": 6, "pos": 7, "base": 10, "code": 10, "remapped": False, "map": "CB1E", "rule": "", "text": "Датчик массового расхода воздуха: обрыв цепи.", "source": "oem", "intermittent": False},
+                              {"bank": "bank_b", "index": "17", "bit": 1, "pos": 58, "base": 75, "code": 75, "remapped": False, "map": "CB1E", "rule": "", "text": "Реле подогрева впуска PSV (K3/1): электрическая неисправность, характер не уточнён.", "source": "candidate", "intermittent": False}]}}
 
 
 class H(BaseHTTPRequestHandler):
@@ -109,7 +112,10 @@ class H(BaseHTTPRequestHandler):
         if p in ("/", "/index.html"):
             return self.send(open(os.path.join(WEB, "index.html"), "rb").read(), ctype="text/html; charset=utf-8")
         if p in ("/app.js", "/app.css"):
-            return self.send(open(os.path.join(WEB, p[1:]), "rb").read(), ctype="text/javascript" if p.endswith("js") else "text/css")
+            body = open(os.path.join(WEB, p[1:]), "rb").read().replace(b"__REF_VERSION__", b"dev")
+            return self.send(body, ctype="text/javascript" if p.endswith("js") else "text/css")
+        if p == "/ref.json":
+            return self.send(REF)
         api = {"/api/status": status, "/api/ecu": ecu, "/api/dtc": dtc, "/api/settings": lambda: SET,
                "/api/services": lambda: {"services": {"interlock": False, "ops": [{"id": "purge_test", "name": "Тест Y58/1", "allowed": False, "conf": "BLOCK", "reason": "Заблокировано"}], "last_result": "", "purge_on": False, "battery_manual_confirm": False, "plan": {}}},
                "/api/vehicles": lambda: {"vehicles": [{"idx": 2, "chassis": "W124", "model": "124.032", "name": "E320", "engine": "104.992", "from": "09/1992", "to": "02/1994", "gen": "EARLY_AUTO", "gen_name": "HFM 3.4 ранний", "norms": "M104_HFM34_EARLY", "connector": "W124_X11_4_16", "dm": "", "conf": "ZAV", "source": "I07"}], "connectors": [], "norms": []},

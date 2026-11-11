@@ -70,6 +70,21 @@ def main() -> int:
     missing = sorted({c for m in vm.values() for c in m["positions"] if c and c not in codes})
     if missing:
         print("variant map codes missing in catalog:", missing)
+    # reference catalogue (WebUI cards): same codes as the catalogue, live keys known to the firmware
+    ref = json.loads((ROOT / "data" / "reference" / "hfm_reference.json").read_text(encoding="utf-8"))
+    if {int(c) for c in ref["dtc"]} != codes:
+        print("reference DTC codes differ from dtc.csv")
+        bad += 1
+    live_src = (FW / "HfmLive.cpp").read_text(encoding="utf-8")
+    keys = set(re.findall(r'\{"([a-z0-9_]+)", "', live_src)) | {"adapt_idle", "adapt_lower", "adapt_upper"}
+    unknown = sorted({x["key"] for x in ref["live"]} - keys)
+    if unknown:
+        print("reference live keys unknown to the firmware:", unknown)
+        bad += 1
+    groups = {"M104_HFM34_EARLY", "M104_HFM34_CODED", "M111_961", "M104_995_HFM41"}
+    if any(n["group"] not in groups for n in ref["norms"]):
+        print("reference norm with unknown group")
+        bad += 1
     print("tables OK" if not bad else f"{bad} mismatch(es)")
     return 1 if bad else 0
 

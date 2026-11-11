@@ -54,6 +54,27 @@ TEST(dtc_remaps_are_positional) {
   CHECK_EQ(dtc::applyRemaps(51, dtc::baseForPosition(51), v), dtc::baseForPosition(51));
 }
 
+TEST(dtc_remap_rule_and_reference_texts) {
+  dtc::Variant v;
+  v.cylinders = 4;
+  CHECK_STR(dtc::remapRule(51, v), "GROUP_O");      // 4-cyl: position 51 -> 055
+  CHECK_EQ(dtc::applyRemaps(51, dtc::baseForPosition(51), v), 55);
+  v.cylinders = 6;
+  CHECK_STR(dtc::remapRule(51, v), "");
+  v.diagRaw = 0x52;
+  v.cylinders = 0;
+  bool any = false;
+  for (uint16_t p = 1; p <= 152; p++)
+    if (dtc::remapRule(p, v)[0]) any = true;
+  CHECK(any);  // diag 50..55 rules apply without a factory map
+  // Reference package 2026-11-11: factory meanings for 107/117, HHT candidates.
+  const DtcCatalogEntry* e = dtc::lookup(107);
+  CHECK(e && e->source == DTC_SRC_OEM);
+  e = dtc::lookup(75);
+  CHECK(e && e->source == DTC_SRC_CANDIDATE);
+  CHECK(std::string(e->ru).find("K3/1") != std::string::npos);
+}
+
 TEST(dtc_factory_map_selection) {
   dtc::Variant v;
   CHECK(dtc::selectMap(v) == nullptr);  // cylinders unknown

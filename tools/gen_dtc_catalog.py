@@ -20,6 +20,7 @@ STATUS = {
     "reconciliation_required": "DTC_SRC_RECONCILE",
     "unverified": "DTC_SRC_UNVERIFIED",
     "application_label": "DTC_SRC_APP_LABEL",
+    "hht_candidate": "DTC_SRC_CANDIDATE",  # text from factory tester context rules, not ECU-verified
 }
 
 
@@ -69,7 +70,8 @@ def main() -> int:
         "#pragma once",
         "#include <stdint.h>",
         "",
-        "enum DtcSource : uint8_t { DTC_SRC_OEM, DTC_SRC_REFERENCE, DTC_SRC_RECONCILE, DTC_SRC_UNVERIFIED, DTC_SRC_APP_LABEL };",
+        "enum DtcSource : uint8_t { DTC_SRC_OEM, DTC_SRC_REFERENCE, DTC_SRC_RECONCILE, DTC_SRC_UNVERIFIED, DTC_SRC_APP_LABEL,",
+        "                           DTC_SRC_CANDIDATE };",
         "enum DtcFlags : uint8_t { DTC_F_NONE = 0, DTC_F_INTERMITTENT = 1, DTC_F_NOT_W124 = 2 };",
         "",
         "struct DtcCatalogEntry {",

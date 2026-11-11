@@ -116,6 +116,8 @@ const I = {
   flag: '<path d="M5 21V4M5 4h11l-2 4 2 4H5"/>',
   doc: '<path d="M6 2h9l5 5v15H6zM14 2v6h6M9 13h8M9 17h8"/>',
   gear: '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/>',
+  book: '<path d="M4 4h6a3 3 0 0 1 3 3v13a2 2 0 0 0-2-2H4zM20 4h-6a3 3 0 0 0-3 3v13a2 2 0 0 1 2-2h7z"/>',
+  pulse: '<path d="M3 12h4l2-5 4 10 2-5h6"/><circle cx="12" cy="12" r="10"/>',
   more: '<circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/>'
 };
 const svg = n => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${I[n]}</svg>`;
@@ -129,6 +131,8 @@ const PAGES = [
   {id: 'live', title: 'Live Data', icon: 'wave', color: '#ff9500'},
   {id: 'adapt', title: 'Адаптации', icon: 'sliders', color: '#af52de'},
   {id: 'actuators', title: 'Исполнительные тесты', icon: 'bolt', color: '#ff2d55'},
+  {id: 'guide', title: 'Диагностика по симптомам', icon: 'pulse', color: '#ff2d55'},
+  {id: 'codes', title: 'Справочник кодов', icon: 'book', color: '#5856d6'},
   {id: 'commission', title: 'Ввод в эксплуатацию', icon: 'flag', color: '#34c759'},
   {id: 'reports', title: 'Отчёты', icon: 'doc', color: '#8e8e93'},
   {id: 'settings', title: 'Настройки', icon: 'gear', color: '#8e8e93'}
@@ -140,6 +144,171 @@ const S = {status: null, ecu: null, dtc: null, live: null, defs: null, vehicles:
   hist: {}, sel: LS.get('liveSel', ['rpm', 'maf', 'o2_mv', 'lambda']), cat: LS.get('liveCat', 'all'), freeze: false,
   traceLast: 0, page: 'home', timers: [], token: 0};
 const NET = {fails: 0, online: true};
+
+// ---------------------------------------------------------------- reference catalogue (/ref.json)
+// Built from data/reference/hfm_reference.json by tools/build_webui.py; static, cached by version.
+const REF_VERSION = '__REF_VERSION__';
+let refP = null;
+function getRef() {
+  if (!refP) {
+    refP = fetch('/ref.json?v=' + REF_VERSION, {cache: 'force-cache'}).then(r => {
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r.json();
+    }).catch(e => { refP = null; throw e; });
+  }
+  return refP;
+}
+const LVL = {ZAV: 'ZAV', REK: 'REK', GIP: 'GIP'};
+const DEF_STATUS = {
+  DOCUMENTED_CATALOG_TEXT: 'Текст каталога REV 1.1 (реконструкция)',
+  FACTORY_DOCUMENTED_GENERIC_COMPONENT: 'Заводское руководство: компонент',
+  FACTORY_DOCUMENTED_MEANING: 'Заводское руководство: значение кода',
+  HHT_CONTEXT_RECONSTRUCTED_NOT_ECU_VERIFIED: 'Предварительная расшифровка по контекстному правилу заводского тестера HHT'
+};
+const MAP_DIAG = {lt_I: "diag < 'I'", I_to_P: "'I' ≤ diag < 'P'", ge_I: "diag ≥ 'I'", ge_P: "diag ≥ 'P'"};
+const mapText = (ref, id) => {
+  const m = ref && ref.maps[id];
+  return m ? `${id} (${m.cyl} цил., ${m.vendor.split('').map(v => v === 'B' ? 'Bosch' : 'VDO').join('/')}, ${MAP_DIAG[m.diag] || m.diag})` : id;
+};
+
+// ---------------------------------------------------------------- expandable cards
+// A small "карточка …" link under an item toggles a card right below it. Cards are
+// closed by default; the open ones are remembered while the page is re-rendered.
+const CARDS = {};
+S.open = new Set();
+function xcard(id, label, body) {
+  CARDS[id] = body;
+  const open = S.open.has(id);
+  let inner = '';
+  if (open) { try { inner = body(); } catch (e) { inner = ''; } }
+  return `<button type="button" class="xlink${open ? ' on' : ''}" data-x="${esc(id)}">${esc(label)}</button>` +
+    `<div class="xcard${open ? ' open' : ''}" data-xb="${esc(id)}"><div><div class="xin">${inner}</div></div></div>`;
+}
+function xsec(title, html) { return html ? `<h4>${esc(title)}</h4><div>${html}</div>` : ''; }
+function xtext(s) { return s ? `<p>${esc(s)}</p>` : ''; }
+document.addEventListener('click', e => {
+  const b = e.target.closest('.xlink');
+  if (!b) return;
+  // Only the small link opens the card; the row / tile itself keeps its own action.
+  e.stopPropagation();
+  e.preventDefault();
+  const id = b.dataset.x;
+  const box = b.parentElement.querySelector(`.xcard[data-xb="${CSS.escape(id)}"]`);
+  if (!box) return;
+  const open = !box.classList.contains('open');
+  if (open) {
+    S.open.add(id);
+    try { box.querySelector('.xin').innerHTML = (CARDS[id] || (() => ''))(); } catch (x) {}
+  } else {
+    S.open.delete(id);
+  }
+  box.classList.toggle('open', open);
+  b.classList.toggle('on', open);
+  const t = b.closest('.tile');
+  if (t) t.classList.toggle('open', open);
+}, true);
+
+// ---- DTC card
+function dtcCard(x, d) {
+  const ref = S.ref, r = ref && ref.dtc[x.code];
+  if (!ref) return '<p class="muted">Справочник загружается…</p>';
+  if (!r) return `<p>Кода ${esc(x.code)} нет в справочнике: показан исходный бит без расшифровки (правило: не придумывать описание).</p>`;
+  const badges = `${badge(LVL[r.lvl] || 'GIP')}${r.st === 'HHT_CONTEXT_RECONSTRUCTED_NOT_ECU_VERIFIED' ? '<span class="badge b-GIP">предварительно</span>' : ''}<span class="badge b-gray">на ЭБУ не проверено</span>`;
+  let applic = '';
+  if (d) {
+    if (!d.dtc_map || d.dtc_map === 'GENERIC') applic = 'Карта варианта не выбрана (не известно число цилиндров — выберите автомобиль): код получен по базовой таблице позиций' + (x.rule ? `, применено правило ремапа ${x.rule}` : '') + '.';
+    else if (r.maps.includes(d.dtc_map)) applic = `Код входит в заводскую карту вашего варианта: ${mapText(ref, d.dtc_map)}.`;
+    else applic = `В заводской карте вашего варианта (${mapText(ref, d.dtc_map)}) этого кода нет.`;
+  }
+  const chain = x.pos ? `F1 ${esc(x.index)}, бит ${x.bit} → позиция ${x.pos} → ${x.map && x.map !== 'GENERIC' ? 'карта ' + esc(x.map) : 'базовая таблица' + (x.rule ? ' → ремап ' + esc(x.rule) : '')} → код ${String(x.code).padStart(3, '0')}` : '';
+  const rules = (r.r || []).map(n => ref.hht_rules[n] ? `<div class="small"><b>№${n}</b> ${esc(ref.hht_rules[n].comp)} · ${esc(ref.hht_rules[n].en)}</div>` : '').join('');
+  return `<div class="flex wrap">${badges}</div>
+    ${xsec('Расшифровка', xtext(r.t))}
+    ${r.w ? `<div class="note warn small mt">${esc(r.w)}</div>` : ''}
+    ${xsec('Возможные причины', xtext(r.c))}
+    ${xsec('Порядок проверки', xtext(r.k))}
+    ${xsec('Проявления: что наблюдать в Live Data', r.o ? xtext(r.o) + `<button class="btn sm sec mt" onclick="go('live')">Открыть Live Data</button>` : '')}
+    ${xsec('Применимость к вашему ЭБУ', xtext(applic) + (r.maps.length ? `<p class="small muted">Код есть в картах: ${r.maps.map(m => esc(mapText(ref, m))).join(', ')}.</p>` : '<p class="small muted">Код не входит ни в одну заводскую карту вариантов.</p>'))}
+    ${xsec('Цепочка декодирования', chain ? `<p class="mono">${chain}</p>` : '')}
+    ${xsec('Контекстные правила HHT (исходный текст)', rules ? rules + '<p class="small muted">Символы «-//-», «⌐¬» — артефакты источника, не указание полярности.</p>' : '')}
+    ${xsec('Источник и достоверность', `<p class="small">${esc(DEF_STATUS[r.st] || r.st)}. ${esc(r.ev)}</p><p class="small muted">${esc(r.app)}</p>`)}`;
+}
+
+// ---- Live Data parameter card
+const ROUTE = {native_group: 'нативная группа full8', hht_control_recipe: 'рецепт заводского тестера', hht_experimental_recipe: 'расширенный рецепт заводского тестера'};
+function paramCard(k) {
+  const ref = S.ref;
+  if (!ref) return '<p class="muted">Справочник загружается…</p>';
+  const defs = Object.fromEntries((S.defs || []).map(d => [d.k, d]));
+  const d = defs[k] || {};
+  const es = ref.live.filter(e => e.key === k);
+  const p = es[0] || {};
+  const st = S.status, veh = st && st.vehicle;
+  const normKey = k === 'adapt_lower' || k === 'adapt_upper' ? 'adapt_mult' : k;
+  const norms = ref.norms.filter(n => n.key === normKey || (k === 'adapt_idle' && n.key === 'adapt_idle_vdo'));
+  const ng = veh && veh.norms;
+  const L = S.live, plan = L && L.plan;
+  const normRows = norms.length ? `<table class="kv">${norms.map(n => `<tr${n.group === ng ? ' class="cur"' : ''}><td>${esc(n.profile)}</td><td>${esc(n.range)} ${esc(n.unit)}<div class="small muted">${esc(n.cond)} · ${esc(n.src)}</div></td></tr>`).join('')}</table>
+    <p class="small muted">${ng ? 'Выделена строка вашего двигателя.' : 'Выберите автомобиль, чтобы применялась норма вашего двигателя.'} Нормы действуют только при указанных условиях.</p>` : '<p class="small muted">Заводской нормы для этого параметра нет: отклонение не подсвечивается.</p>';
+  const routes = es.map(e => `<div class="small mt"><b>${esc(ROUTE[e.route] || e.route)}</b> · ${esc(e.cmd)} · ${esc(e.sel)}<div class="mono">${esc(e.f)}${e.unit ? ' [' + esc(e.unit) + ']' : ''}</div><div class="muted">${esc(e.status)} · ${esc(e.ref)}${e.conflict ? ' · ' + esc(e.conflict) : ''}</div></div>`).join('');
+  const sel = S.sel.includes(k);
+  return `<div class="flex wrap">${badge(d.conf || 'GIP')}<span class="badge b-gray">на ЭБУ не проверено</span></div>
+    <div class="pnow" data-pk="${esc(k)}">${paramNow(k)}</div>
+    ${xsec('Что означает', xtext(p.mean))}
+    ${xsec('Ожидаемое поведение', xtext(p.exp))}
+    ${xsec('Причины отклонений', xtext(p.bad))}
+    ${xsec('Заводские нормы', normRows)}
+    ${xsec('Как читает устройство', `<p class="small">${esc(d.src || '')} · <span class="mono">${esc(d.formula || '')}</span>${plan === 'vdo' ? '<br>Ваш ЭБУ опрашивается по плану VDO (12/22/23): масштаб VDO не подтверждён, преобразование как у Bosch.' : ''}</p>`)}
+    ${xsec('Способы получения в источниках', routes)}
+    <div class="btns mt"><button class="btn sm sec" data-chart="${esc(k)}">${sel ? 'Убрать с графика' : 'Показать на графике'}</button></div>`;
+}
+function paramNow(k) {
+  if (k.startsWith('adapt_')) return '';
+  const L = S.live, v = L && L.values.find(x => x.k === k);
+  const d = (S.defs || []).find(x => x.k === k) || {};
+  if (!v || v.v == null) return '<p class="small muted">Сейчас: нет значения (опрос не запущен или параметр не читается у этого ЭБУ).</p>';
+  const val = d.bool ? (v.v ? 'ВКЛ' : 'выкл') : fmt(v.v, d.dec) + ' ' + (d.unit || '');
+  const stale = !(L.age_ms < STALE_MS);
+  const p = S.ref && S.ref.live.find(e => e.key === k);
+  let t;
+  if (stale) t = `Сейчас: ${esc(val)} — данные устарели (${esc(ago(L.age_ms))}), оценка не выполняется.`;
+  else if (v.norm === 'BELOW' || v.norm === 'ABOVE') t = `<b style="color:var(--red)">Сейчас: ${esc(val)} — ${v.norm === 'BELOW' ? 'ниже' : 'выше'} нормы ${fmt(v.lo, d.dec)}…${fmt(v.hi, d.dec)}.</b>${p && p.bad ? ' Возможные причины: ' + esc(p.bad) : ''}`;
+  else if (v.norm === 'IN_SPEC') t = `Сейчас: ${esc(val)} — в норме.`;
+  else if (v.norm === 'NOT_APPLICABLE') t = `Сейчас: ${esc(val)} — условия проверки нормы не выполнены (${esc(v.nnote || 'прогретый ХХ')}).`;
+  else t = `Сейчас: ${esc(val)}.`;
+  return `<p class="small">${t}</p>`;
+}
+document.addEventListener('click', e => {
+  const b = e.target.closest('[data-chart]');
+  if (!b) return;
+  e.stopPropagation();
+  const k = b.dataset.chart, i = S.sel.indexOf(k);
+  if (i >= 0) S.sel.splice(i, 1); else { S.sel.push(k); if (S.sel.length > 4) S.sel.shift(); }
+  b.textContent = S.sel.includes(k) ? 'Убрать с графика' : 'Показать на графике';
+  saveLiveSel();
+  if (typeof renderLive === 'function') renderLive();
+}, true);
+
+// ---- transport (HFM Connect) error card for the current link problem
+function transportId(s) {
+  if (!s || s.link === 'ready' || s.link === 'paused' || s.link === 'idle') return '';
+  if (s.link === 'no_adapter') return 'HFM-TR-001';
+  const w = s.adapter && s.adapter.wake && s.adapter.wake.last;
+  switch (s.last_error) {
+    case 'NO_SYNC': return w && w.echo ? 'HFM-TR-005' : 'HFM-TR-004';
+    case 'BAD_ACK': return 'HFM-TR-006';
+    case 'ECHO_MISMATCH': return 'HFM-TR-007';
+    case 'TIMEOUT': return s.recoveries || s.link === 'recovering' ? 'HFM-TR-011' : 'HFM-TR-008';
+    case 'LINK_DOWN': return 'HFM-TR-002';
+    default: return '';
+  }
+}
+function transportCard(id) {
+  const t = S.ref && S.ref.transport.find(x => x.id === id);
+  if (!t) return '';
+  return xcard('tr-' + id, 'карточка ошибки', () => `<div class="flex wrap"><span class="badge b-gray">${esc(t.id)}</span><span class="badge b-gray">ошибка HFM Connect, не код ЭБУ</span></div>
+    ${xsec('Что произошло', xtext(t.t))}${xsec('Возможные причины', xtext(t.c))}${xsec('Что проверить', xtext(t.k))}`);
+}
 
 // ---------------------------------------------------------------- theme
 function applyTheme(t) {
@@ -403,7 +572,8 @@ R.connect = () => {
     setHTML('#connBtns', s.link === 'ready'
       ? `<button class="btn sec" onclick="job('identify',{},this)">Повторить идентификацию</button><button class="btn red" onclick="job('disconnect',{},this)">Отключить</button>`
       : `<button class="btn full" onclick="job('connect',{},this)">Подключить</button>`);
-    setHTML('#connMsg', s.link !== 'ready' && s.link_text ? esc(s.link_text) : '');
+    const tid = transportId(s);
+    setHTML('#connMsg', (s.link !== 'ready' && s.link_text ? esc(s.link_text) : '') + (tid && S.ref ? '<div>' + transportCard(tid) + '</div>' : ''));
     const a = s.adapter || {};
     setHTML('#linkBox', kvTable([
       ['Адаптер', a.present ? (a.chip || 'K-Line') : 'не обнаружен'],
@@ -483,10 +653,20 @@ R.ecu = async () => {
 // ---- fault memory
 R.dtc = async () => {
   page('Ошибки', `<div class="btns"><button class="btn" id="rdBtn">Прочитать память неисправностей</button><button class="btn red" id="clrBtn">Стереть…</button></div><div id="dtcBox" class="mt"></div>`);
+  try { S.ref = await getRef(); } catch (e) {}
   const render = async () => {
     const d = (await api('dtc')).dtc;
     S.dtc = d;
     if (!$('#dtcBox')) return;
+    if (d.valid) {
+      // Codes that were not in the previous readout are marked «новая».
+      const t = Date.now() - d.age_ms, keys = new Set(d.items.map(x => x.code + '-' + x.pos));
+      if (!S.dtcCur || Math.abs(S.dtcCur.t - t) > 3000) {
+        S.dtcPrev = S.dtcCur;
+        S.dtcCur = {t, keys};
+        S.dtcNew = S.dtcPrev ? new Set([...keys].filter(k => !S.dtcPrev.keys.has(k))) : new Set();
+      }
+    }
     if (!d.valid) { setHTML('#dtcBox', '<div class="note">Память неисправностей ещё не прочитана.</div>'); return; }
     const names = {stored: 'Сохранённые', current: 'Текущие', bank_a: 'Банк A (F1 00–0F)', bank_b: 'Банк B (F1 10–1F)'};
     const groups = {};
@@ -496,12 +676,12 @@ R.dtc = async () => {
     const grid = (title, hex) => `<div class="mt"><div class="small muted">${title}</div><div class="hex">${hex}</div></div>`;
     setHTML('#dtcBox', `
       <div class="small muted">Прочитано ${agoMin(d.age_ms)} · записей: ${d.items.length}</div>
-      <div class="note mt ${d.bank_mapping === 'UNKNOWN' ? 'warn' : 'info'}">Банки F1: <b>${esc({A_STORED_B_CURRENT: 'A = сохранённые, B = текущие', A_CURRENT_B_STORED: 'A = текущие, B = сохранённые', UNKNOWN: 'не определены (Банк A/B)'}[d.bank_mapping] || d.bank_mapping)}</b> ${badge(d.bank_mapping_conf)}<br><span class="small">${esc(d.bank_mapping_basis || '')}</span></div>
+      <div class="note mt info">Банки F1: <b>${esc({A_STORED_B_CURRENT: 'A = сохранённые, B = текущие', A_CURRENT_B_STORED: 'A = текущие, B = сохранённые', UNKNOWN: 'не определены (Банк A/B)'}[d.bank_mapping] || d.bank_mapping)}</b> ${badge(d.bank_mapping_conf)}<br><span class="small">${esc(d.bank_mapping_basis || '')}</span></div>
       ${groups.current ? '<div class="note mt small">Текущие неисправности имеют смысл только при включённом зажигании и <b>работающем</b> двигателе; при неработающем двигателе часть из них появляется закономерно.</div>' : ''}
       ${d.dtc_map === 'GENERIC' ? '<div class="note mt small warn">Выберите автомобиль в разделе «Автомобили», чтобы применить заводскую карту кодов для 4/6 цилиндров.</div>' : ''}
       ${d.m111_texts ? '<div class="note mt small">Тексты кодов 045–069/093–096 показаны по заводской таблице Engine 111 (4 цилиндра).</div>' : ''}
       ${d.items.length === 0 ? '<div class="card pad mt"><b style="color:var(--green)">Неисправностей нет.</b><p class="small muted" style="margin:6px 0 0">Отсутствие записей не доказывает исправность системы — проверьте также Live Data и модуль DM (отдельно).</p></div>' : ''}
-      ${order.map(k => `<h2 class="section">${names[k]} · ${groups[k].length}</h2><div class="list">${groups[k].map(dtcRow).join('')}</div>`).join('')}
+      ${order.map(k => `<h2 class="section">${names[k]} · ${groups[k].length}</h2><div class="list">${groups[k].map(x => dtcRow(x, d)).join('')}</div>`).join('')}
       ${ints.length ? `<p class="foot">Периодические (перемежающийся контакт) отмечены оранжевым: ${ints.length}. По OEM они фиксируются при 5 появлениях за поездку.</p>` : ''}
       <h2 class="section">RAW битовая карта</h2>
       <div class="card pad">${grid('F1 00–0F (банк A)', esc(d.bank_a))}${grid('F1 10–1F (банк B)', esc(d.bank_b))}${d.ext_valid ? grid('F1 30–32 / 40–42 (эксп.)', esc(d.ext)) : ''}
@@ -514,9 +694,13 @@ R.dtc = async () => {
   loop(render, 4000);
 };
 
-function dtcRow(x) {
+const SRC_NAME = {oem: 'заводской текст', reference: 'справочный текст', reconcile: 'требует сверки', unverified: 'не подтверждён',
+  app_label: 'метка приложения', candidate: 'предварительно (HHT)', oem_m111: 'заводской текст M111', unknown: 'вне каталога'};
+function dtcRow(x, d, withCard = true) {
+  const isNew = withCard && S.dtcNew && S.dtcNew.has(x.code + '-' + x.pos);
   return `<div class="dtc"><div class="code ${x.intermittent ? 'int' : ''}">${x.code ? String(x.code).padStart(3, '0') : '—'}</div>
-    <div class="grow"><div>${esc(x.text)}</div><div class="small muted">бит ${x.pos} (F1 ${x.index}, b${x.bit})${x.remapped ? ` · базовый ${x.base}→${x.code || '—'}` : ''}${x.map ? ' · карта ' + esc(x.map) : ''} · ${esc(x.source)}${x.not_w124 ? ' · не для W124' : ''}</div></div></div>`;
+    <div class="grow"><div>${esc(x.text)}${isNew ? ' <span class="badge b-BLOCK">новая</span>' : ''}</div><div class="small muted">бит ${x.pos} (F1 ${x.index}, b${x.bit})${x.remapped ? ` · базовый ${x.base}→${x.code || '—'}` : ''}${x.rule ? ' · ремап ' + esc(x.rule) : ''}${x.map && x.map !== 'GENERIC' ? ' · карта ' + esc(x.map) : ''} · ${esc(SRC_NAME[x.source] || x.source)}${x.not_w124 ? ' · не для W124' : ''}</div>
+    ${withCard && x.code ? xcard('d-' + x.code + '-' + x.pos, 'карточка ошибки', () => dtcCard(x, d)) : ''}</div></div>`;
 }
 
 // ---- Live Data
@@ -530,6 +714,7 @@ const STALE_MS = 3000;
 
 R.live = async () => {
   if (!S.defs) S.defs = (await api('live?defs=1')).live.values;
+  try { S.ref = await getRef(); } catch (e) {}
   try { await loadSettings(); } catch (e) {}
   const cats = [['all', 'Все'], ['0', 'Базовые'], ['1', 'Смесь'], ['2', 'Зажигание'], ['3', 'Дроссель'], ['4', 'Статусы'], ['5', 'Расширенные']];
   page('Live Data', `
@@ -538,6 +723,7 @@ R.live = async () => {
     <div class="card pad mt"><canvas class="chart" id="chart"></canvas><div class="small muted" id="chartLegend"></div></div>
     <div class="mt" id="catBox">${cats.map(c => `<button class="chip ${S.cat === c[0] ? 'on' : ''}" data-cat="${c[0]}">${c[1]}</button>`).join('')}</div>
     <div class="grid auto" id="tiles"></div>
+    <h2 class="section">Заводские нормы, которые устройство не читает</h2><div class="card pad" id="extraNorms"></div>
     <h2 class="section">RAW группы опроса</h2><div class="card pad" id="rawBox"></div>
     <p class="foot">Отклонение от нормы подсвечивается только при выполненных условиях проверки (ОЖ > 80 °C, обороты ХХ) и достоверном чтении. При обрыве/КЗ датчиков ОЖ, IAT и HFM ЭБУ подставляет замещающее значение — неисправность видна только в памяти DTC (OEM 11/3). Нажмите на карточку, чтобы добавить параметр на график (до 4).</p>`);
   try { if (!S.dtc) S.dtc = (await api('dtc')).dtc; } catch (e) {}
@@ -549,6 +735,7 @@ R.live = async () => {
     renderLive();
   }));
   $('#tiles').addEventListener('click', e => {
+    if (e.target.closest('.xcard')) return;  // inside an open parameter card
     const t = e.target.closest('.tile');
     if (!t) return;
     const k = t.dataset.k, i = S.sel.indexOf(k);
@@ -611,7 +798,7 @@ function renderLive() {
   const box = $('#tiles');
   const keys = tiles.map(v => v.k).join(',');
   if (S.tileKeys !== keys) {
-    box.innerHTML = tiles.map(v => `<div class="tile" data-k="${v.k}"></div>`).join('');
+    box.innerHTML = tiles.map(v => `<div class="tile${S.open.has('p-' + v.k) ? ' open' : ''}" data-k="${v.k}"><div class="tl"></div>${xcard('p-' + v.k, 'карточка параметра', () => paramCard(v.k))}</div>`).join('');
     box._h = null;
     S.tileKeys = keys;
   }
@@ -621,10 +808,18 @@ function renderLive() {
     if (!el) return;
     const d = defs[v.k];
     const alarm = !stale && (v.norm === 'BELOW' || v.norm === 'ABOVE');
-    el.className = 'tile ' + v.norm + (alarm ? ' alarm' : '') + (S.sel.includes(v.k) ? ' sel' : '');
+    const open = S.open.has('p-' + v.k);
+    el.className = 'tile ' + v.norm + (alarm ? ' alarm' : '') + (S.sel.includes(v.k) ? ' sel' : '') + (open ? ' open' : '');
     el.title = d.src + ': ' + d.formula + (v.nnote ? '\n' + v.nnote + ' [' + v.nsrc + ']' : '');
-    setHTML(el, tileInner(v, d, subst[v.k] && subst[v.k].some(x => dcodes.includes(x))));
+    setHTML(el.querySelector('.tl'), tileInner(v, d, subst[v.k] && subst[v.k].some(x => dcodes.includes(x))));
+    if (open) setHTML(el.querySelector('.pnow'), paramNow(v.k));
   });
+  if (S.ref) {
+    const ng = st && st.vehicle && st.vehicle.norms;
+    const rows = S.ref.norms.filter(n => ['maf_voltage', 'purge_duty', 'oil_temp'].includes(n.key) && (!ng || n.group === ng));
+    setHTML('#extraNorms', rows.length ? kvTable(rows.map(n => [n.param, `${esc(n.range)} ${esc(n.unit)} <span class="small muted">· ${esc(n.cond)} · ${esc(n.profile)} · ${esc(n.src)}</span>`, true])) + '<p class="small muted">Эти величины показывает заводской тестер; адрес и формула для их чтения по K-Line не подтверждены, поэтому устройство их не опрашивает.</p>'
+      : `<p class="small muted" style="margin:0">${ng ? 'Для вашего двигателя таких норм в справочнике нет.' : 'Выберите автомобиль, чтобы увидеть нормы вашего двигателя.'}</p>`);
+  }
   setHTML('#rawBox', `<div class="small muted">План опроса: ${L.plan === 'vdo' ? 'VDO (12/22/23)' : 'Bosch full8 (20/21)'}</div><table class="kv">${L.groups.map(g => `<tr><td>${g.name} <span class="muted">${g.prefix}</span></td><td class="hex">${g.ok ? esc(g.raw) : '<span style="color:var(--red)">не прочитано</span>'}</td></tr>`).join('')}</table>`);
   drawChart();
 }
@@ -687,6 +882,7 @@ function drawChart() {
 
 // ---- Adaptations
 R.adapt = () => {
+  getRef().then(r => { S.ref = r; }).catch(() => {});
   page('Адаптации', `<div class="btns"><button class="btn" id="adBtn">Прочитать самоадаптации</button><button class="btn red" id="adRst">Сбросить…</button></div><div id="adBox" class="mt"></div>`);
   const render = async () => {
     const e = await api('ecu');
@@ -710,9 +906,9 @@ R.adapt = () => {
       : card('ХХ, аддитивная', a.idle_kg_h, 'кг/ч', -2, 2, '0.0', a.raw.idle, tend(a.idle_kg_h, 0));
     setHTML('#adBox', `<div class="small muted">Прочитано ${agoMin(a.age_ms)}</div>
       <div class="grid c3 mt">
-        ${idle}
-        ${card('Частичная нагрузка, нижняя (мульт.)', a.lower, '', 0.85, 1.15, '1.00', a.raw.lower, tend(a.lower, 1))}
-        ${card('Частичная нагрузка, верхняя (мульт.)', a.upper, '', 0.85, 1.15, '1.00', a.raw.upper, tend(a.upper, 1))}
+        ${idle.replace(/<\/div>$/, xcard('p-adapt_idle', 'карточка параметра', () => paramCard('adapt_idle')) + '</div>')}
+        ${card('Частичная нагрузка, нижняя (мульт.)', a.lower, '', 0.85, 1.15, '1.00', a.raw.lower, tend(a.lower, 1)).replace(/<\/div>$/, xcard('p-adapt_lower', 'карточка параметра', () => paramCard('adapt_lower')) + '</div>')}
+        ${card('Частичная нагрузка, верхняя (мульт.)', a.upper, '', 0.85, 1.15, '1.00', a.raw.upper, tend(a.upper, 1)).replace(/<\/div>$/, xcard('p-adapt_upper', 'карточка параметра', () => paramCard('adapt_upper')) + '</div>')}
       </div>`);
   };
   $('#adBtn').addEventListener('click', async e => { if (await job('read_adapt', {}, e.target)) render(); });
@@ -872,6 +1068,87 @@ R.commission = async () => {
   loop(render, 3000);
 };
 
+
+// ---- code reference (all namespaces; HFM digital codes are the only ones read over K-Line)
+const NS = [
+  ['hfm', 'HFM цифровые'], ['analog', 'Импульсные'], ['dm', 'DM N59/1'], ['cc', 'CC/ISC N4/3'], ['transport', 'HFM Connect']
+];
+const NS_NOTE = {
+  hfm: 'Цифровые коды ЭБУ HFM-SFI (память F1, читаются по K-Line). Номер кода — не ISO P-код.',
+  analog: 'Ранние импульсные коды 1–50 (вторичный источник Baum Tools). Не путать с цифровыми 001–164: номера разных пространств не переводятся друг в друга.',
+  dm: 'Коды отдельного диагностического модуля DM N59/1. Через память F1 HFM они НЕ читаются; приведены только как справочник.',
+  cc: 'Коды отдельного блока круиз-контроля / регулятора ХХ N4/3 (заводское руководство CC/ISC). Через F1 HFM не читаются.',
+  transport: 'Ошибки самого HFM Connect (USB, FTDI, K-Line). Это не коды ЭБУ.'
+};
+R.codes = async () => {
+  page('Справочник кодов', `<div id="nsSeg">${NS.map(n => `<button class="chip ${(S.ns || 'hfm') === n[0] ? 'on' : ''}" data-ns="${n[0]}">${n[1]}</button>`).join('')}</div>
+    <input class="field mt" id="codeQ" placeholder="Поиск: номер или слово" value="${esc(S.codeQ || '')}">
+    <label class="flex mt small" id="myBox"><input type="checkbox" id="onlyMine"${S.onlyMine ? ' checked' : ''}> только коды карты моего ЭБУ</label>
+    <div class="note small mt" id="nsNote"></div><div class="list mt" id="codeList"><div class="row muted">Загрузка справочника…</div></div>
+    <p class="foot" id="refFoot"></p>`);
+  let ref, d = null;
+  try { ref = S.ref = await getRef(); } catch (e) { setHTML('#codeList', `<div class="row">Справочник не загружен: ${esc(e.message)}</div>`); return; }
+  try { d = (await api('dtc')).dtc; } catch (e) {}
+  const render = () => {
+    const ns = S.ns || 'hfm', q = (S.codeQ || '').toLowerCase().trim();
+    $('#myBox').classList.toggle('hidden', ns !== 'hfm');
+    setHTML('#nsNote', esc(NS_NOTE[ns]) + (ns === 'hfm' && d && d.dtc_map && d.dtc_map !== 'GENERIC' ? `<br>Карта вашего ЭБУ: <b>${esc(mapText(ref, d.dtc_map))}</b>.` : ''));
+    let rows = [];
+    if (ns === 'hfm') {
+      rows = Object.keys(ref.dtc).map(Number).sort((a, b) => a - b).filter(c => c > 1).map(c => {
+        const r = ref.dtc[c];
+        if (S.onlyMine && d && d.dtc_map && d.dtc_map !== 'GENERIC' && !r.maps.includes(d.dtc_map)) return '';
+        if (q && !(String(c).padStart(3, '0').includes(q) || r.t.toLowerCase().includes(q) || r.c.toLowerCase().includes(q))) return '';
+        const x = {code: c};
+        return `<div class="dtc"><div class="code ${r.lvl === 'GIP' ? 'int' : ''}">${String(c).padStart(3, '0')}</div><div class="grow"><div>${esc(r.t)}</div>
+          <div class="small muted">${esc(DEF_STATUS[r.st] || r.st)}</div>${xcard('c-' + c, 'карточка ошибки', () => dtcCard(x, d))}</div></div>`;
+      });
+    } else {
+      const list = ref[ns] || [];
+      rows = list.map(a => {
+        const code = a.code || a.id, text = a.t;
+        if (q && !(String(code).toLowerCase().includes(q) || String(text).toLowerCase().includes(q))) return '';
+        return `<div class="dtc"><div class="code ns${String(code).length > 4 ? ' long' : ''}">${esc(code)}</div><div class="grow"><div>${esc(text)}</div>
+          ${xcard(ns + '-' + code, 'карточка ошибки', () => `<div class="flex wrap"><span class="badge b-gray">${esc(NS.find(n => n[0] === ns)[1])}</span></div>
+            <div class="note small mt">${esc(NS_NOTE[ns])}</div>${xsec('Возможные причины', xtext(a.c))}${xsec('Что проверить', xtext(a.k))}${xsec('Источник', xtext(a.src))}`)}</div></div>`;
+      });
+    }
+    rows = rows.filter(Boolean);
+    setHTML('#codeList', rows.length ? rows.join('') : '<div class="row muted">Ничего не найдено.</div>');
+    setHTML('#refFoot', `Справочник: ${esc(ref.meta.package)}. ${esc(ref.meta.warning)}`);
+  };
+  document.querySelectorAll('#nsSeg button').forEach(b => b.addEventListener('click', () => {
+    S.ns = b.dataset.ns;
+    document.querySelectorAll('#nsSeg button').forEach(x => x.classList.toggle('on', x === b));
+    render();
+  }));
+  $('#codeQ').addEventListener('input', e => { S.codeQ = e.target.value; render(); });
+  $('#onlyMine').addEventListener('change', e => { S.onlyMine = e.target.checked; render(); });
+  render();
+};
+
+// ---- guided diagnostics by symptom
+const SC_LINKS = {
+  'S-01': ['connect', 'Подключение'], 'S-02': ['connect', 'Подключение'], 'S-03': ['live', 'Live Data'], 'S-04': ['live', 'Live Data'],
+  'S-05': ['adapt', 'Адаптации'], 'S-06': ['adapt', 'Адаптации'], 'S-07': ['live', 'Live Data'], 'S-08': ['dtc', 'Ошибки'],
+  'S-09': ['live', 'Live Data'], 'S-13': ['ecu', 'Идентификация'], 'S-14': ['ecu', 'Идентификация'], 'S-16': ['live', 'Live Data'],
+  'S-17': ['live', 'Live Data'], 'S-18': ['dtc', 'Ошибки'], 'S-19': ['dtc', 'Ошибки'], 'S-20': ['connect', 'Подключение']
+};
+R.guide = async () => {
+  page('Диагностика по симптомам', `<div class="note small">Подсказки по сочетанию кодов и Live Data из справочника — не автоматический диагноз и не замена заводского порядка проверки. Если нужного значения нет, вывод не делается.</div>
+    <div class="list mt" id="scList"><div class="row muted">Загрузка…</div></div>
+    <h2 class="section">Правила качества данных</h2><div class="list" id="qList"></div>`);
+  let ref;
+  try { ref = S.ref = await getRef(); } catch (e) { setHTML('#scList', `<div class="row">Справочник не загружен: ${esc(e.message)}</div>`); return; }
+  setHTML('#scList', ref.scenarios.map(s => {
+    const l = SC_LINKS[s.id];
+    return `<div class="dtc"><div class="code" style="background:rgba(0,122,255,.1);color:var(--accent)">${esc(s.id.slice(2))}</div><div class="grow"><div>${esc(s.symptom)}</div>
+      ${xcard('sc-' + s.id, 'карточка сценария', () => `${xsec('Что контролировать', xtext(s.inputs))}${xsec('Порядок действий', xtext(s.actions))}${l ? `<button class="btn sm sec mt" onclick="go('${l[0]}')">Открыть: ${l[1]}</button>` : ''}`)}</div></div>`;
+  }).join(''));
+  setHTML('#qList', ref.quality.map(q => `<div class="row"><div class="grow"><div class="t small"><b>${esc(q.id)}</b> — ${esc(q.trigger)}</div>
+    ${xcard('q-' + q.id, 'подробнее', () => `${xsec('Действие', xtext(q.action))}${xsec('Основание', xtext(q.evidence))}`)}</div></div>`).join(''));
+};
+
 // ---- reports
 R.reports = async () => {
   page('Отчёты', `<div class="btns"><button class="btn" id="mkRep">Сформировать отчёт</button><a class="btn sec" href="/api/report?dl=1">JSON</a><a class="btn sec" href="/api/trace.jsonl" download>RAW трасса</a></div>
@@ -918,7 +1195,7 @@ async function buildReport(btn) {
       ['HW / SW', `${id.hw_date || '—'} / ${id.sw_date || '—'}`], ['Профиль', r.profile.name], ['RAW ID', `<span class="hex">${esc(id.raw)}</span>`, true],
       ['9-значный код (введён вручную)', code9 || '—']])}
     <h2 class="section" style="margin-left:0">Память неисправностей</h2>
-    ${d.valid ? `<p class="small muted">Прочитано ${esc(ago(d.age_ms))}</p>` + (d.items.length ? `<div class="list">${d.items.map(dtcRow).join('')}</div>` : '<p>Неисправностей нет.</p>') + `<p class="small muted">Банки: ${esc(d.bank_mapping)} · A: <span class="hex">${esc(d.bank_a)}</span> · B: <span class="hex">${esc(d.bank_b)}</span></p>` : '<p class="muted">Не прочитана.</p>'}
+    ${d.valid ? `<p class="small muted">Прочитано ${esc(ago(d.age_ms))}</p>` + (d.items.length ? `<div class="list">${d.items.map(x => dtcRow(x, d, false)).join('')}</div>` : '<p>Неисправностей нет.</p>') + `<p class="small muted">Банки: ${esc(d.bank_mapping)} · A: <span class="hex">${esc(d.bank_a)}</span> · B: <span class="hex">${esc(d.bank_b)}</span></p>` : '<p class="muted">Не прочитана.</p>'}
     <h2 class="section" style="margin-left:0">Адаптации и кодировка</h2>
     ${r.adapt.valid ? kvTable([['ХХ аддитивная', r.adapt.vdo || r.profile.vdo_candidate ? 'RAW ' + r.adapt.raw.idle : r.adapt.idle_kg_h + ' кг/ч'], ['Нижняя мульт.', r.adapt.lower], ['Верхняя мульт.', r.adapt.upper]]) : '<p class="muted">Адаптации не прочитаны.</p>'}
     ${r.coding.valid ? `<p class="small">Кодировка c=${esc(r.coding.coding_byte)} m=${esc(r.coding.mask_byte)}</p>` : '<p class="muted small">Кодировка не прочитана.</p>'}
@@ -1006,4 +1283,5 @@ R.settings = async () => {
 // ---------------------------------------------------------------- boot
 buildNav();
 statusLoop();
+getRef().then(r => { S.ref = r; }).catch(() => {});
 loadSettings().catch(() => {}).finally(() => go(location.hash.slice(1) || 'home'));
