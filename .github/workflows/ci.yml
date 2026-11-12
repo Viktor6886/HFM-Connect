@@ -44,9 +44,11 @@ jobs:
           mkdir -p build
           arduino-cli compile --fqbn esp32:esp32:esp32s3:PartitionScheme=huge_app,CDCOnBoot=default \
             --warnings default --build-path build/fw firmware/HFMConnect 2>&1 | tee build/compile.log
-      - name: Compile without OLED (default partitions, no U8g2 code)
+      - name: Compile without OLED (Huge APP, no U8g2 code)
         run: |
-          arduino-cli compile --fqbn esp32:esp32:esp32s3:PartitionScheme=default,CDCOnBoot=default \
+          # Since 0.9.1 the build without OLED no longer fits the Default 4MB app
+          # partition (1.25 MB); both variants use Huge APP.
+          arduino-cli compile --fqbn esp32:esp32:esp32s3:PartitionScheme=huge_app,CDCOnBoot=default \
             --build-property "compiler.cpp.extra_flags=-DHFM_OLED_ENABLE=0" \
             --warnings default --build-path build/fw-nooled firmware/HFMConnect
       - name: Upload firmware binary

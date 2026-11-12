@@ -234,8 +234,8 @@ TEST(profile_vendor_letter_as_pc_tester) {
   CHECK(p.resolved && !p.referenceEcu && !p.vdoCandidate && !p.vdoUnits);
   CHECK(p.caps[prof::F_DTC_READ].allowed && p.caps[prof::F_LIVE_NATIVE].allowed);
   CHECK_EQ(p.variant.manufacturer, 1);
-  // 'V' = VDO: HFM reads and Live Data (Bosch pages, checked replies); the
-  // VDO template plan is tried first only with the opt-in (D-034).
+  // 'V' = VDO: HFM reads; Live Data by the VDO plan of the factory tester
+  // templates for vendor V, without any opt-in (D-037).
   raw[1] = 'V';
   parseIdent(raw, 28, id);
   CHECK_STR(id.vendor, "VDO");
@@ -243,7 +243,7 @@ TEST(profile_vendor_letter_as_pc_tester) {
   CHECK(p.resolved && p.vdoUnits && !p.vdoCandidate);
   CHECK(p.caps[prof::F_DTC_READ].allowed);
   CHECK(p.caps[prof::F_LIVE_NATIVE].allowed);
-  CHECK(!p.vdoPlanFirst);
+  CHECK(p.vdoPlanFirst);
   CHECK(p.caps[prof::F_DTC_CLEAR].allowed);
   o.experimentalReads = true;
   prof::resolve(id, o, p);

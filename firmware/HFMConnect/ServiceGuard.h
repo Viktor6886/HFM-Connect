@@ -31,8 +31,10 @@ struct Facts {
   bool sessionReady = false;
   bool interlockClosed = false;   // WRITE-EN hardware jumper/key
   bool interlockRequired = false; // setting: the key is fitted and must be closed
-  bool engineStoppedConfirm = false; // user confirmed "ignition ON, engine stopped" (no rpm reading)
-  int8_t engineStopped = -1;      // 20:B7 == 0 from a fresh read
+  bool engineStoppedConfirm = false; // user confirmed "ignition ON, engine stopped"
+  // From a fresh rpm read: 1 = 0 rpm; 0 = running on a confirmed rpm address
+  // (Bosch 20:B7); -1 = no conclusive reading (then the confirmation decides).
+  int8_t engineStopped = -1;
   float rpm = -1;                 // -1 unknown
   float ect = -999;               // -999 unknown
   uint32_t liveAgeMs = 0xFFFFFFFF;
@@ -74,6 +76,8 @@ class ServiceGuard {
                        const EcuIdent& id, const Facts& f, uint32_t nowMs);
   // Seconds left of the password lock (0 = not locked).
   uint32_t passwordLockS(uint32_t nowMs) const;
+  // The check that failed when authorize() returned ChecksFailed (static text).
+  const char* lastBlockReason() const { return lastBlock_ ? lastBlock_ : ""; }
 
   void begin(Op op) { state_ = (op == Op::PurgeTest) ? State::Active : State::Executing; active_ = op; }
   void restoring() { state_ = State::Restoring; }
@@ -99,6 +103,7 @@ class ServiceGuard {
   uint8_t badPw_ = 0;
   uint32_t pwLockUntil_ = 0;
   bool pwLocked_ = false;
+  const char* lastBlock_ = nullptr;
 };
 
 }  // namespace guard

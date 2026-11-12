@@ -18,7 +18,7 @@
 | USB CDC On Boot | **Disabled** (обязательно: разъём USB-OTG занят FTDI-адаптером; лог — через разъём UART/COM) |
 | USB Mode | **Hardware CDC and JTAG** (не «USB-OTG (TinyUSB)») |
 | Flash Size | 4MB (или фактический размер) |
-| Partition Scheme | Default 4MB with spiffs (1.2MB APP/1.5MB SPIFFS) — прошивка с USB-хостом занимает ~1,18 МБ (90 %). При росте прошивки: *Huge APP (3MB No OTA/1MB SPIFFS)* |
+| Partition Scheme | **Huge APP (3MB No OTA/1MB SPIFFS)** — обязательно с 0.9.1 для обеих сборок (с дисплеем и без): в «Default 4MB with spiffs» (1,25 МБ) прошивка больше не помещается |
 | PSRAM | любой (не требуется) |
 | Upload Speed | 921600 |
 
@@ -38,7 +38,9 @@ Live Data и отчётов). Веб-интерфейс встроен в про
    паролем по умолчанию `hfm12345` переходят на новый при загрузке; пароль, заданный
    пользователем, сохраняется. Надпись Android «Войти: …» — системная, это не часть WebUI.
 2. Откройте `http://192.168.4.1/` (или `http://hfm.local/`). На большинстве телефонов
-   откроется автоматически (captive portal).
+   откроется автоматически (captive portal) — в окне входа телефона с заголовком «Войти:
+   HFM Connect». Чтобы открывать в обычном браузере (http://192.168.4.1), выключите
+   «Настройки → Wi-Fi → Открывать автоматически при подключении к Wi-Fi» (D-039).
 3. FTDI-адаптер — в разъём USB-OTG, кабель — к X11/4, зажигание ВКЛ. Подключение к ЭБУ
    выполняется **автоматически** (после загрузки и при появлении адаптера); ход видно на
    странице *Подключение*. Автоподключение отключается в *Настройках*. Тайминги линии
@@ -83,8 +85,8 @@ arduino-cli core install esp32:esp32
 arduino-cli lib install U8g2
 # с дисплеем (по умолчанию)
 arduino-cli compile --fqbn esp32:esp32:esp32s3:PartitionScheme=huge_app,CDCOnBoot=default firmware/HFMConnect
-# без дисплея (с 0.9.0 занимает 99 % раздела Default 4MB — лучше тоже Huge APP)
-arduino-cli compile --fqbn esp32:esp32:esp32s3:PartitionScheme=default,CDCOnBoot=default \
+# без дисплея (с 0.9.1 тоже только Huge APP: в Default 4MB не помещается)
+arduino-cli compile --fqbn esp32:esp32:esp32s3:PartitionScheme=huge_app,CDCOnBoot=default \
   --build-property "compiler.cpp.extra_flags=-DHFM_OLED_ENABLE=0" firmware/HFMConnect
 arduino-cli upload  --fqbn esp32:esp32:esp32s3:PartitionScheme=huge_app -p COM5 firmware/HFMConnect
 ```
@@ -108,8 +110,9 @@ Data, 9-значный код, рабочий профиль пробужден�
 
 ## Запас памяти программы
 
-С 0.8.0 сборка с OLED-дисплеем идёт со схемой Huge APP (42 % из 3 МБ). Без дисплея
-прошивка занимает 98 % раздела схемы «Default 4MB with spiffs». При переходе на
+С 0.8.0 сборка с OLED-дисплеем идёт со схемой Huge APP (43 % из 3 МБ). Без дисплея
+с 0.9.1 прошивка в раздел схемы «Default 4MB with spiffs» не помещается (1 311 016 Б при
+пределе 1 310 720 Б) — обе сборки только со схемой Huge APP. При переходе на
 *Tools → Partition Scheme → Huge APP (3MB No OTA/1MB SPIFFS)*:
 раздел NVS остаётся на месте (настройки сохраняются), LittleFS форматируется заново
 (записи и отчёты на устройстве будут удалены — скачайте их заранее).

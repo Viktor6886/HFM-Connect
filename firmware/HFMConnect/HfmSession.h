@@ -85,6 +85,10 @@ class HfmSession {
 
   // --- composite reads ----------------------------------------------------
   LinkStatus readGroup(uint8_t op, const uint8_t* sels, uint8_t n, uint8_t* out);
+  // Same addresses, but every selector gets its own prefix ("op sel op sel ..."),
+  // as the factory tester templates of the VDO variant read (D-037) and as F0/F1
+  // are read: for ECUs that keep no page context after a selector.
+  LinkStatus readEach(uint8_t op, const uint8_t* sels, uint8_t n, uint8_t* out);
   // F0 identification bytes 0..n-1 (n <= 28 for the read-only fingerprint).
   LinkStatus readIdent(uint8_t* out, uint8_t n = 28);
   // F1 fault-memory bytes [first, first+count).
@@ -99,6 +103,10 @@ class HfmSession {
   bool writeArmed() const { return writeToken_ != 0; }
   void setExperimentalReads(bool en) { experimentalReads_ = en; }
   bool experimentalReads() const { return experimentalReads_; }
+  // ECU identified as VDO (vendor letter V): its read pages 12/22/23 of the
+  // factory tester templates are normal reads for it (D-037).
+  void setVdoReads(bool en) { vdoReads_ = en; }
+  bool vdoReads() const { return vdoReads_; }
 
   // Statistics
   uint32_t txCount() const { return txCount_; }
@@ -128,6 +136,7 @@ class HfmSession {
   bool pageIsWrite_ = false;
   uint32_t writeToken_ = 0;
   bool experimentalReads_ = false;
+  bool vdoReads_ = false;
   uint32_t txCount_ = 0;
   uint32_t errCount_ = 0;
   uint32_t lastActivityMs_ = 0;

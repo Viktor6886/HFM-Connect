@@ -82,6 +82,7 @@ void DiagEngine::applySettings() {
   t.resyncSilenceMs = HFM_RESYNC_SILENCE_MS;
   session_->setTiming(t);
   session_->setExperimentalReads(settings_->experimentalReads);
+  session_->setVdoReads(st_.profile.vdoUnits);
   if (ftdi_)
     ftdi_->setWakeConfig(settings_->breakMs, settings_->ftdiModem, settings_->wakeAuto, settings_->wakeLearnedBreak,
                          settings_->wakeLearnedModem);
@@ -379,14 +380,15 @@ void DiagEngine::doIdentify(char* msg, size_t n, bool& ok) {
 }
 
 void DiagEngine::afterResolve() {
-  // Live-data address plan: by vendor; unknown vendor -> remembered probe
-  // result, otherwise the documented Bosch plan first.
-  // VDO: the VDO plan of the factory tester templates first only with the
-  // experimental opt-in, otherwise the Bosch read pages (checked, D-034).
+  // Live-data address plan by vendor (D-037): Bosch -> Bosch pages, VDO -> the
+  // VDO plan of the factory tester templates (its pages are normal reads for an
+  // ECU identified as VDO). Unknown vendor -> remembered probe result,
+  // otherwise the Bosch plan first (VDO plan only with the experimental opt-in).
   st_.livePlanVdo = st_.profile.vdoUnits && st_.profile.vdoPlanFirst;
-  if ((st_.profile.vdoCandidate || st_.profile.vdoUnits) && strcmp(settings_->ecuFp, st_.ident.fingerprint) == 0 &&
+  if (st_.profile.vdoCandidate && strcmp(settings_->ecuFp, st_.ident.fingerprint) == 0 &&
       (settings_->ecuFlags & ECU_F_PLAN_KNOWN))
     st_.livePlanVdo = (settings_->ecuFlags & ECU_F_PLAN_VDO) != 0 && settings_->experimentalReads;
+  if (session_) session_->setVdoReads(st_.profile.vdoUnits);
 }
 
 static uint16_t decodeAll(const svc::FaultMemory& fm, const prof::EcuProfile& p, dtc::Decoded* out, uint16_t max);
@@ -483,9 +485,13 @@ void DiagEngine::fillFacts(guard::Facts& f) {
   const live::Value& rpm = st_.live.v[live::P_RPM];
   const live::Value& ect = st_.live.v[live::P_ECT];
   f.liveAgeMs = st_.live.tMs ? now - st_.live.tMs : 0xFFFFFFFF;
-  if (rpm.hasValue) {
+  if (rpm.hasValue && rpm.q == live::Quality::Valid) {
     f.rpm = rpm.v;
-    f.engineStopped = rpm.raw0 == 0 ? 1 : 0;
+    // 0 rpm is "stopped" whatever the scale. "Running" is taken from the
+    // reading only on the confirmed Bosch address 20:B7; with the VDO plan the
+    // rpm scale is not confirmed, so the user's confirmation decides.
+    if (rpm.raw0 == 0) f.engineStopped = 1;
+    else if (!st_.snap.vdoPlan) f.engineStopped = 0;
   }
   if (ect.hasValue && ect.q == live::Quality::Valid) f.ect = ect.v;
   f.batteryV = st_.batteryV;
@@ -497,6 +503,35 @@ void DiagEngine::fillFacts(guard::Facts& f) {
       if (st_.dtc.fm.bankA[i] || st_.dtc.fm.bankB[i]) f.faultMemNonZero = true;
   }
   if (st_.adapt.valid) f.adaptAgeMs = now - st_.adapt.tMs;
+}
+
+prof::NormGroup DiagEngine::normGroup() {
+  // Without a selected automobile (or one without its own norms) the widest
+  // factory range of all HFM-SFI engines applies.
+  int16_t vi = settings_->vehicleIdx;
+  const prof::VehicleEntry* ve = vi >= 0 ? prof::vehicleByIndex((uint16_t)vi) : nullptr;
+  return ve && ve->norms != prof::NormGroup::None ? ve->norms : prof::NormGroup::HFM_GENERIC;
+}
+
+void DiagEngine::refreshEngineState() {
+  if (!session_->ready()) return;
+  lock();
+  const bool allowed = st_.profile.caps[prof::F_LIVE_NATIVE].allowed;
+  live::Snapshot snap = st_.snap;
+  const bool vdo = st_.livePlanVdo;
+  const uint8_t diagRaw = st_.profile.variant.diagRaw;
+  unlock();
+  if (!allowed) return;
+  if (live::pollNative(*session_, snap, vdo) != LinkStatus::Ok) {
+    recoverRead();  // read only: resume without a new BREAK
+    return;
+  }
+  const prof::NormGroup ng = normGroup();
+  lock();
+  st_.snap = snap;
+  prevLive_ = st_.live;
+  live::decode(snap, ng, vdo, &prevLive_, st_.live, diagRaw);
+  unlock();
 }
 
 static uint16_t decodeAll(const svc::FaultMemory& fm, const prof::EcuProfile& p, dtc::Decoded* out, uint16_t max) {
@@ -674,27 +709,27 @@ void DiagEngine::execute(Job j, uint32_t arg, const char* text) {
       break;
     case Job::SvcPrepare: {
       guard::Op op = (guard::Op)(arg & 0xFF);
+      // The switches of the confirmation dialog travel with the job itself, so
+      // the plan always sees exactly what the user has set.
       svcConfirmStopped_ = (arg & 0x100) != 0;
+      if (arg & 0x400) settings_->batteryManualConfirm = (arg & 0x200) != 0;
+      // A previous plan is void: the dialog shows only what this check found.
+      guard_.cancel();
+      lock();
+      st_.plan = guard::Plan();
+      unlock();
       if (op == guard::Op::ImpulseClear) {
         // Pulse-counter procedure: no K-Line session is used.
         if (!impulseVehicleOk(msg, sizeof msg)) { ok = false; break; }
       } else if (!ensureConnected(msg, sizeof msg)) { ok = false; break; }
       // Fresh read of engine state immediately before planning.
-      if (op != guard::Op::ImpulseClear && st_.profile.caps[prof::F_LIVE_NATIVE].allowed) {
-        live::Snapshot snap = st_.snap;
-        bool vdo = st_.livePlanVdo;
-        if (live::pollNative(*session_, snap, vdo) == LinkStatus::Ok) {
-          int16_t vi = settings_->vehicleIdx;
-          const prof::VehicleEntry* ve = vi >= 0 ? prof::vehicleByIndex((uint16_t)vi) : nullptr;
-          lock();
-          st_.snap = snap;
-          prevLive_ = st_.live;
-          live::decode(snap, ve && ve->norms != prof::NormGroup::None ? ve->norms : prof::NormGroup::HFM_GENERIC, vdo, &prevLive_, st_.live,
-                       st_.profile.variant.diagRaw);
-          unlock();
-        } else {
-          recoverRead();
-        }
+      if (op != guard::Op::ImpulseClear) refreshEngineState();
+      char pre[200] = "";
+      if (op == guard::Op::DtcClear) {
+        // The "before" readout is taken now by the device itself (F1, read
+        // only): the user does not have to read the memory within a minute.
+        char m[160];
+        if (!readDtc(m, sizeof m, false)) snprintf(pre, sizeof pre, " Память неисправностей не прочитана: %s.", m);
       }
       readHardware();
       lock();
@@ -704,11 +739,15 @@ void DiagEngine::execute(Job j, uint32_t arg, const char* text) {
       ok = guard_.prepare(op, st_.profile, st_.ident, f, millis(), esp_random() | 1, plan);
       st_.plan = plan;
       unlock();
-      snprintf(msg, sizeof msg, ok ? "Условия выполнены: введите пароль в течение 60 с" : "Условия не выполнены");
+      snprintf(msg, sizeof msg, "%s%s", ok ? "Условия выполнены: введите пароль в течение 60 с" : "Условия не выполнены.",
+               pre);
       break;
     }
     case Job::SvcExecute: {
       guard::Op op = (guard::Op)(arg & 0xFF);
+      // Engine state is read again right before the write (it may have been
+      // started meanwhile); the plan's checks are re-evaluated with it.
+      if (op != guard::Op::ImpulseClear && guard_.state() == guard::State::Prepared) refreshEngineState();
       readHardware();
       lock();
       guard::Facts f;
@@ -736,7 +775,7 @@ void DiagEngine::execute(Job j, uint32_t arg, const char* text) {
             snprintf(msg, sizeof msg, "Время подтверждения истекло — проверьте условия заново");
             break;
           case guard::AuthResult::ChecksFailed:
-            snprintf(msg, sizeof msg, "Условия изменились (связь, обороты, данные) — проверьте их заново");
+            snprintf(msg, sizeof msg, "Условие не выполнено: %s", guard_.lastBlockReason());
             break;
           case guard::AuthResult::IdentChanged:
             snprintf(msg, sizeof msg, "Подключён другой ЭБУ — операция отменена");
@@ -756,7 +795,7 @@ void DiagEngine::execute(Job j, uint32_t arg, const char* text) {
         lock();
         guard_.begin(op);
         unlock();
-        char res[320];
+        char res[512];
         bool done = false;
         lock();
         st_.liveActive = false;
@@ -792,38 +831,73 @@ void DiagEngine::execute(Job j, uint32_t arg, const char* text) {
       unlock();
       session_->armWrite(esp_random() | 1);
       LinkStatus s = LinkStatus::Ok;
-      char res[320];
+      char res[512];
       if (op == guard::Op::DtcClear) {
         bool verified = false;
         svc::FaultMemory after;
         lock();
         uint16_t before = st_.dtc.count;
         unlock();
-        s = svc::dtcClear(*session_, verified, after);
+        bool confirmed = false;
+        s = svc::dtcClear(*session_, verified, after, &confirmed);
         ok = s == LinkStatus::Ok;
+        // Which step the ECU did not confirm (byte sent and its reply).
+        const uint8_t failTx = session_->lastTx(), failRx = session_->lastReply();
+        session_->disarmWrite();
+        if (!after.valid) {
+          // The command was not confirmed: the memory is read again (F1, read
+          // only - after a new connection, never resuming around a write) so
+          // the real state is shown. Nothing state-changing is repeated.
+          char m[160];
+          if (ensureConnected(m, sizeof m)) svc::readFaultMemory(*session_, after, false);
+        }
+        uint16_t left = 0;
         lock();
         if (after.valid) {
           st_.dtc.fm = after;
           st_.dtc.valid = true;
+          st_.dtc.automatic = false;
           st_.dtc.tMs = millis();
           st_.dtc.count = decodeAll(after, st_.profile, st_.dtc.items, 48);
           st_.dtc.inferred = dtc::inferBankMapping(st_.dtc.items, st_.dtc.count);
+          left = st_.dtc.count;
         }
         unlock();
-        uint16_t left = 0;
-        lock();
-        if (after.valid) left = st_.dtc.count;
-        unlock();
-        if (ok && verified)
-          snprintf(res, sizeof res, "Память неисправностей стёрта: записей было %u, при повторном чтении — 0", before);
-        else if (ok)
-          snprintf(res, sizeof res, "ЭБУ принял команду стирания. Записей было %u, после стирания %u: оставшиеся "
-                                    "неисправности присутствуют сейчас, ЭБУ записывает их снова — устраните причину",
-                   before, left);
+        if (after.valid) dtcRefresh_.readOk(millis(), false);
+        char state[160];
+        if (after.valid)
+          snprintf(state, sizeof state, "Повторное чтение памяти: записей %u (было %u).", left, before);
         else
-          snprintf(res, sizeof res, "ОШИБКА при стирании (%s). Результат неизвестен — запись заблокирована до "
-                                    "квитирования; прочитайте память неисправностей",
-                   linkStatusCode(s));
+          snprintf(state, sizeof state, "Память неисправностей прочитать не удалось — состояние неизвестно.");
+        if (ok && verified)
+          snprintf(res, sizeof res, "Память неисправностей стёрта: ЭБУ подтвердил команду, при повторном чтении "
+                                    "записей нет (было %u).", before);
+        else if (ok)
+          snprintf(res, sizeof res, "ЭБУ подтвердил команду стирания. %s Оставшиеся неисправности есть сейчас — ЭБУ "
+                                    "записал их снова сразу после стирания; устраните причину и сотрите ещё раз.",
+                   state);
+        else if (confirmed)
+          // F3 FF was answered 00; only the verification read broke off. With
+          // the memory read again after reconnecting, the result is known.
+          snprintf(res, sizeof res, "ЭБУ подтвердил команду стирания, но чтение памяти сразу после неё прервалось "
+                                    "(%s). %s%s", linkStatusCode(s), state,
+                   after.valid ? "" : " Запись заблокирована до квитирования.");
+        else if (s == LinkStatus::BadAck)
+          snprintf(res, sizeof res, "ЭБУ не принял команду: на байт %02X ответил %02X вместо %02X. %s Запись "
+                                    "заблокирована до квитирования.",
+                   failTx, failRx, (uint8_t)(failTx ^ 0xFF), state);
+        else if (s == LinkStatus::BadArgReply)
+          snprintf(res, sizeof res, "ЭБУ отклонил стирание: на команду %02X ответил %02X вместо 00. %s Запись "
+                                    "заблокирована до квитирования.",
+                   failTx, failRx, state);
+        else
+          snprintf(res, sizeof res, "Стирание не подтверждено: %s на шаге %02X. %s Запись заблокирована до "
+                                    "квитирования.",
+                   s == LinkStatus::Timeout ? "ЭБУ не ответил" : linkStatusCode(s), failTx, state);
+        if (confirmed && !ok && after.valid) {
+          ok = true;  // the ECU confirmed the command and the memory was read afterwards
+          verified = left == 0;
+        }
         featMark(prof::F_DTC_CLEAR, ok && verified);
         guard_.finish(ok);
       } else if (op == guard::Op::AdaptReset) {
@@ -991,9 +1065,9 @@ void DiagEngine::livePoll() {
   snap = st_.snap;
   bool vdo = st_.livePlanVdo;
   bool ext = st_.profile.caps[prof::F_LIVE_EXTENDED].allowed && !vdo && !extDisabled_;
-  bool probe = (st_.profile.vdoCandidate || st_.profile.vdoUnits) &&
+  bool probe = st_.profile.vdoCandidate &&
                !(strcmp(settings_->ecuFp, st_.ident.fingerprint) == 0 && (settings_->ecuFlags & ECU_F_PLAN_KNOWN));
-  int16_t vi = settings_->vehicleIdx;
+  const bool vdoEcu = st_.profile.vdoUnits;
   uint8_t diagRaw = st_.profile.variant.diagRaw;
   char fp[24];
   strlcpy(fp, st_.ident.fingerprint, sizeof fp);
@@ -1012,11 +1086,7 @@ void DiagEngine::livePoll() {
       if (snap.extEcho) extDisabled_ = true;  // addresses repeated: nothing to read there
     }
   }
-  // Without a selected automobile (or one without its own norms) the widest
-  // factory range of all HFM-SFI engines applies.
-  prof::NormGroup ng = prof::NormGroup::HFM_GENERIC;
-  const prof::VehicleEntry* ve = vi >= 0 ? prof::vehicleByIndex((uint16_t)vi) : nullptr;
-  if (ve && ve->norms != prof::NormGroup::None) ng = ve->norms;
+  const prof::NormGroup ng = normGroup();
   lock();
   st_.snap = snap;
   if (s == LinkStatus::Ok) {
@@ -1036,10 +1106,12 @@ void DiagEngine::livePoll() {
     // The ECU answered the main groups of this plan with the addresses
     // themselves (D-034): try the other documented plan once, otherwise stop
     // polling with the reason instead of showing invented numbers.
+    // A VDO ECU has only its own plan: the Bosch addresses would be decoded as
+    // other quantities (D-037).
     planTried_ |= vdo ? 2 : 1;
-    bool canVdo = settings_->experimentalReads && (st_.profile.vdoUnits || st_.profile.vdoCandidate);
+    bool canVdo = settings_->experimentalReads && st_.profile.vdoCandidate;
     lock();
-    if (vdo && !(planTried_ & 1)) {
+    if (vdo && !vdoEcu && !(planTried_ & 1)) {
       st_.livePlanVdo = false;
     } else if (!vdo && canVdo && !(planTried_ & 2)) {
       st_.livePlanVdo = true;

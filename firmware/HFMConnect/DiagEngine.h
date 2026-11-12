@@ -118,7 +118,7 @@ struct EngineState {
   uint32_t purgeOnSinceMs = 0;
   uint32_t purgeActiveSinceMs = 0;
   bool purgeSonde = false;
-  char lastServiceResult[320] = {0};  // Russian text: 2 bytes per letter
+  char lastServiceResult[512] = {0};  // Russian text: 2 bytes per letter
   uint32_t pwLockS = 0;          // seconds left of the password lock (D-035)
   // impulse
   ImpulseView impulse;
@@ -187,6 +187,10 @@ class DiagEngine {
   void adapterMissing(char* msg, size_t n);
   void purgeWatchdog();
   void fillFacts(guard::Facts& f);
+  // One read-only Live Data cycle right before a service decision (rpm, ECT).
+  void refreshEngineState();
+  // Norm group of the selected automobile, otherwise the HFM-SFI union.
+  prof::NormGroup normGroup();
   void finishJob(bool ok, const char* msg);
   void readHardware();
   void recordRow();

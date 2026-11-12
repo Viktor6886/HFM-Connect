@@ -147,6 +147,7 @@ LinkStatus SimEcu::exchange(uint8_t tx, Parity p, uint16_t deadlineMs, uint8_t& 
   if (p == Parity::None) {
     page_ = tx;
     pageSet_ = true;
+    pageUsed_ = false;
     resp = (n == inject_.badAckAt) ? tx : (uint8_t)(tx ^ 0xFF);
     switch (tx) {
       case 0x10: case 0xF3: case 0xCF: case 0xC1: case 0xC0: case 0xE0:
@@ -162,6 +163,11 @@ LinkStatus SimEcu::exchange(uint8_t tx, Parity p, uint16_t deadlineMs, uint8_t& 
     clockUs_ += (uint64_t)deadlineMs * 1000;
     return LinkStatus::Timeout;
   }
+  if (forgetPage_ && pageUsed_) {
+    resp = tx;  // page forgotten: the bare selector comes back as it was sent
+    return LinkStatus::Ok;
+  }
+  pageUsed_ = true;
   switch (page_) {
     case 0xF0: resp = tx < 28 ? ident_[tx] : 0xFF; break;
     case 0xF1: resp = dtc_[tx & 0x3F]; break;

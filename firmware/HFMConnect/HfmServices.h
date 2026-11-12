@@ -61,7 +61,10 @@ LinkStatus readVin(HfmSession& s, Vin& v);
 // DTC clear (REV 1.1 s.16; factory tester template F3 FF, PC tester "Erase").
 // Returns Ok and verified=true only if all 32 bytes read 00 afterwards; codes
 // of faults that are still present come back at once (ECU sets them again).
-LinkStatus dtcClear(HfmSession& s, bool& verified, FaultMemory& after);
+// confirmed (optional): the ECU acknowledged the whole erase sequence (F3 FF
+// answered 00); a non-Ok status with confirmed = true means only the
+// verification read that follows failed.
+LinkStatus dtcClear(HfmSession& s, bool& verified, FaultMemory& after, bool* confirmed = nullptr);
 
 // Adaptation reset (REV 1.1 s.16). Requires 20:B7 == 0 checked by
 // the caller. A key cycle is required afterwards; success is NOT verified.

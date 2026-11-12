@@ -47,6 +47,35 @@ const GroupDef& group(uint8_t g) { return kGroups[g < G_COUNT ? g : 0]; }
 const GroupDef& extRead(uint8_t x) { return kExt[x < X_COUNT ? x : 0]; }
 const GroupDef& vdoGroup(uint8_t g) { return kVdo[g < V_COUNT ? g : 0]; }
 
+bool pageNotKept(const uint8_t* sel, const uint8_t* reply, uint8_t n) {
+  if (n < 3 || reply[0] == sel[0]) return false;
+  return repliesEchoRequest(sel + 1, reply + 1, (uint8_t)(n - 1));
+}
+
+uint8_t echoMask(const uint8_t* sel, const uint8_t* reply, uint8_t n) {
+  uint8_t m = 0, c = 0;
+  for (uint8_t i = 0; i < n && i < 8; i++)
+    if (reply[i] == sel[i]) {
+      m |= (uint8_t)(1u << i);
+      c++;
+    }
+  return c >= 2 ? m : 0;
+}
+
+static uint8_t fullMask(uint8_t n) { return (uint8_t)((1u << n) - 1u); }
+
+// One group: on one prefix (the ECU keeps the page, Bosch templates) or one
+// prefix per selector (VDO templates, or an ECU found to keep no page).
+static LinkStatus readG(HfmSession& s, const GroupDef& d, uint8_t* out, Snapshot& snap) {
+  if (snap.perSelector || d.n == 1) return s.readEach(d.prefix, d.sel, d.n, out);
+  LinkStatus st = s.readGroup(d.prefix, d.sel, d.n, out);
+  if (st == LinkStatus::Ok && pageNotKept(d.sel, out, d.n)) {
+    snap.perSelector = true;  // from now on for this ECU (sticky in the snapshot)
+    st = s.readEach(d.prefix, d.sel, d.n, out);
+  }
+  return st;
+}
+
 static LinkStatus pollVdo(HfmSession& s, Snapshot& snap) {
   uint32_t t0 = s.link().nowMs();
   snap.vdoPlan = true;
@@ -55,14 +84,20 @@ static LinkStatus pollVdo(HfmSession& s, Snapshot& snap) {
   LinkStatus st = LinkStatus::Ok;
   for (uint8_t g = 0; g < V_COUNT; g++) {
     const GroupDef& d = kVdo[g];
-    st = s.readGroup(d.prefix, d.sel, d.n, snap.vdo[g]);
+    // Factory tester templates of vendor V: every read is "prefix 01 selector"
+    // (e.g. 22 01 72 / 22 01 73 for MAF lo/hi) - never a bare selector (D-037).
+    st = s.readEach(d.prefix, d.sel, d.n, snap.vdo[g]);
     if (st != LinkStatus::Ok) break;
     snap.vdoOk[g] = true;
-    snap.vdoEcho[g] = repliesEchoRequest(d.sel, snap.vdo[g], d.n);
+    snap.vdoEchoMask[g] = echoMask(d.sel, snap.vdo[g], d.n);
+    snap.vdoEcho[g] = snap.vdoEchoMask[g] == fullMask(d.n);
   }
   snap.planEcho = snap.vdoOk[V_P12] && snap.vdoOk[V_P22] && snap.vdoEcho[V_P12] && snap.vdoEcho[V_P22];
   // A single O2 byte cannot be judged alone: it follows the plan.
-  snap.vdoEcho[V_O2] = snap.vdoEcho[V_O2] || snap.planEcho;
+  if (snap.planEcho && snap.vdoOk[V_O2]) {
+    snap.vdoEcho[V_O2] = true;
+    snap.vdoEchoMask[V_O2] = 1;
+  }
   snap.lastStatus = st;
   snap.tMs = s.link().nowMs();
   snap.cycleMs = (uint16_t)(snap.tMs - t0);
@@ -78,10 +113,11 @@ LinkStatus pollNative(HfmSession& s, Snapshot& snap, bool vdo) {
   LinkStatus st = LinkStatus::Ok;
   for (uint8_t g = 0; g < G_COUNT; g++) {
     const GroupDef& d = kGroups[g];
-    st = s.readGroup(d.prefix, d.sel, d.n, snap.g[g]);
+    st = readG(s, d, snap.g[g], snap);
     if (st != LinkStatus::Ok) break;
     snap.groupOk[g] = true;
-    snap.groupEcho[g] = repliesEchoRequest(d.sel, snap.g[g], d.n);
+    snap.echoMask[g] = echoMask(d.sel, snap.g[g], d.n);
+    snap.groupEcho[g] = snap.echoMask[g] == fullMask(d.n);
   }
   // Single-byte groups are judged in pairs: MAF 48/49 and injection 54/55.
   {
@@ -89,10 +125,14 @@ LinkStatus pollNative(HfmSession& s, Snapshot& snap, bool vdo) {
     const uint8_t mafGot[2] = {snap.g[G_MAF_LO][0], snap.g[G_MAF_HI][0]};
     bool e = snap.groupOk[G_MAF_LO] && snap.groupOk[G_MAF_HI] && repliesEchoRequest(mafReq, mafGot, 2);
     snap.groupEcho[G_MAF_LO] = snap.groupEcho[G_MAF_HI] = e;
+    snap.echoMask[G_MAF_LO] = snap.echoMask[G_MAF_HI] = e ? 1 : 0;
     static const uint8_t injReq[2] = {0x54, 0x55};
     const uint8_t injGot[2] = {snap.g[G_RPM_LOW][0], snap.g[G_RPM_HIGH][0]};
-    if (snap.groupOk[G_RPM_LOW] && snap.groupOk[G_RPM_HIGH] && repliesEchoRequest(injReq, injGot, 2))
+    if (snap.groupOk[G_RPM_LOW] && snap.groupOk[G_RPM_HIGH] && repliesEchoRequest(injReq, injGot, 2)) {
       snap.groupEcho[G_RPM_LOW] = true;
+      snap.echoMask[G_RPM_LOW] = 1;
+      snap.echoMask[G_RPM_HIGH] |= 1;
+    }
   }
   snap.planEcho = snap.groupOk[G_AIRFLOW] && snap.groupOk[G_COOLANT] && snap.groupEcho[G_AIRFLOW] &&
                   snap.groupEcho[G_COOLANT];
@@ -216,75 +256,82 @@ static void setNoData(Value& o, Quality q, uint8_t r0, uint8_t r1 = 0, uint8_t n
 
 static void setBit(Value& o, uint8_t raw, uint8_t mask) { setVal(o, (raw & mask) ? 1.0f : 0.0f, raw); }
 
-// VDO plan: same byte converters as Bosch (GIP - the VDO scaling is not
-// documented); values that need an unknown VDO formula are not shown.
-static void notSupported(Decoded& d, const uint8_t* ps, uint8_t n, uint8_t raw) {
-  for (uint8_t i = 0; i < n; i++) setNoData(d.v[ps[i]], Quality::NotSupported, raw);
+// A byte that repeated its own address (D-034) is not a value: the parameter
+// is shown as "the ECU does not give this parameter", never as a number.
+static bool echoed(uint8_t mask, uint8_t i) { return ((mask >> i) & 1u) != 0; }
+static void unsupported(Value& o, uint8_t raw) { setNoData(o, Quality::NotSupported, raw); }
+
+static void setEct(Decoded& d, const Snapshot& s, const Decoded* prev, uint8_t raw) {
+  float ect = hfm::coolantNativeC(raw);
+  setVal(d.v[P_ECT], ect, raw);
+  bool havePrev = prev && prev->v[P_ECT].hasValue;
+  uint32_t dt = havePrev ? s.tMs - prev->tMs : 0;
+  if (!hfm::coolantPlausible(ect, havePrev ? prev->v[P_ECT].v : 0, dt, havePrev)) d.v[P_ECT].q = Quality::Implausible;
 }
 
+static void setIat(Decoded& d, uint8_t raw) {
+  float iat;
+  if (hfm::iatNativeC(raw, &iat)) setVal(d.v[P_IAT], iat, raw);
+  else setNoData(d.v[P_IAT], Quality::OutOfDomain, raw);
+}
+
+// VDO plan: same byte converters as Bosch (GIP - the VDO scaling is not
+// documented); the addresses are those of the factory tester templates.
 static void decodeVdo(const Snapshot& s, const Decoded* prev, Decoded& d) {
   const uint8_t* A = s.vdo[V_P12];
   const uint8_t* B = s.vdo[V_P22];
   const uint8_t* S = s.vdo[V_P23];
-  // Groups answered with their own addresses carry no data (D-034).
-  const bool p12 = s.vdoOk[V_P12] && !s.vdoEcho[V_P12];
-  const bool p22 = s.vdoOk[V_P22] && !s.vdoEcho[V_P22];
-  const bool pinj = s.vdoOk[V_INJ] && !s.vdoEcho[V_INJ];
-  const bool p23 = s.vdoOk[V_P23] && !s.vdoEcho[V_P23];
-  const bool po2 = s.vdoOk[V_O2] && !s.vdoEcho[V_O2];
-  static const uint8_t k12[] = {P_ECT, P_RPM, P_IAT, P_AC, P_PREHEAT, P_SPEED};
-  static const uint8_t k22[] = {P_THROTTLE, P_MAF, P_LAMBDA, P_IDLE_CONTACT, P_FULL_LOAD, P_CAMSHAFT, P_RESONANCE, P_DECEL_CUT, P_AIR_PUMP};
-  static const uint8_t k23[] = {P_STARTER, P_POSTSTART, P_WARMUP};
-  static const uint8_t kInj[] = {P_INJ};
-  static const uint8_t kO2[] = {P_O2, P_O2_ALT};
-  if (s.vdoOk[V_P12] && !p12) notSupported(d, k12, sizeof k12, A[0]);
-  if (s.vdoOk[V_P22] && !p22) notSupported(d, k22, sizeof k22, B[0]);
-  if (s.vdoOk[V_P23] && !p23) notSupported(d, k23, sizeof k23, S[0]);
-  if (s.vdoOk[V_INJ] && !pinj) notSupported(d, kInj, 1, s.vdo[V_INJ][0]);
-  if (s.vdoOk[V_O2] && !po2) notSupported(d, kO2, 2, s.vdo[V_O2][0]);
-  uint8_t rpmByte = A[1];
+  const uint8_t* J = s.vdo[V_INJ];
+  const bool p12 = s.vdoOk[V_P12], p22 = s.vdoOk[V_P22], pinj = s.vdoOk[V_INJ], p23 = s.vdoOk[V_P23],
+             po2 = s.vdoOk[V_O2];
+  const uint8_t eA = s.vdoEchoMask[V_P12], eB = s.vdoEchoMask[V_P22], eJ = s.vdoEchoMask[V_INJ],
+                eS = s.vdoEchoMask[V_P23], eO = s.vdoEchoMask[V_O2];
+  const uint8_t rpmByte = A[1];
+  const bool rpmOk = p12 && !echoed(eA, 1);
   if (p12) {
-    float ect = hfm::coolantNativeC(A[0]);
-    setVal(d.v[P_ECT], ect, A[0]);
-    bool havePrev = prev && prev->v[P_ECT].hasValue;
-    uint32_t dt = havePrev ? s.tMs - prev->tMs : 0;
-    if (!hfm::coolantPlausible(ect, havePrev ? prev->v[P_ECT].v : 0, dt, havePrev)) d.v[P_ECT].q = Quality::Implausible;
-    setVal(d.v[P_RPM], hfm::rpm(rpmByte), rpmByte);
-    float iat;
-    if (hfm::iatNativeC(A[2], &iat)) setVal(d.v[P_IAT], iat, A[2]);
-    else setNoData(d.v[P_IAT], Quality::OutOfDomain, A[2]);
-    setBit(d.v[P_AC], A[3], kMaskVdo[Q_AC]);
-    setBit(d.v[P_PREHEAT], A[4], kMaskVdo[Q_INTAKE]);
-    setVal(d.v[P_SPEED], (float)hfm::speedKmh(A[5]), A[5]);
+    if (echoed(eA, 0)) unsupported(d.v[P_ECT], A[0]); else setEct(d, s, prev, A[0]);
+    if (rpmOk) setVal(d.v[P_RPM], hfm::rpm(rpmByte), rpmByte); else unsupported(d.v[P_RPM], rpmByte);
+    if (echoed(eA, 2)) unsupported(d.v[P_IAT], A[2]); else setIat(d, A[2]);
+    if (echoed(eA, 3)) unsupported(d.v[P_AC], A[3]); else setBit(d.v[P_AC], A[3], kMaskVdo[Q_AC]);
+    if (echoed(eA, 4)) unsupported(d.v[P_PREHEAT], A[4]); else setBit(d.v[P_PREHEAT], A[4], kMaskVdo[Q_INTAKE]);
+    if (echoed(eA, 5)) unsupported(d.v[P_SPEED], A[5]); else setVal(d.v[P_SPEED], (float)hfm::speedKmh(A[5]), A[5]);
   }
   if (p22) {
-    setVal(d.v[P_THROTTLE], hfm::throttleDeg(B[0]), B[0]);
-    setVal(d.v[P_MAF], hfm::mafKgH(B[1], B[2]), B[1], B[2], 2);
+    if (echoed(eB, 0)) unsupported(d.v[P_THROTTLE], B[0]); else setVal(d.v[P_THROTTLE], hfm::throttleDeg(B[0]), B[0]);
+    if (echoed(eB, 1) || echoed(eB, 2)) setNoData(d.v[P_MAF], Quality::NotSupported, B[1], B[2], 2);
+    else setVal(d.v[P_MAF], hfm::mafKgH(B[1], B[2]), B[1], B[2], 2);
     int32_t lp;
-    if (p12 && hfm::lambdaPct(B[3], rpmByte, &lp)) setVal(d.v[P_LAMBDA], (float)lp, B[3]);
+    if (echoed(eB, 3)) unsupported(d.v[P_LAMBDA], B[3]);
+    else if (rpmOk && hfm::lambdaPct(B[3], rpmByte, &lp)) setVal(d.v[P_LAMBDA], (float)lp, B[3]);
     else setNoData(d.v[P_LAMBDA], Quality::NoData, B[3]);
-    setBit(d.v[P_IDLE_CONTACT], B[4], kMaskVdo[Q_IDLE]);
-    setBit(d.v[P_FULL_LOAD], B[4], kMaskVdo[Q_WOT]);
-    setBit(d.v[P_CAMSHAFT], B[4], kMaskVdo[Q_CAM]);
-    setBit(d.v[P_RESONANCE], B[4], kMaskVdo[Q_RESON]);
-    setBit(d.v[P_DECEL_CUT], B[4], kMaskVdo[Q_DECEL]);
-    setBit(d.v[P_AIR_PUMP], B[5], kMaskVdo[Q_AIR]);
+    static const uint8_t kBits[] = {P_IDLE_CONTACT, P_FULL_LOAD, P_CAMSHAFT, P_RESONANCE, P_DECEL_CUT};
+    static const uint8_t kQ[] = {Q_IDLE, Q_WOT, Q_CAM, Q_RESON, Q_DECEL};
+    for (uint8_t i = 0; i < sizeof kBits; i++) {
+      if (echoed(eB, 4)) unsupported(d.v[kBits[i]], B[4]);
+      else setBit(d.v[kBits[i]], B[4], kMaskVdo[kQ[i]]);
+    }
+    if (echoed(eB, 5)) unsupported(d.v[P_AIR_PUMP], B[5]); else setBit(d.v[P_AIR_PUMP], B[5], kMaskVdo[Q_AIR]);
   }
-  if (pinj && p12) {
+  if (pinj) {
     float ms;
-    uint8_t lo = s.vdo[V_INJ][0], hi = s.vdo[V_INJ][1];
-    if (hfm::injectionMs(lo, hi, rpmByte, &ms)) setVal(d.v[P_INJ], ms, lo, hi, 2);
-    else setNoData(d.v[P_INJ], Quality::NoData, lo, hi, 2);
+    if (echoed(eJ, 0) || echoed(eJ, 1)) setNoData(d.v[P_INJ], Quality::NotSupported, J[0], J[1], 2);
+    else if (rpmOk && hfm::injectionMs(J[0], J[1], rpmByte, &ms)) setVal(d.v[P_INJ], ms, J[0], J[1], 2);
+    else setNoData(d.v[P_INJ], Quality::NoData, J[0], J[1], 2);
   }
   if (p23) {
-    setBit(d.v[P_STARTER], S[0], kMaskVdo[Q_STARTER]);
-    setBit(d.v[P_POSTSTART], S[1], kMaskVdo[Q_POSTSTART]);
-    setBit(d.v[P_WARMUP], S[2], kMaskVdo[Q_WARMUP]);
+    if (echoed(eS, 0)) unsupported(d.v[P_STARTER], S[0]); else setBit(d.v[P_STARTER], S[0], kMaskVdo[Q_STARTER]);
+    if (echoed(eS, 1)) unsupported(d.v[P_POSTSTART], S[1]); else setBit(d.v[P_POSTSTART], S[1], kMaskVdo[Q_POSTSTART]);
+    if (echoed(eS, 2)) unsupported(d.v[P_WARMUP], S[2]); else setBit(d.v[P_WARMUP], S[2], kMaskVdo[Q_WARMUP]);
   }
   if (po2) {
     uint8_t o = s.vdo[V_O2][0];
-    setVal(d.v[P_O2], (float)hfm::o2AltMv(o), o);
-    setVal(d.v[P_O2_ALT], hfm::o2NativeMv(o), o);
+    if (echoed(eO, 0)) {
+      unsupported(d.v[P_O2], o);
+      unsupported(d.v[P_O2_ALT], o);
+    } else {
+      setVal(d.v[P_O2], (float)hfm::o2AltMv(o), o);
+      setVal(d.v[P_O2_ALT], hfm::o2NativeMv(o), o);
+    }
   }
 }
 
@@ -295,77 +342,73 @@ void decode(const Snapshot& s, prof::NormGroup ng, bool vdo, const Decoded* prev
   if (s.vdoPlan) {
     decodeVdo(s, prev, d);
   } else {
-  // Groups answered with their own addresses carry no data (D-034).
-  const bool af = s.groupOk[G_AIRFLOW] && !s.groupEcho[G_AIRFLOW];
-  const bool co = s.groupOk[G_COOLANT] && !s.groupEcho[G_COOLANT];
-  const bool mx = s.groupOk[G_MIXTURE] && !s.groupEcho[G_MIXTURE];
-  const bool rl = s.groupOk[G_RPM_LOW] && !s.groupEcho[G_RPM_LOW];
-  const bool rh = s.groupOk[G_RPM_HIGH] && !s.groupEcho[G_RPM_HIGH];
-  const bool maf = s.groupOk[G_MAF_LO] && s.groupOk[G_MAF_HI] && !s.groupEcho[G_MAF_LO];
+  // Bytes answered with their own addresses carry no data (D-034).
+  const bool af = s.groupOk[G_AIRFLOW];
+  const bool co = s.groupOk[G_COOLANT];
+  const bool mx = s.groupOk[G_MIXTURE];
+  const bool rl = s.groupOk[G_RPM_LOW];
+  const bool rh = s.groupOk[G_RPM_HIGH];
+  const bool maf = s.groupOk[G_MAF_LO] && s.groupOk[G_MAF_HI];
   const uint8_t* A = s.g[G_AIRFLOW];
   const uint8_t* C = s.g[G_COOLANT];
   const uint8_t* M = s.g[G_MIXTURE];
-  uint8_t rpmByte = A[2];
-  {
-    static const uint8_t kAf[] = {P_RPM, P_THROTTLE, P_LOAD, P_IGN, P_LAMBDA};
-    static const uint8_t kCo[] = {P_ECT, P_IAT, P_POSTSTART, P_WARMUP, P_FULL_LOAD, P_PREHEAT, P_AIR_PUMP, P_CAMSHAFT, P_RESONANCE};
-    static const uint8_t kMx[] = {P_O2, P_O2_ALT, P_AC, P_DECEL_CUT};
-    static const uint8_t kMaf[] = {P_MAF};
-    static const uint8_t kInj[] = {P_INJ};
-    if (s.groupOk[G_AIRFLOW] && !af) notSupported(d, kAf, sizeof kAf, A[0]);
-    if (s.groupOk[G_COOLANT] && !co) notSupported(d, kCo, sizeof kCo, C[0]);
-    if (s.groupOk[G_MIXTURE] && !mx) notSupported(d, kMx, sizeof kMx, M[0]);
-    if (s.groupOk[G_MAF_LO] && s.groupOk[G_MAF_HI] && !maf) notSupported(d, kMaf, 1, s.g[G_MAF_LO][0]);
-    if (s.groupOk[G_RPM_LOW] && s.groupOk[G_RPM_HIGH] && s.groupEcho[G_RPM_LOW]) notSupported(d, kInj, 1, s.g[G_RPM_LOW][0]);
-  }
+  const uint8_t eA = s.echoMask[G_AIRFLOW], eC = s.echoMask[G_COOLANT], eM = s.echoMask[G_MIXTURE];
+  const uint8_t rpmByte = A[2];
+  const bool rpmOk = af && !echoed(eA, 2);
 
   if (af) {
-    setVal(d.v[P_RPM], hfm::rpm(rpmByte), rpmByte);
-    setVal(d.v[P_THROTTLE], hfm::throttleDeg(A[1]), A[1]);
-    setVal(d.v[P_LOAD], hfm::loadPct(A[3]), A[3]);
-    setVal(d.v[P_IGN], hfm::ignitionDeg(A[4]), A[4]);
+    if (rpmOk) setVal(d.v[P_RPM], hfm::rpm(rpmByte), rpmByte); else unsupported(d.v[P_RPM], rpmByte);
+    if (echoed(eA, 1)) unsupported(d.v[P_THROTTLE], A[1]); else setVal(d.v[P_THROTTLE], hfm::throttleDeg(A[1]), A[1]);
+    if (echoed(eA, 3)) unsupported(d.v[P_LOAD], A[3]); else setVal(d.v[P_LOAD], hfm::loadPct(A[3]), A[3]);
+    if (echoed(eA, 4)) unsupported(d.v[P_IGN], A[4]); else setVal(d.v[P_IGN], hfm::ignitionDeg(A[4]), A[4]);
     int32_t lp;
-    if (hfm::lambdaPct(A[5], rpmByte, &lp)) setVal(d.v[P_LAMBDA], (float)lp, A[5]);
+    if (echoed(eA, 5)) unsupported(d.v[P_LAMBDA], A[5]);
+    else if (rpmOk && hfm::lambdaPct(A[5], rpmByte, &lp)) setVal(d.v[P_LAMBDA], (float)lp, A[5]);
     else setNoData(d.v[P_LAMBDA], Quality::NoData, A[5]);
   }
   if (co) {
-    float ect = hfm::coolantNativeC(C[1]);
-    setVal(d.v[P_ECT], ect, C[1]);
-    bool havePrev = prev && prev->v[P_ECT].hasValue;
-    uint32_t dt = havePrev ? s.tMs - prev->tMs : 0;
-    if (!hfm::coolantPlausible(ect, havePrev ? prev->v[P_ECT].v : 0, dt, havePrev)) d.v[P_ECT].q = Quality::Implausible;
-    float iat;
-    if (hfm::iatNativeC(C[3], &iat)) setVal(d.v[P_IAT], iat, C[3]);
-    else setNoData(d.v[P_IAT], Quality::OutOfDomain, C[3]);
-    setBit(d.v[P_POSTSTART], C[4], kMaskBosch[Q_POSTSTART]);
-    setBit(d.v[P_WARMUP], C[4], kMaskBosch[Q_WARMUP]);
-    setBit(d.v[P_FULL_LOAD], C[4], kMaskBosch[Q_WOT]);
-    setBit(d.v[P_PREHEAT], C[5], kMaskBosch[Q_INTAKE]);
-    setBit(d.v[P_AIR_PUMP], C[5], kMaskBosch[Q_AIR]);
-    setBit(d.v[P_CAMSHAFT], C[5], kMaskBosch[Q_CAM]);
-    setBit(d.v[P_RESONANCE], C[5], kMaskBosch[Q_RESON]);
+    if (echoed(eC, 1)) unsupported(d.v[P_ECT], C[1]); else setEct(d, s, prev, C[1]);
+    if (echoed(eC, 3)) unsupported(d.v[P_IAT], C[3]); else setIat(d, C[3]);
+    static const uint8_t k4[] = {P_POSTSTART, P_WARMUP, P_FULL_LOAD};
+    static const uint8_t q4[] = {Q_POSTSTART, Q_WARMUP, Q_WOT};
+    for (uint8_t i = 0; i < sizeof k4; i++) {
+      if (echoed(eC, 4)) unsupported(d.v[k4[i]], C[4]); else setBit(d.v[k4[i]], C[4], kMaskBosch[q4[i]]);
+    }
+    static const uint8_t k5[] = {P_PREHEAT, P_AIR_PUMP, P_CAMSHAFT, P_RESONANCE};
+    static const uint8_t q5[] = {Q_INTAKE, Q_AIR, Q_CAM, Q_RESON};
+    for (uint8_t i = 0; i < sizeof k5; i++) {
+      if (echoed(eC, 5)) unsupported(d.v[k5[i]], C[5]); else setBit(d.v[k5[i]], C[5], kMaskBosch[q5[i]]);
+    }
   }
   if (maf) {
     uint8_t lo = s.g[G_MAF_LO][0], hi = s.g[G_MAF_HI][0];
-    setVal(d.v[P_MAF], hfm::mafKgH(lo, hi), lo, hi, 2);
+    if (echoed(s.echoMask[G_MAF_LO], 0)) setNoData(d.v[P_MAF], Quality::NotSupported, lo, hi, 2);
+    else setVal(d.v[P_MAF], hfm::mafKgH(lo, hi), lo, hi, 2);
   }
   if (mx) {
     // Primary O2: factory tester formula (signed, matches the factory norm
     // -200..+1000 mV); 4 x raw kept as the alternative.
-    setVal(d.v[P_O2], (float)hfm::o2AltMv(M[0]), M[0]);
-    setVal(d.v[P_O2_ALT], hfm::o2NativeMv(M[0]), M[0]);
-    setBit(d.v[P_AC], M[1], kMaskBosch[Q_AC]);
-    setBit(d.v[P_DECEL_CUT], M[2], kMaskBosch[Q_DECEL]);
+    if (echoed(eM, 0)) {
+      unsupported(d.v[P_O2], M[0]);
+      unsupported(d.v[P_O2_ALT], M[0]);
+    } else {
+      setVal(d.v[P_O2], (float)hfm::o2AltMv(M[0]), M[0]);
+      setVal(d.v[P_O2_ALT], hfm::o2NativeMv(M[0]), M[0]);
+    }
+    if (echoed(eM, 1)) unsupported(d.v[P_AC], M[1]); else setBit(d.v[P_AC], M[1], kMaskBosch[Q_AC]);
+    if (echoed(eM, 2)) unsupported(d.v[P_DECEL_CUT], M[2]); else setBit(d.v[P_DECEL_CUT], M[2], kMaskBosch[Q_DECEL]);
   }
   if (rl && rh && af) {
     float ms;
     uint8_t lo = s.g[G_RPM_LOW][0], hi = s.g[G_RPM_HIGH][0];
-    if (hfm::injectionMs(lo, hi, rpmByte, &ms)) setVal(d.v[P_INJ], ms, lo, hi, 2);
+    if (echoed(s.echoMask[G_RPM_LOW], 0) || echoed(s.echoMask[G_RPM_HIGH], 0))
+      setNoData(d.v[P_INJ], Quality::NotSupported, lo, hi, 2);
+    else if (rpmOk && hfm::injectionMs(lo, hi, rpmByte, &ms)) setVal(d.v[P_INJ], ms, lo, hi, 2);
     else setNoData(d.v[P_INJ], Quality::NoData, lo, hi, 2);
   }
   if (s.extRead && s.extEcho) {
     static const uint8_t kExtP[] = {P_SPEED, P_O2_REAR, P_IDLE_CONTACT, P_STARTER, P_TRIM, P_ALT};
-    notSupported(d, kExtP, sizeof kExtP, s.ext[0]);
+    for (uint8_t i = 0; i < sizeof kExtP; i++) unsupported(d.v[kExtP[i]], s.ext[0]);
   } else if (s.extRead) {
     if (s.extOk[X_TRIM]) setVal(d.v[P_TRIM], s.ext[X_TRIM] * 5.0f / 255.0f, s.ext[X_TRIM]);
     if (s.extOk[X_ALT]) setVal(d.v[P_ALT], s.ext[X_ALT] * 5.0f, s.ext[X_ALT]);
@@ -380,8 +423,8 @@ void decode(const Snapshot& s, prof::NormGroup ng, bool vdo, const Decoded* prev
   // diagnosis byte is below 0x41, otherwise 20:67; 0 while the engine is stopped.
   {
     bool early = diagRaw < 0x41;
-    bool srcOk = early ? co : (s.extRead && s.extOk[X_IDLE_TARGET] && !s.extEcho);
-    if (srcOk && af) {
+    bool srcOk = early ? (co && !echoed(eC, 0)) : (s.extRead && s.extOk[X_IDLE_TARGET] && !s.extEcho);
+    if (srcOk && rpmOk) {
       uint16_t target, rpmOut;
       uint8_t src = early ? C[0] : s.ext[X_IDLE_TARGET];
       hfm::idleTarget(C[0], s.ext[X_IDLE_TARGET], rpmByte, diagRaw, &target, &rpmOut);
@@ -402,30 +445,68 @@ void decode(const Snapshot& s, prof::NormGroup ng, bool vdo, const Decoded* prev
     }
   }
 
-  // ---- norm layer -------------------------------------------------------------
+  // ---- engine mode ------------------------------------------------------------
+  // The factory norms (I07) are stated for the warm engine at idle (ECT > 80 C,
+  // P/N); a norm is compared only in the mode it is given for.
   bool ectOk = d.v[P_ECT].hasValue && d.v[P_ECT].q == Quality::Valid;
-  bool rpmOk = d.v[P_RPM].hasValue;
+  bool rpmValid = d.v[P_RPM].hasValue && d.v[P_RPM].q == Quality::Valid;
   float ect = ectOk ? d.v[P_ECT].v : -99;
-  float rpm = rpmOk ? d.v[P_RPM].v : 0;
-  d.conditionsWarmIdle = ectOk && rpmOk && ect > 80.0f && rpm >= 450 && rpm <= 1000;
-  d.conditionsWarmRunning = ectOk && rpmOk && ect > 80.0f && rpm >= 450;
+  float rpm = rpmValid ? d.v[P_RPM].v : 0;
+  d.warm = ectOk && ect > 80.0f;
+  if (!rpmValid) d.mode = EngineMode::Unknown;
+  else if (rpm < 1.0f) d.mode = EngineMode::Off;
+  else if (rpm < 450.0f) d.mode = EngineMode::Cranking;
+  else if (rpm <= 1000.0f) d.mode = EngineMode::Idle;
+  else d.mode = EngineMode::Raised;
+  const bool running = d.mode == EngineMode::Idle || d.mode == EngineMode::Raised;
+  d.conditionsWarmIdle = d.warm && d.mode == EngineMode::Idle;
+  d.conditionsWarmRunning = d.warm && running;
 
+  // ---- norm layer -------------------------------------------------------------
   for (uint8_t p = 0; p < P_COUNT; p++) {
     Value& val = d.v[p];
     const prof::Norm* n = prof::normFor(kParams[p].key, ng, vdo);
-    if (!n) { val.norm = NormState::NoNorm; continue; }
+    if (!n) {
+      val.norm = NormState::NoNorm;
+      d.why[p] = NormWhy::None;
+      continue;
+    }
     val.normRef = n;
     val.normLo = n->lo;
     val.normHi = n->hi;
-    bool cond = false;
-    switch (n->cond) {
-      case prof::NormCond::WarmIdle: cond = d.conditionsWarmIdle; break;
-      case prof::NormCond::WarmRunning: cond = d.conditionsWarmRunning; break;
-      case prof::NormCond::WarmAny: cond = ectOk && ect > 80.0f; break;
-      default: cond = true;
+    NormWhy w = NormWhy::Applied;
+    if (!val.hasValue || val.q != Quality::Valid) w = NormWhy::NoValue;
+    else if (n->cond != prof::NormCond::Always) {
+      if (!ectOk) w = NormWhy::EctUnknown;
+      else if (!d.warm) w = NormWhy::Cold;
+      else if (n->cond == prof::NormCond::WarmIdle && d.mode != EngineMode::Idle) w = NormWhy::NotIdle;
+      else if (n->cond == prof::NormCond::WarmRunning && !running) w = NormWhy::NotRunning;
     }
-    if (!val.hasValue || val.q != Quality::Valid || !cond) { val.norm = NormState::NotApplicable; continue; }
+    d.why[p] = w;
+    if (w != NormWhy::Applied) { val.norm = NormState::NotApplicable; continue; }
     val.norm = val.v < n->lo ? NormState::Below : (val.v > n->hi ? NormState::Above : NormState::InSpec);
+  }
+}
+
+const char* engineModeCode(EngineMode m) {
+  switch (m) {
+    case EngineMode::Off: return "OFF";
+    case EngineMode::Cranking: return "CRANKING";
+    case EngineMode::Idle: return "IDLE";
+    case EngineMode::Raised: return "RAISED";
+    default: return "UNKNOWN";
+  }
+}
+
+const char* normWhyCode(NormWhy w) {
+  switch (w) {
+    case NormWhy::Applied: return "APPLIED";
+    case NormWhy::NoValue: return "NO_VALUE";
+    case NormWhy::Cold: return "COLD";
+    case NormWhy::NotIdle: return "NOT_IDLE";
+    case NormWhy::NotRunning: return "NOT_RUNNING";
+    case NormWhy::EctUnknown: return "ECT_UNKNOWN";
+    default: return "NONE";
   }
 }
 

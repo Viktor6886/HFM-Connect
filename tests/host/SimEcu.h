@@ -31,6 +31,10 @@ class SimEcu : public ByteLink {
   void setFaultByte(uint8_t index, uint8_t value);
   uint8_t faultByte(uint8_t index) const { return dtc_[index & 0x3F]; }
   void setPageByte(uint8_t page, uint8_t sel, uint8_t value);  // override
+  // ECU that keeps no page context (observed on VDO 013 545 08 32, D-037):
+  // after a prefix only the first selector is answered with data, every
+  // further bare selector is answered with the selector itself.
+  void setForgetPage(bool on) { forgetPage_ = on; }
   uint32_t exchanges() const { return count_; }
   uint8_t lastWritePrefix() const { return lastWritePrefix_; }
   bool purgeOn() const { return purgeOn_; }
@@ -65,6 +69,8 @@ class SimEcu : public ByteLink {
   bool initialized_ = false;
   uint8_t page_ = 0;
   bool pageSet_ = false;
+  bool forgetPage_ = false;
+  bool pageUsed_ = false;      // a selector was answered since the last prefix
   uint8_t ident_[28];
   uint8_t dtc_[64];
   uint8_t ovPage_[32] = {0}, ovSel_[32] = {0}, ovVal_[32] = {0};

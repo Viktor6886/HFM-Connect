@@ -102,7 +102,7 @@ struct EcuProfile {
   char name[112];
   bool resolved;          // identified as HFM-SFI
   bool referenceEcu;      // reference ECU 013 545 13 32 / 41-00
-  bool vdoPlanFirst;      // VDO: try the VDO live-data plan first (experimental opt-in)
+  bool vdoPlanFirst;      // VDO: the VDO live-data plan of the factory templates (D-037)
   dtc::Variant variant;
   dtc::BankMapping bankMapping;
   Confidence bankMappingConf;

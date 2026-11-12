@@ -19,7 +19,7 @@ SET = {"break_ms": 177, "post_break_ms": 214, "byte_timeout_ms": 750, "ftdi_mode
        "experimental_reads": True, "engineer_mode": False, "auto_connect": True, "keep_alive": True,
        "impulse_enabled": False, "trace_capture": True, "battery_manual_confirm": False, "vehicle_idx": 2,
        "production_ym": 199301, "vin": "***", "mask_vin": True, "ap_ssid": "HFM Connect", "ap_default_pass": True,
-       "sta_ssid": "", "imp_press_ms": 3000, "imp_end_gap_ms": 2500, "imp_clear_ms": 7000, "require_write_key": False,
+       "sta_ssid": "", "captive_portal": True, "imp_press_ms": 3000, "imp_end_gap_ms": 2500, "imp_clear_ms": 7000, "require_write_key": False,
        "vbat_adc": False, "ui_theme": "auto",
        "live_sel": "rpm,maf,o2_mv,lambda", "live_cat": "all", "code9": "", "wake_learned": True,
        "sound_level": 2, "light_level": 2, "dtc_on_connect": True, "buzzer_fitted": True, "led_fitted": True,
@@ -40,24 +40,40 @@ PARAMS = [("rpm", "Обороты двигателя", "об/мин", 0, 0, 7000
 
 
 def live(defs):
+    # Engine mode cycles every 60 s: stopped (cold) -> warm idle -> 3150 rpm,
+    # to show that the idle norms are compared only at the warm idle (D-037).
     t = time.time() - T0
+    ph = int(t // 20) % 3
+    mode, warm = [("OFF", False), ("IDLE", True), ("RAISED", True)][ph]
+    rpm = [0, 760 + 20 * math.sin(t), 3150][ph]
     vals = []
     for k, name, unit, cat, mn, mx, dec, b, lo, hi in PARAMS:
-        v = {"rpm": 760 + 20 * math.sin(t), "ect": 86.0, "maf": 21.4 + math.sin(t), "throttle": 1.2, "o2_mv": 450 + 300 * math.sin(3 * t),
-             "lambda": -9.2 + 0.3 * math.sin(t), "inj_ms": 3.1, "ign_deg": 8.5, "speed": None, "idle_contact": 1, "resonance": 0}[k]
-        o = {"k": k, "v": None if v is None else round(v, dec), "q": "NOT_SUPPORTED" if v is None else "VALID"}
+        v = {"rpm": rpm, "ect": [41.0, 86.0, 88.0][ph], "maf": [0.0, 17.4 + math.sin(t), 98.0][ph], "throttle": [1.0, 1.2, 9.5][ph],
+             "o2_mv": [450, 450 + 300 * math.sin(3 * t), 600][ph], "lambda": [None, -4.2 + 0.3 * math.sin(t), 2.0][ph],
+             "inj_ms": [None, 3.1, 6.2][ph], "ign_deg": [12.0, 8.5, 31.0][ph], "speed": None, "idle_contact": [1, 1, 0][ph], "resonance": 0}[k]
+        q = "VALID"
+        if v is None:
+            q = "NOT_SUPPORTED" if k == "speed" else "NO_DATA"
+        o = {"k": k, "v": None if v is None else round(v, dec), "q": q}
         if lo is not None:
-            o.update({"lo": lo, "hi": hi, "nnote": "ХХ, P/N, ОЖ >80 °C", "nsrc": "I07 p.2",
-                      "norm": "BELOW" if v < lo else "ABOVE" if v > hi else "IN_SPEC"})
+            cond_idle = k != "o2_mv"
+            if v is None: why = "NO_VALUE"
+            elif not warm: why = "COLD"
+            elif cond_idle and mode != "IDLE": why = "NOT_IDLE"
+            elif not cond_idle and mode not in ("IDLE", "RAISED"): why = "NOT_RUNNING"
+            else: why = "APPLIED"
+            norm = ("BELOW" if v < lo else "ABOVE" if v > hi else "IN_SPEC") if why == "APPLIED" else "NOT_APPLICABLE"
+            o.update({"lo": lo, "hi": hi, "nnote": "ХХ, P/N, ОЖ >80 °C", "nsrc": "I07 p.2", "norm": norm, "why": why})
         else:
             o["norm"] = "NO_NORM"
         if defs:
-            o.update({"name": name, "unit": unit, "src": "20:B7", "formula": "f", "conf": "GIP" if k in ("lambda", "inj_ms", "speed") else "REK", "ev": "AV", "cat": cat,
+            o.update({"name": name, "unit": unit, "src": "12:7E", "formula": "f", "conf": "GIP", "ev": "AV", "cat": cat,
                       "bool": b, "min": mn, "max": mx, "dec": dec})
         vals.append(o)
-    return {"live": {"active": STATE["live"], "seq": int(t * 3), "cycles": 5, "age_ms": 120, "cycle_ms": 310,
-                     "link_ready": True, "warm_idle": True, "warm_running": True, "norms_vehicle": True, "plan": "bosch", "plan_echo": False,
-                     "groups": [{"name": "rpm_low", "prefix": "20", "ok": True, "raw": "4C"}, {"name": "airflow", "prefix": "20", "ok": True, "raw": "1E 04 1E 50 7E 80"}],
+    return {"live": {"active": STATE["live"], "seq": int(t * 3), "cycles": 5, "age_ms": 120, "cycle_ms": 410,
+                     "link_ready": True, "warm_idle": mode == "IDLE" and warm, "warm_running": warm and mode != "OFF",
+                     "mode": mode, "warm": warm, "norms_vehicle": False, "plan": "vdo", "plan_echo": False, "per_selector": True,
+                     "groups": [{"name": "vdo_12", "prefix": "12", "ok": True, "raw": "C8 00 A0 00 00 00"}, {"name": "vdo_22", "prefix": "22", "ok": True, "raw": "05 00 00 80 40 00"}],
                      "values": vals}}
 
 
@@ -176,25 +192,35 @@ class H(BaseHTTPRequestHandler):
             if f.get("job") == "live_stop": STATE["live"] = False
             ok, msg = True, "Выполнено: " + f.get("job", "")
             if f.get("job") == "svc_prepare":
-                STATE["plan"] = {"op": f.get("op"), "ok": True, "token": "0BADF00D", "expires_in_ms": 60000, "block_reason": "",
-                                 "checks": [{"id": "capability", "text": "Операция разрешена профилем ЭБУ", "result": True},
-                                            {"id": "session", "text": "Связь с ЭБУ по K-Line есть", "result": True},
-                                            {"id": "battery", "text": "Напряжение бортсети не ниже 11 В (измерено или подтверждено вами)", "result": True},
-                                            {"id": "engine_stopped", "text": "Зажигание включено, двигатель заглушен (по оборотам или подтверждено вами)", "result": f.get("confirm") == "1"}]}
-                if f.get("confirm") != "1":
-                    STATE["plan"]["ok"] = False
-                    STATE["plan"]["block_reason"] = "Зажигание включено, двигатель заглушен (по оборотам или подтверждено вами)"
+                bat = f.get("battery") == "1" if "battery" in f else bool(SET.get("battery_manual_confirm"))
+                stop = f.get("confirm") == "1"
+                checks = [{"id": "capability", "text": "Операция разрешена профилем ЭБУ", "result": True},
+                          {"id": "unresolved", "text": "Нет незавершённой/неопределённой предыдущей операции", "result": True},
+                          {"id": "session", "text": "Связь с ЭБУ по K-Line есть", "result": True},
+                          {"id": "ident", "text": "ЭБУ идентифицирован", "result": True},
+                          {"id": "battery", "text": "Напряжение бортсети не ниже 11 В (измерено или подтверждено вами)", "result": True if bat else None},
+                          {"id": "fault_snapshot", "text": "Память неисправностей прочитана перед стиранием (записи «до» сохранятся в отчёте)", "result": True},
+                          {"id": "engine_stopped", "text": "Зажигание включено, двигатель заглушен (по оборотам или подтверждено вами)", "result": True if stop else None}]
+                bad = next((c for c in checks if c["result"] is not True), None)
+                STATE["plan"] = {"op": f.get("op"), "ok": bad is None, "token": "0BADF00D", "expires_in_ms": 60000,
+                                 "block_reason": bad["text"] if bad else "", "checks": checks}
+                if bad: ok, msg = False, "Условия не выполнены."
+                else: msg = "Условия выполнены: введите пароль в течение 60 с"
             if f.get("job") == "svc_execute":
                 if f.get("password") != "12345678":
                     ok, msg = False, "Неверный пароль. Нужен пароль Wi-Fi точки доступа HFM Connect"
                 else:
                     STATE["plan"] = {}
-                    STATE["result"] = "Память неисправностей стёрта: записей было 2, при повторном чтении — 0"
+                    STATE["result"] = ("ЭБУ подтвердил команду стирания. Повторное чтение памяти: записей 1 (было 2). Оставшиеся "
+                                       "неисправности есть сейчас — ЭБУ записал их снова сразу после стирания; устраните причину и сотрите ещё раз.")
+                    msg = "Выполнено"
             JOBS[i] = {"id": i, "job": f.get("job"), "state": "done" if ok else "failed", "message": msg}
             return self.send({"ok": True, "id": i})
         if u.path == "/api/settings":
             for k, v in f.items():
-                SET[k] = v if k in ("ui_theme", "live_sel", "live_cat", "code9", "sta_ssid") else (int(v) if k in ("sound_level", "light_level") else SET.get(k))
+                if k in ("ui_theme", "live_sel", "live_cat", "code9", "sta_ssid"): SET[k] = v
+                elif k in ("sound_level", "light_level"): SET[k] = int(v)
+                elif isinstance(SET.get(k), bool): SET[k] = v == "1"
             return self.send({"ok": True})
         self.send({"ok": True})
 

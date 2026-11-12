@@ -208,6 +208,7 @@ table.kv td:first-child{color:var(--label);padding-right:12px;width:42%}
 .sheet-card h3{margin:2px 0 12px;font-size:20px}
 .toast{position:fixed;left:50%;bottom:calc(90px + env(safe-area-inset-bottom));transform:translateX(-50%);z-index:60;background:rgba(30,30,32,.94);color:#fff;padding:10px 16px;border-radius:12px;font-size:14px;max-width:min(92vw,520px);box-shadow:0 8px 30px rgba(0,0,0,.3);animation:up .25s}
 .toast.err{background:rgba(255,59,48,.96)}
+body.sheet-on .toast{top:calc(10px + env(safe-area-inset-top));bottom:auto;animation:fade .2s}
 .spin{width:18px;height:18px;border:2px solid rgba(255,255,255,.5);border-top-color:#fff;border-radius:50%;animation:rot .8s linear infinite;display:inline-block}
 .btn.sec .spin{border-color:var(--fill);border-top-color:var(--accent)}
 @keyframes rot{to{transform:rotate(360deg)}}

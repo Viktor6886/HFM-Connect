@@ -264,13 +264,13 @@ void resolve(const EcuIdent& id, const ResolveOptions& opt, EcuProfile& p) {
     p.bankMapping = dtc::BankMapping::AStoredBCurrent;
     p.bankMappingConf = Confidence::GIP;
   } else if (vdo && hfmRange) {
-    // Vendor letter V (PC tester decoding). The fault memory, adaptations and
-    // coding use the HFM read pages; Live Data is read with the Bosch plan and
-    // checked (D-034); the VDO plan of the factory tester templates is tried
-    // first only with the experimental opt-in.
+    // Vendor letter V (PC tester decoding). The fault memory uses the HFM read
+    // pages. Live Data: the VDO address plan of the factory tester templates
+    // for vendor V (12/22/23, every selector after its own prefix - D-037);
+    // the Bosch addresses mean other quantities on a VDO ECU and are not read.
     p.resolved = true;
     p.vdoUnits = true;
-    p.vdoPlanFirst = opt.experimentalReads;
+    p.vdoPlanFirst = true;
     snprintf(p.id, sizeof p.id, "VDO_HFM_%d", di);
     snprintf(p.name, sizeof p.name, "VDO HFM %s, diag %s", id.partDisplay, id.diagDisplay);
     p.bankMapping = dtc::BankMapping::AStoredBCurrent;
@@ -303,8 +303,8 @@ void resolve(const EcuIdent& id, const ResolveOptions& opt, EcuProfile& p) {
        (id.present ? "ЭБУ не распознан как HFM-SFI: чтение возможно только с «Экспериментальным чтением» в настройках"
                    : "Сначала подключитесь к ЭБУ — функции определяются по его идентификации"));
   setCap(p, F_DTC_READ, readOk, readConf, readReason);
-  // Live Data: the Bosch read pages for every HFM-SFI ECU; replies are checked
-  // (address repeated, impossible values) before a value is shown (D-034).
+  // Live Data: Bosch read pages, VDO ECUs - VDO plan (D-037); replies are
+  // checked (address repeated, impossible values) before a value is shown (D-034).
   setCap(p, F_LIVE_NATIVE, readOk, p.vdoUnits ? Confidence::GIP : readConf, readReason);
   setCap(p, F_ADAPT_READ, readOk, Confidence::REK, readReason);
   setCap(p, F_CODING_READ, readOk, Confidence::REK, readReason);

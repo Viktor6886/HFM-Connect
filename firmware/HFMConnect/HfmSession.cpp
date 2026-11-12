@@ -14,8 +14,9 @@ PrefixClass classifyPrefix(uint8_t op) {
     // engine reports "not supported" and resumes the session (D-034).
     case 0xF9:
       return PrefixClass::Read;
-    // VDO variant live-data pages (factory tester templates for vendor V;
-    // never field-tested): only with the experimental opt-in.
+    // VDO variant live-data pages (factory tester templates for vendor V,
+    // "12 01 76", "22 01 72", "23 01 a4" ...): reads for an ECU identified as
+    // VDO (setVdoReads, D-037); for other ECUs only with the experimental opt-in.
     case 0x12:
     case 0x22:
     case 0x23:
@@ -148,7 +149,7 @@ LinkStatus HfmSession::prefix(uint8_t op) {
   PrefixClass pc = classifyPrefix(op);
   CommandRisk risk = CommandRisk::Read;
   if (pc == PrefixClass::Unknown) return fail(LinkStatus::NotAllowed);
-  if (pc == PrefixClass::ExperimentalRead && !experimentalReads_) return fail(LinkStatus::NotAllowed);
+  if (pc == PrefixClass::ExperimentalRead && !experimentalReads_ && !vdoReads_) return fail(LinkStatus::NotAllowed);
   if (pc == PrefixClass::Write) {
     if (!writeToken_) return fail(LinkStatus::NotAllowed);
     risk = CommandRisk::Write;
@@ -187,6 +188,16 @@ LinkStatus HfmSession::readGroup(uint8_t op, const uint8_t* sels, uint8_t n, uin
   LinkStatus st = prefix(op);
   if (st != LinkStatus::Ok) return st;
   for (uint8_t i = 0; i < n; i++) {
+    st = selector(sels[i], out[i]);
+    if (st != LinkStatus::Ok) return st;
+  }
+  return LinkStatus::Ok;
+}
+
+LinkStatus HfmSession::readEach(uint8_t op, const uint8_t* sels, uint8_t n, uint8_t* out) {
+  for (uint8_t i = 0; i < n; i++) {
+    LinkStatus st = prefix(op);
+    if (st != LinkStatus::Ok) return st;
     st = selector(sels[i], out[i]);
     if (st != LinkStatus::Ok) return st;
   }

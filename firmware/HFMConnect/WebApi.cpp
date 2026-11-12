@@ -258,9 +258,12 @@ static void writeLive(JsonWriter& w, const EngineState& s, bool withDefs) {
   w.kv("cycle_ms", (unsigned)s.snap.cycleMs);
   w.kv("link_ready", s.session == SessionState::Ready);
   w.kv("warm_idle", d.conditionsWarmIdle).kv("warm_running", d.conditionsWarmRunning);
+  // Engine mode decides which factory norm is compared (norms of I07: warm idle).
+  w.kv("mode", live::engineModeCode(d.mode)).kv("warm", d.warm);
   int16_t vi = AppSettings.vehicleIdx;
   w.kv("norms_vehicle", vi >= 0);
   w.kv("plan_echo", s.snap.planEcho);
+  w.kv("per_selector", s.snap.vdoPlan || s.snap.perSelector);
   // Groups of the address plan actually polled (Bosch full8 or VDO).
   w.kv("plan", s.snap.vdoPlan ? "vdo" : "bosch");
   w.key("groups").beginArray();
@@ -292,6 +295,7 @@ static void writeLive(JsonWriter& w, const EngineState& s, bool withDefs) {
     if (v.hasValue) w.kv("v", (double)v.v, pd.decimals); else w.kvNull("v");
     w.kv("q", live::qualityCode(v.q));
     w.kv("norm", live::normStateCode(v.norm));
+    if (v.normRef) w.kv("why", live::normWhyCode(d.why[p]));
     if (v.normRef) {
       w.kv("lo", (double)v.normLo, 2).kv("hi", (double)v.normHi, 2).kv("nnote", v.normRef->note).kv("nsrc", v.normRef->source);
     }
@@ -646,8 +650,10 @@ static void hJob() {
     for (uint8_t o = 0; o < (uint8_t)guard::Op::Count; o++)
       if (op == guard::opCode((guard::Op)o)) arg = o;
   }
-  // "Ignition ON, engine stopped" confirmed by the user in the service dialog.
+  // Switches of the service dialog, sent with the job: "ignition ON, engine
+  // stopped" (0x100) and "battery >= 11 V" (0x200, 0x400 = switch shown).
   if (server.arg("confirm") == "1") arg |= 0x100;
+  if (server.hasArg("battery")) arg |= 0x400 | (server.arg("battery") == "1" ? 0x200u : 0u);
   if (job == Job::ImpulseRead && server.arg("fresh") == "1") arg = 1;
   String text;
   if (server.hasArg("token")) {
@@ -679,7 +685,7 @@ static void hSettingsGet() {
   w.kv("vehicle_idx", (int)s.vehicleIdx).kv("production_ym", s.productionYm);
   w.kv("vin", s.maskVin && s.vin[0] ? "***" : s.vin).kv("mask_vin", s.maskVin);
   w.kv("ap_ssid", netApSsid()).kv("ap_default_pass", strcmp(s.apPass, HFM_AP_DEFAULT_PASS) == 0);
-  w.kv("sta_ssid", s.staSsid);
+  w.kv("sta_ssid", s.staSsid).kv("captive_portal", s.captivePortal);
   w.kv("imp_press_ms", (unsigned)s.impPressMs).kv("imp_end_gap_ms", (unsigned)s.impEndGapMs);
   w.kv("vbat_adc", HFM_VBAT_ADC_PIN >= 0);
   static const char* const kThemes[] = {"auto", "light", "dark"};
@@ -760,6 +766,8 @@ static void hSettingsPost() {
   if (server.hasArg("vin")) strlcpy(s.vin, server.arg("vin").c_str(), sizeof s.vin);
   if (server.hasArg("imp_press_ms")) s.impPressMs = (uint16_t)constrain(server.arg("imp_press_ms").toInt(), 2000, 4000);
   if (server.hasArg("imp_end_gap_ms")) s.impEndGapMs = (uint16_t)constrain(server.arg("imp_end_gap_ms").toInt(), 1000, 8000);
+  bool captiveChanged = server.hasArg("captive_portal") && argBool("captive_portal", s.captivePortal) != s.captivePortal;
+  s.captivePortal = argBool("captive_portal", s.captivePortal);
   bool netChanged = false;
   if (server.hasArg("ap_pass") && server.arg("ap_pass").length() >= 8) {
     strlcpy(s.apPass, server.arg("ap_pass").c_str(), sizeof s.apPass);
@@ -773,6 +781,7 @@ static void hSettingsPost() {
   w.beginObject().kv("ok", true).kv("net_restart", netChanged).endObject();
   sendSmall(w);
   if (netChanged) netApply();
+  if (captiveChanged) netApplyCaptive();
 }
 
 static void hRecord() {
@@ -857,6 +866,7 @@ static void hIndex() {
 
 static void hNotFound() {
   if (server.uri().startsWith("/api/")) return sendError(404, "not found");
+  if (!AppSettings.captivePortal) return sendError(404, "not found");
   // Captive portal: redirect everything else to the app.
   server.sendHeader("Location", String("http://") + WiFi.softAPIP().toString() + "/", true);
   server.send(302, "text/plain", "");

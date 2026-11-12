@@ -7,6 +7,7 @@
 void netBegin();
 void netLoop();
 void netApply();  // re-apply settings (password / station credentials)
+void netApplyCaptive();  // captive DNS on/off (Settings::captivePortal)
 const char* netApSsid();
 void netStatusJson(JsonWriter& w);
 #endif

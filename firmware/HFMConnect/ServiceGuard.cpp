@@ -80,15 +80,21 @@ void ServiceGuard::evaluate(Op op, const prof::EcuProfile& pr, const EcuIdent& i
   add(p, "battery", "Напряжение бортсети не ниже 11 В (измерено или подтверждено вами)", bat);
 
   bool liveFresh = f.liveAgeMs <= 3000;
-  // Engine stopped: from a fresh rpm reading; if this ECU gives no rpm, the
-  // user's own confirmation counts (a running engine always gives rpm > 0).
+  // Engine stopped: a fresh reading decides when it is conclusive (0 rpm, or a
+  // running engine on a confirmed rpm address); otherwise - no reading, or a
+  // reading the engine cannot vouch for - the user's own confirmation counts.
   int8_t stopped = (liveFresh && f.engineStopped >= 0) ? (f.engineStopped == 1 ? 1 : 0)
                                                        : (f.engineStoppedConfirm ? 1 : -1);
-  const char* stoppedText = "Зажигание включено, двигатель заглушен (по оборотам или подтверждено вами)";
+  const char* stoppedText = stopped == 0
+                                ? "Двигатель работает: ЭБУ сообщает обороты больше 0. Заглушите двигатель, "
+                                  "зажигание оставьте включённым"
+                                : "Зажигание включено, двигатель заглушен (по оборотам или подтверждено вами)";
   switch (op) {
     case Op::DtcClear:
-      add(p, "fault_snapshot", "Память неисправностей прочитана меньше минуты назад и в ней есть записи",
-          (f.faultMemAgeMs <= 60000 && f.faultMemNonZero) ? 1 : 0);
+      // The device reads the fault memory itself right before planning (the
+      // entries "before" go into the report and are compared with the result).
+      add(p, "fault_snapshot", "Память неисправностей прочитана перед стиранием (записи «до» сохранятся в отчёте)",
+          f.faultMemAgeMs <= 120000 ? 1 : 0);
       add(p, "engine_stopped", stoppedText, stopped);
       break;
     case Op::AdaptReset:
@@ -173,6 +179,7 @@ AuthResult ServiceGuard::authorize(Op op, uint32_t token, const char* password, 
   if (strcmp(id.fingerprint, plan_.fingerprint) != 0) return AuthResult::IdentChanged;
   Plan fresh;
   evaluate(op, pr, id, f, fresh);
+  lastBlock_ = fresh.blockReason;
   if (!fresh.ok) return AuthResult::ChecksFailed;
   plan_.token = 0;  // one-time
   return AuthResult::Ok;

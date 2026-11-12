@@ -42,6 +42,7 @@ void Settings::load() {
   if (!prefs.getString("appass", apPass, sizeof apPass)) apPass[0] = 0;
   prefs.getString("stassid", staSsid, sizeof staSsid);
   prefs.getString("stapass", staPass, sizeof staPass);
+  captivePortal = prefs.getBool("cptl", true);
   impPressMs = prefs.getUShort("imppr", 3000);
   impEndGapMs = prefs.getUShort("impgap", 2500);
   impClearMs = prefs.getUShort("impclr", 7000);
@@ -95,6 +96,7 @@ void Settings::save() {
   prefs.putString("appass", apPass);
   prefs.putString("stassid", staSsid);
   prefs.putString("stapass", staPass);
+  prefs.putBool("cptl", captivePortal);
   prefs.putUShort("imppr", impPressMs);
   prefs.putUShort("impgap", impEndGapMs);
   prefs.putUShort("impclr", impClearMs);

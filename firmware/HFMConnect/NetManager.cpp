@@ -23,13 +23,27 @@ void netApply() {
   }
 }
 
+void netApplyCaptive() {
+  dns.stop();
+  if (AppSettings.captivePortal) {
+    // Every name resolves to the device: the phone detects a sign-in page and
+    // opens the WebUI by itself (in its own window, titled by the phone).
+    dns.setErrorReplyCode(DNSReplyCode::NoError);
+    dns.start(53, "*", WiFi.softAPIP());
+  } else {
+    // Only the device name: connectivity checks fail as "no internet", no
+    // sign-in window - the WebUI is opened in the browser at http://192.168.4.1.
+    dns.setErrorReplyCode(DNSReplyCode::NonExistentDomain);
+    dns.start(53, HFM_MDNS_NAME ".local", WiFi.softAPIP());
+  }
+}
+
 void netBegin() {
   strlcpy(apSsid, HFM_AP_SSID, sizeof apSsid);
   WiFi.persistent(false);
   WiFi.setSleep(false);
   netApply();
-  dns.setErrorReplyCode(DNSReplyCode::NoError);
-  dns.start(53, "*", WiFi.softAPIP());
+  netApplyCaptive();
   if (MDNS.begin(HFM_MDNS_NAME)) MDNS.addService("http", "tcp", HFM_HTTP_PORT);
 }
 

@@ -88,12 +88,17 @@ function toast(msg, err = false, ms = 3200) {
   const t = $('#toast');
   t.textContent = msg;
   t.className = 'toast' + (err ? ' err' : '');
+  t.onclick = () => t.classList.add('hidden');  // tap to dismiss
   clearTimeout(toast._t);
-  toast._t = setTimeout(() => t.classList.add('hidden'), ms);
+  toast._t = setTimeout(() => t.classList.add('hidden'), err ? Math.max(ms, 5000) : ms);
 }
 
 // Runs a device job and waits for ITS result (jobs are queued on the device).
+// quiet: true = no toast on success; 'silent' = never a toast (the caller shows
+// job.msg in place, e.g. inside a dialog that a toast would cover).
 async function job(name, params = {}, btn, quiet = false) {
+  const silent = quiet === 'silent';
+  job.msg = '';
   let label;
   if (btn) { label = btn.innerHTML; btn.disabled = true; btn.innerHTML = '<span class="spin"></span>'; }
   try {
@@ -104,14 +109,17 @@ async function job(name, params = {}, btn, quiet = false) {
       let j;
       try { j = await api('job?id=' + r.id, {}, 4000); } catch (e) { continue; }  // Wi-Fi hiccup: keep waiting
       if (j.state === 'done' || j.state === 'failed') {
-        if (j.message && !(quiet && j.state === 'done')) toast(j.message, j.state === 'failed');
+        job.msg = j.message || '';
+        if (j.message && !silent && !(quiet && j.state === 'done')) toast(j.message, j.state === 'failed');
         return j.state === 'done';
       }
     }
-    toast('Операция выполняется дольше обычного — результат появится на странице', true);
+    job.msg = 'Операция выполняется дольше обычного — результат появится на странице';
+    if (!silent) toast(job.msg, true);
     return false;
   } catch (e) {
-    toast(e.message, true);
+    job.msg = e.message;
+    if (!silent) toast(e.message, true);
     return false;
   } finally {
     if (btn) { btn.disabled = false; btn.innerHTML = label; }
@@ -122,8 +130,9 @@ async function job(name, params = {}, btn, quiet = false) {
 function sheet(html) {
   $('#sheetCard').innerHTML = html;
   $('#sheet').classList.remove('hidden');
+  document.body.classList.add('sheet-on');  // toasts move to the top, off the dialog buttons
 }
-function closeSheet() { $('#sheet').classList.add('hidden'); }
+function closeSheet() { $('#sheet').classList.add('hidden'); document.body.classList.remove('sheet-on'); }
 $('#sheet').addEventListener('click', e => { if (e.target.id === 'sheet') closeSheet(); });
 
 // ---------------------------------------------------------------- icons
@@ -297,7 +306,7 @@ function paramNow(k) {
   if (stale) t = `Сейчас: ${esc(val)} — данные устарели (${esc(ago(L.age_ms))}), оценка не выполняется.`;
   else if (v.norm === 'BELOW' || v.norm === 'ABOVE') t = `<b style="color:var(--red)">Сейчас: ${esc(val)} — ${v.norm === 'BELOW' ? 'ниже' : 'выше'} нормы ${fmt(v.lo, d.dec)}…${fmt(v.hi, d.dec)}.</b>${p && p.bad ? ' Возможные причины: ' + esc(p.bad) : ''}`;
   else if (v.norm === 'IN_SPEC') t = `Сейчас: ${esc(val)} — в норме.`;
-  else if (v.norm === 'NOT_APPLICABLE') t = `Сейчас: ${esc(val)} — условия проверки нормы не выполнены (${esc(v.nnote || 'прогретый ХХ')}).`;
+  else if (v.norm === 'NOT_APPLICABLE') t = `Сейчас: ${esc(val)} — ${esc(WHY_TEXT[v.why] || 'условия проверки нормы не выполнены')} (режим: ${esc(MODE_TEXT[L.mode] || MODE_TEXT.UNKNOWN)}; норма — ${esc(v.nnote || 'прогретый ХХ')}).`;
   else t = `Сейчас: ${esc(val)}.`;
   return `<p class="small">${t}</p>`;
 }
@@ -795,7 +804,7 @@ R.live = async () => {
     <div class="grid auto" id="tiles"></div>
     <h2 class="section">Заводские нормы, которые устройство не читает</h2><div class="card pad" id="extraNorms"></div>
     <h2 class="section">Технические данные опроса</h2><div class="card pad" id="rawBox"></div>
-    <p class="foot">Рамка карточки: <b style="color:var(--green)">зелёная</b> — в норме, <b style="color:var(--accent)">синяя</b> — близко к границе нормы (в пределах 10 % её ширины), <b style="color:var(--red)">красная</b> — вне нормы. Без рамки — норма не задана или условия её проверки не выполнены (прогретый двигатель > 80 °C, холостой ход). Значения, которых двигатель дать не может, и ответы ЭБУ повтором адреса не показываются. При обрыве/КЗ датчиков ОЖ, IAT и HFM ЭБУ подставляет замещающее значение — неисправность видна только в памяти DTC (OEM 11/3). Нажмите на карточку, чтобы добавить параметр на график (до 4).</p>`);
+    <p class="foot">Рамка карточки: <b style="color:var(--green)">зелёная</b> — в норме, <b style="color:var(--accent)">синяя</b> — близко к границе нормы (в пределах 10 % её ширины), <b style="color:var(--red)">красная</b> — вне нормы. Без рамки — значения нет или оно недостоверно, заводской нормы для параметра нет, либо норма задана для другого режима: заводские нормы (Test and Adjustment Data) даны для прогретого двигателя (ОЖ > 80 °C) на холостом ходу — на повышенных оборотах, при пуске и на холодном двигателе они не сравниваются. Значения, которых двигатель дать не может, и ответы ЭБУ повтором адреса не показываются. При обрыве или замыкании датчиков ОЖ, IAT и HFM ЭБУ подставляет замещающее значение, пока неисправность есть (OEM 11/3); предупреждение на карточке появляется только при коде этого датчика в памяти. Нажмите на карточку, чтобы добавить параметр на график (до 4).</p>`);
   try { if (!S.dtc) S.dtc = (await api('dtc')).dtc; } catch (e) {}
   document.querySelectorAll('[data-cat]').forEach(b => b.addEventListener('click', () => {
     S.cat = b.dataset.cat;
@@ -852,16 +861,15 @@ function renderLive() {
   const L = S.live;
   if (!L || !$('#tiles')) return;
   const defs = Object.fromEntries(S.defs.map(d => [d.k, d]));
-  const dcodes = S.dtc && S.dtc.valid ? S.dtc.items.map(x => x.code) : [];
-  const subst = {ect: [2, 3, 4, 5], iat: [6, 7, 8], maf: [9, 10]};
   const stale = !(L.age_ms < STALE_MS);
   const st = S.status;
   let fresh;
   if (L.age_ms > 4e9) fresh = '<span class="badge b-gray">нет данных</span>';
   else if (stale) fresh = `<span class="badge b-GIP">данные устарели · ${esc(ago(L.age_ms))}</span>`;
   else fresh = `<span class="badge b-ZAV">обновлено</span><span class="badge b-gray">цикл ${L.cycle_ms} мс</span>`;
+  const mode = stale ? '' : `<span class="badge ${L.mode === 'IDLE' && L.warm ? 'b-ZAV' : 'b-gray'}">${esc(MODE_TEXT[L.mode] || MODE_TEXT.UNKNOWN)}${L.mode !== 'UNKNOWN' ? (L.warm ? ' · прогрет' : ' · не прогрет') : ''}</span>`;
   setHTML('#condBox', `<span class="badge ${L.active ? 'b-ZAV' : 'b-gray'}">${L.active ? (L.link_ready ? 'опрос' : 'ожидание связи') : 'остановлен'}</span>
-    ${fresh}<span class="badge ${L.warm_idle ? 'b-ZAV' : 'b-gray'}">прогретый ХХ ${L.warm_idle ? '✓' : '—'}</span>
+    ${fresh}${mode}
     ${L.norms_vehicle ? '' : '<span class="badge b-gray">нормы: общие для HFM-SFI — выберите автомобиль</span>'}
     ${L.plan_echo ? '<span class="badge b-BLOCK">ЭБУ не отдаёт параметры по этим адресам</span>' : ''}
     ${st && st.link === 'recovering' ? '<span class="badge b-GIP">восстановление связи</span>' : ''}`);
@@ -878,11 +886,12 @@ function renderLive() {
     const el = box.querySelector(`[data-k="${v.k}"]`);
     if (!el) return;
     const d = defs[v.k];
-    const alarm = !stale && (v.norm === 'BELOW' || v.norm === 'ABOVE');
+    const cls = stale ? 'NA' : normClass(v);
+    const alarm = cls === 'BELOW' || cls === 'ABOVE';
     const open = S.open.has('p-' + v.k);
-    el.className = 'tile ' + (stale ? 'NOT_APPLICABLE' : normClass(v)) + (alarm ? ' alarm' : '') + (S.sel.includes(v.k) ? ' sel' : '') + (open ? ' open' : '');
+    el.className = 'tile ' + cls + (alarm ? ' alarm' : '') + (S.sel.includes(v.k) ? ' sel' : '') + (open ? ' open' : '');
     el.title = d.src + ': ' + d.formula + (v.nnote ? '\n' + v.nnote + ' [' + v.nsrc + ']' : '');
-    setHTML(el.querySelector('.tl'), tileInner(v, d, subst[v.k] && subst[v.k].some(x => dcodes.includes(x))));
+    setHTML(el.querySelector('.tl'), tileInner(v, d, sensorDtc(v.k), cls, L));
     if (open) setHTML(el.querySelector('.pnow'), paramNow(v.k));
   });
   if (S.ref) {
@@ -891,35 +900,68 @@ function renderLive() {
     setHTML('#extraNorms', rows.length ? kvTable(rows.map(n => [n.param, `${esc(n.range)} ${esc(n.unit)} <span class="small muted">· ${esc(n.cond)} · ${esc(n.profile)} · ${esc(n.src)}</span>`, true])) + '<p class="small muted">Эти величины показывает заводской тестер; адрес и формула для их чтения по K-Line не подтверждены, поэтому устройство их не опрашивает.</p>'
       : `<p class="small muted" style="margin:0">${ng ? 'Для вашего двигателя таких норм в справочнике нет.' : 'Выберите автомобиль, чтобы увидеть нормы вашего двигателя.'}</p>`);
   }
-  setHTML('#rawBox', details('Показать байты последнего цикла', `<div class="small muted">План опроса: ${L.plan === 'vdo' ? 'шаблоны VDO (12/22/23)' : 'страницы Bosch 20/21 (full8)'}</div><table class="kv">${L.groups.map(g => `<tr><td>${g.name} <span class="muted">${g.prefix}</span></td><td class="hex">${g.ok ? esc(g.raw) : '<span style="color:var(--red)">не прочитано</span>'}</td></tr>`).join('')}</table>`));
+  setHTML('#rawBox', details('Показать байты последнего цикла', `<div class="small muted">План опроса: ${L.plan === 'vdo' ? 'шаблоны VDO (12/22/23)' : 'страницы Bosch 20/21 (full8)'}${L.per_selector ? ' · префикс перед каждым адресом (как у заводского тестера для VDO)' : ''}</div><table class="kv">${L.groups.map(g => `<tr><td>${g.name} <span class="muted">${g.prefix}</span></td><td class="hex">${g.ok ? esc(g.raw) : '<span style="color:var(--red)">не прочитано</span>'}</td></tr>`).join('')}</table>`));
   drawChart();
 }
 
+// Engine mode from rpm (device): which factory norm applies right now.
+const MODE_TEXT = {OFF: 'двигатель не работает', CRANKING: 'пуск (< 450 об/мин)', IDLE: 'холостой ход (450–1000 об/мин)', RAISED: 'повышенные обороты (> 1000 об/мин)', UNKNOWN: 'режим неизвестен: нет оборотов'};
+// Why a known norm is not compared now (device: live.values[].why).
+const WHY_TEXT = {
+  COLD: 'норма — на прогретом двигателе (ОЖ > 80 °C), сейчас не сравнивается',
+  NOT_IDLE: 'норма задана только для холостого хода, сейчас не сравнивается',
+  NOT_RUNNING: 'норма — при работающем двигателе, сейчас не сравнивается',
+  ECT_UNKNOWN: 'норма не сравнивается: нет температуры ОЖ'
+};
+
 // Frame colour: green in the norm, blue within 10 % of the norm width from a
-// limit, red outside; no frame when no norm applies (conditions not met).
+// limit, red outside. Neutral ('NA'): no value, a doubtful value, no factory
+// norm, or a norm given for another engine mode.
 function normClass(v) {
-  if (v.norm === 'IN_SPEC' && v.lo != null && v.v != null) {
+  if (v.v == null || v.q !== 'VALID') return 'NA';
+  if (v.norm === 'IN_SPEC' && v.lo != null) {
     const m = (v.hi - v.lo) * 0.1;
-    if (v.v < v.lo + m || v.v > v.hi - m) return 'NEAR';
+    return v.v < v.lo + m || v.v > v.hi - m ? 'NEAR' : 'IN_SPEC';
   }
-  return v.norm;
+  return v.norm === 'BELOW' || v.norm === 'ABOVE' ? v.norm : 'NA';
 }
 
-function tileInner(v, d, substOn) {
+// Sensor fault codes in the last readout and what they mean for the value now:
+// the ECU substitutes a value only while the fault is present (current bank);
+// a stored or intermittent code does not change the reading (OEM 11/3).
+const SENSOR_DTC = {ect: [2, 3, 4], iat: [6, 7], maf: [9, 10]};
+const SENSOR_DTC_INT = {ect: [5], iat: [8], maf: []};
+function sensorDtc(k) {
+  const d = S.dtc;
+  if (!d || !d.valid || !SENSOR_DTC[k]) return null;
+  const hit = d.items.filter(x => SENSOR_DTC[k].includes(x.code) || SENSOR_DTC_INT[k].includes(x.code));
+  if (!hit.length) return null;
+  const codes = [...new Set(hit.map(x => String(x.code).padStart(3, '0')))].join(', ');
+  const cur = hit.filter(x => x.bank === 'current' && !x.intermittent);
+  if (cur.length) return {cls: 'warn', text: `текущая неисправность датчика (${codes}) — ЭБУ может показывать замещающее значение`};
+  if (hit.some(x => (x.bank === 'bank_a' || x.bank === 'bank_b') && !x.intermittent))
+    return {cls: 'muted', text: `в памяти код ${codes}: текущий он или сохранённый, для этого ЭБУ не определено. Если неисправность текущая, значение может быть замещающим`};
+  return {cls: 'muted', text: `в памяти сохранён код ${codes} — сейчас датчик работает, значение не замещается`};
+}
+
+function tileInner(v, d, sdtc, cls, L) {
   const val = d.bool ? (v.v == null ? '—' : (v.v ? 'ВКЛ' : 'выкл')) : fmt(v.v, d.dec);
-  const QT = {VALID: '', NOT_READ: 'не опрашивается', PARTIAL: 'прочитано частично', NO_DATA: 'нет данных (двигатель не работает)', OUT_OF_DOMAIN: 'вне диапазона датчика', IMPLAUSIBLE: 'недостоверно: такого значения быть не может', NOT_SUPPORTED: 'ЭБУ не отдаёт этот параметр'};
+  const QT = {VALID: '', NOT_READ: 'не опрашивается', PARTIAL: 'прочитано частично', NO_DATA: (L && L.mode === 'OFF') ? 'нет данных: двигатель не работает' : 'нет данных', OUT_OF_DOMAIN: 'вне диапазона датчика', IMPLAUSIBLE: 'недостоверно: такого значения быть не может', NOT_SUPPORTED: 'ЭБУ не отдаёт этот параметр'};
   const qtxt = v.q in QT ? QT[v.q] : v.q;
-  const arrow = v.norm === 'BELOW' ? '<span class="arrow" title="ниже нормы">↓</span>' : v.norm === 'ABOVE' ? '<span class="arrow" title="выше нормы">↑</span>' : '';
+  const arrow = cls === 'BELOW' ? '<span class="arrow" title="ниже нормы">↓</span>' : cls === 'ABOVE' ? '<span class="arrow" title="выше нормы">↑</span>' : '';
+  const applied = v.norm === 'IN_SPEC' || v.norm === 'BELOW' || v.norm === 'ABOVE';
   let bar = '';
-  if (v.lo != null && !d.bool && v.v != null) {
+  if (!d.bool && v.v != null && v.q === 'VALID') {
     const span = d.max - d.min || 1, p = x => Math.max(0, Math.min(100, (x - d.min) / span * 100));
-    bar = `<div class="bar"><i style="left:${p(v.lo)}%;width:${p(v.hi) - p(v.lo)}%"></i><b style="left:${p(v.v)}%"></b></div>`;
+    // The norm band is drawn only while the norm is compared.
+    bar = `<div class="bar">${applied ? `<i style="left:${p(v.lo)}%;width:${p(v.hi) - p(v.lo)}%"></i>` : ''}<b style="left:${p(v.v)}%"></b></div>`;
   }
   let norm = '';
-  if (v.lo != null) norm = `норма ${fmt(v.lo, d.dec)}…${fmt(v.hi, d.dec)}${d.unit ? ' ' + esc(d.unit) : ''}${v.norm === 'NOT_APPLICABLE' ? ' · проверяется на прогретом ХХ' : ''}`;
+  if (v.lo != null && applied) norm = `норма ${fmt(v.lo, d.dec)}…${fmt(v.hi, d.dec)}${d.unit ? ' ' + esc(d.unit) : ''}${L && !L.norms_vehicle ? ' · общая HFM-SFI' : ''}`;
+  else if (v.lo != null && WHY_TEXT[v.why]) norm = WHY_TEXT[v.why];
   else if (EXPECT[v.k]) norm = EXPECT[v.k];
-  const sub = substOn ? '<div class="small" style="color:var(--orange)">есть DTC датчика — возможно замещающее значение</div>' : '';
-  return `<div class="dot ${v.norm}"></div>${S.sel.includes(v.k) ? '<div class="gmark" title="на графике"></div>' : ''}<div class="name">${esc(d.name)}</div>
+  const sub = sdtc ? `<div class="small" style="color:${sdtc.cls === 'warn' ? 'var(--orange)' : 'var(--label)'}">${esc(sdtc.text)}</div>` : '';
+  return `<div class="dot ${cls}"></div>${S.sel.includes(v.k) ? '<div class="gmark" title="на графике"></div>' : ''}<div class="name">${esc(d.name)}</div>
     <div class="val">${val}${d.unit && !d.bool ? `<small>${esc(d.unit)}</small>` : ''}${arrow}</div>${bar}
     ${norm ? `<div class="norm">${norm}</div>` : ''}${sub}
     <div class="meta"><span>${esc(qtxt)}</span>${d.conf === 'GIP' ? '<span title="Адрес или формула не подтверждены на реальном ЭБУ">формула не подтверждена</span>' : ''}</div>`;
@@ -1027,30 +1069,48 @@ async function serviceFlow(op) {
     <div class="note warn mt"><b>Что произойдёт.</b> ${esc(SVC_WARN[op] || '')}<br><span class="small">Если ЭБУ не подтвердит шаг, операция прекращается без повторов, а сервисные операции блокируются до квитирования.</span></div>
     ${needBat ? `<label class="row" style="padding:10px 0;background:none"><div class="grow small">Напряжение бортсети не ниже 11 В (АКБ заряжена или подключено зарядное)</div><span class="switch"><input type="checkbox" id="batCf"${sv.battery_manual_confirm ? ' checked' : ''}><span></span></span></label>` : ''}
     ${SVC_STOPPED[op] ? `<label class="row" style="padding:10px 0;background:none"><div class="grow small">Зажигание включено, двигатель заглушен</div><span class="switch"><input type="checkbox" id="stopCf"><span></span></span></label>` : ''}
-    <div id="planBox" class="mt"></div>
-    <div class="btns mt"><button class="btn sec" onclick="closeSheet()">Отмена</button><button class="btn" id="prepBtn" ${o.allowed ? '' : 'disabled'}>Проверить условия</button></div>`);
+    ${op === 'dtc_clear' ? '<div class="small muted">Перед стиранием устройство само прочитает память неисправностей (записи «до» сохранятся в отчёте), после — прочитает её снова и покажет результат.</div>' : ''}
+    <div id="planBox" class="mt"></div><div id="svcMsg"></div>
+    <div class="btns mt" id="svcBtns"><button class="btn sec" onclick="closeSheet()">Отмена</button><button class="btn" id="prepBtn" ${o.allowed ? '' : 'disabled'}>Проверить условия</button></div>`);
+  // Messages stay inside the dialog (a toast would cover its buttons).
+  const say = (t, cls = 'danger') => setHTML('#svcMsg', t ? `<div class="note ${cls} mt">${esc(t)}</div>` : '');
   const b = $('#batCf');
-  if (b) b.addEventListener('change', () => post('settings', {battery_manual_confirm: b.checked ? 1 : 0}));
+  if (b) b.addEventListener('change', () => post('settings', {battery_manual_confirm: b.checked ? 1 : 0}).catch(() => {}));
+  const HINT = {battery: 'включите переключатель «Напряжение бортсети не ниже 11 В», если АКБ заряжена', engine_stopped: 'заглушите двигатель и включите переключатель «Зажигание включено, двигатель заглушен»'};
   $('#prepBtn').addEventListener('click', async e => {
-    const sc = $('#stopCf');
-    await job('svc_prepare', {op, confirm: sc && sc.checked ? 1 : 0}, e.target);
+    say('');
+    const sc = $('#stopCf'), bc = $('#batCf');
+    // The switches go with the job: the device plans with exactly what is set here.
+    const params = {op, confirm: sc && sc.checked ? 1 : 0};
+    if (bc) params.battery = bc.checked ? 1 : 0;
+    const okPrep = await job('svc_prepare', params, e.target, 'silent');
     const s2 = (await api('services')).services, p = s2.plan;
     const lock = s2.pw_lock_s > 0;
-    $('#planBox').innerHTML = `<div class="card pad">${p.checks.map(c => `<div class="check"><i class="${c.result == null ? 'unk' : c.result ? 'ok' : 'no'}">${c.result == null ? '?' : c.result ? '✓' : '✕'}</i><div>${esc(c.text)}</div></div>`).join('')}</div>
+    const row = c => {
+      const st = c.result == null ? 'unk' : c.result ? 'ok' : 'no';
+      const hint = c.result ? '' : HINT[c.id];
+      return `<div class="check"><i class="${st}">${c.result == null ? '?' : c.result ? '✓' : '✕'}</i><div>${esc(c.text)}${hint ? `<div class="small muted">${esc(hint)}</div>` : ''}</div></div>`;
+    };
+    $('#planBox').innerHTML = `<div class="card pad">${(p.checks || []).map(row).join('')}</div>
       ${p.ok ? `<div class="mt small">Введите пароль Wi-Fi точки доступа <b>HFM Connect</b> (действует ${Math.round(p.expires_in_ms / 1000)} с):</div>
         <input class="field mt" id="svcPw" type="password" autocomplete="off" placeholder="Пароль точки доступа" ${lock ? 'disabled' : ''}>
         ${lock ? `<div class="note danger mt small">Ввод пароля заблокирован ещё на ${s2.pw_lock_s} с после 5 неверных попыток.</div>` : ''}
-        <button class="btn red full mt" id="execBtn" ${lock ? 'disabled' : ''}>Выполнить</button>` : `<div class="note danger mt">Условия не выполнены: ${esc(p.block_reason || '')}</div>`}`;
+        <button class="btn red full mt" id="execBtn" ${lock ? 'disabled' : ''}>Выполнить</button>` : `<div class="note danger mt">Условия не выполнены: ${esc(p.block_reason || job.msg || '')}</div>`}`;
+    // Extra detail from the device (no connection, memory not read ...).
+    if (!okPrep && job.msg && job.msg !== 'Условия не выполнены.') say(job.msg);
     const x = $('#execBtn');
     if (x) x.addEventListener('click', async ev => {
       const pw = $('#svcPw').value;
-      if (!pw) return toast('Введите пароль', true);
+      if (!pw) return say('Введите пароль точки доступа');
       if (!confirm('Выполнить «' + o.name + '»? Действие изменит данные ЭБУ.')) return;
-      const ok = await job('svc_execute', {op, token: p.token, password: pw}, ev.target);
+      say('');
+      const ok = await job('svc_execute', {op, token: p.token, password: pw}, ev.target, 'silent');
       $('#svcPw') && ($('#svcPw').value = '');
       const r = (await api('services')).services;
-      if (!ok && r.plan && r.plan.ok) return;  // wrong password: the same plan stays, try again
-      $('#planBox').innerHTML = `<div class="note ${ok ? 'info' : 'danger'}">${esc(r.last_result || '')}</div>`;
+      if (!ok && r.plan && r.plan.ok) return say(job.msg || 'Неверный пароль');  // the same plan stays, try again
+      $('#planBox').innerHTML = `<div class="note ${ok ? 'info' : 'danger'}">${esc(r.last_result || job.msg || '')}</div>`;
+      setHTML('#svcBtns', '<button class="btn full" onclick="closeSheet()">Закрыть</button>');
+      if (op === 'dtc_clear') { try { S.dtc = (await api('dtc')).dtc; } catch (e2) {} }
       if (op === 'purge_test' && ok) { closeSheet(); go('actuators'); }
     });
   });
@@ -1397,7 +1457,8 @@ R.settings = async () => {
       <input class="field mt" id="staSsid" placeholder="SSID" value="${esc(s.sta_ssid)}">
       <input class="field mt" id="staPass" type="password" placeholder="Пароль">
       <button class="btn full mt" id="netSave">Сохранить сеть</button>
-      <p class="small muted">Адрес: http://192.168.4.1/ или http://hfm.local/</p></div>`);
+      <p class="small muted">Адрес: http://192.168.4.1/ или http://hfm.local/</p></div>
+    <div class="list mt">${sw('captive_portal', 'Открывать автоматически при подключении к Wi-Fi', 'Телефон сам показывает интерфейс в своём окне входа в сеть. Заголовок этого окна пишет телефон («Войти: HFM Connect»), приложение его не меняет. Выключите, чтобы открывать интерфейс в обычном браузере по адресу http://192.168.4.1 — заголовок будет «HFM Connect». Если страница тогда не открывается, отключите на телефоне мобильные данные.')}</div>`);
   [['#sndSeg', 'sound_level'], ['#ledSeg', 'light_level'], ['#oledType', 'oled_type'], ['#oledLevel', 'oled_level']].forEach(([sel, key]) => document.querySelectorAll(sel + ' button').forEach(b => b.addEventListener('click', async () => {
     document.querySelectorAll(sel + ' button').forEach(x => x.classList.toggle('on', x === b));
     try { await post('settings', {[key]: b.dataset.v}); if (key === 'sound_level' && b.dataset.v !== '0') post('indicator/test', {what: 'sound'}).catch(() => {}); } catch (e) { toast(e.message, true); }

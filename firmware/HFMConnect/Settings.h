@@ -26,6 +26,11 @@ struct Settings {
   char apPass[33] = {0};
   char staSsid[33] = {0};
   char staPass[65] = {0};
+  // Captive portal: the access point answers every DNS name, so phones open the
+  // WebUI by themselves - in their own sign-in window, whose title the phone
+  // writes ("Войти: HFM Connect"). Off: only hfm.local is answered, the WebUI is
+  // opened in the normal browser (http://192.168.4.1).
+  bool captivePortal = true;
   // impulse thresholds
   uint16_t impPressMs = 3000;
   uint16_t impEndGapMs = 2500;

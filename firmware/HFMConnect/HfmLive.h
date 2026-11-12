@@ -39,6 +39,9 @@ struct Snapshot {
   uint16_t cycleMs = 0;       // duration of the poll cycle
   bool groupOk[G_COUNT] = {};
   bool groupEcho[G_COUNT] = {};  // replies equal the selectors: no data (D-034)
+  // Bit i: byte i repeated its own address, and at least two bytes of the
+  // group (or of the MAF / injection pair) did so in this cycle (D-034).
+  uint8_t echoMask[G_COUNT] = {};
   uint8_t g[G_COUNT][6] = {};
   bool extRead = false;
   bool extOk[X_COUNT] = {};
@@ -47,17 +50,30 @@ struct Snapshot {
   bool vdoPlan = false;       // snapshot taken with the VDO address plan
   bool vdoOk[V_COUNT] = {};
   bool vdoEcho[V_COUNT] = {};
+  uint8_t vdoEchoMask[V_COUNT] = {};
   uint8_t vdo[V_COUNT][6] = {};
   // The main groups of the plan were answered with their own addresses: this
   // ECU does not serve the plan (the engine switches or stops polling).
   bool planEcho = false;
+  // Sticky (kept between cycles): this ECU keeps no page context, every
+  // selector is sent after its own prefix (D-037). Set when a group read gave
+  // data for the first selector and the following ones repeated their addresses.
+  bool perSelector = false;
   LinkStatus lastStatus = LinkStatus::Ok;
 };
 
 // Reads the native groups (full8: 7 prefixes, 21 selectors). MAF low/high are
 // sampled in the same cycle (REV 1.1 s.6). vdo = use the VDO address plan
-// (experimental read prefixes 12/22/23, VDO candidate profiles only).
+// (read prefixes 12/22/23 of the factory tester templates for vendor V; every
+// selector after its own prefix, as in those templates - D-037).
 LinkStatus pollNative(HfmSession& s, Snapshot& snap, bool vdo = false);
+// A group read on one prefix where the first selector returned data and every
+// later one (>= 2) repeated its own address: the ECU forgot the page after the
+// first selector (D-037). Then the same group is read again prefix-by-prefix.
+bool pageNotKept(const uint8_t* sel, const uint8_t* reply, uint8_t n);
+// Bits of the bytes equal to their selectors, 0 when fewer than two match
+// (one equal byte can be a real value).
+uint8_t echoMask(const uint8_t* sel, const uint8_t* reply, uint8_t n);
 LinkStatus pollExtended(HfmSession& s, Snapshot& snap);
 
 // ---- registry -------------------------------------------------------------------
@@ -105,10 +121,21 @@ struct Value {
   uint8_t rawCount = 0;
 };
 
+// Engine operating mode from the rpm reading (only for choosing which factory
+// norm applies; the factory norms of I07 are given for the warm idle).
+enum class EngineMode : uint8_t { Unknown, Off, Cranking, Idle, Raised };
+const char* engineModeCode(EngineMode m);
+// Why a norm is or is not applied to a value right now.
+enum class NormWhy : uint8_t { None, Applied, NoValue, Cold, NotIdle, NotRunning, EctUnknown };
+const char* normWhyCode(NormWhy w);
+
 struct Decoded {
   uint32_t seq = 0;
   uint32_t tMs = 0;
   Value v[P_COUNT];
+  NormWhy why[P_COUNT] = {};
+  EngineMode mode = EngineMode::Unknown;
+  bool warm = false;          // valid coolant temperature > 80 C
   bool conditionsWarmIdle = false;
   bool conditionsWarmRunning = false;
 };

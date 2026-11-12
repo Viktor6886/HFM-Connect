@@ -115,8 +115,9 @@ LinkStatus readVin(HfmSession& s, Vin& v) {
 
 // ---- write recipes -------------------------------------------------------------
 
-LinkStatus dtcClear(HfmSession& s, bool& verified, FaultMemory& after) {
+LinkStatus dtcClear(HfmSession& s, bool& verified, FaultMemory& after, bool* confirmed) {
   verified = false;
+  if (confirmed) *confirmed = false;
   // REV 1.1 s.16 DTC clear sequence and verification.
   static const RecipeStep steps[] = {
       // 10 00 is the idle telegram of the PC tester and of the factory tester
@@ -134,6 +135,7 @@ LinkStatus dtcClear(HfmSession& s, bool& verified, FaultMemory& after) {
   LinkStatus st = s.runRecipe(steps, sizeof(steps) / sizeof(steps[0]), nullptr);
   s.disarmWrite();
   if (st != LinkStatus::Ok) return st;
+  if (confirmed) *confirmed = true;
   st = readFaultMemory(s, after, false);
   if (st != LinkStatus::Ok) return st;
   verified = true;
