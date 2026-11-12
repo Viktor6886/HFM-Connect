@@ -381,8 +381,14 @@ void DiagEngine::afterResolve() {
 static uint16_t decodeAll(const svc::FaultMemory& fm, const prof::EcuProfile& p, dtc::Decoded* out, uint16_t max);
 
 // Fault memory F1 (read only). A partial readout is never shown as "no faults".
-bool DiagEngine::readDtc(char* msg, size_t n) {
+// automatic: started by the engine itself (connection / link recovery).
+bool DiagEngine::readDtc(char* msg, size_t n, bool automatic) {
+  lock();
   bool ext = st_.profile.caps[prof::F_DTC_EXTENDED].allowed;
+  // The experimental extended bytes are optional: the engine's own reads leave
+  // them out once they were not answered by this ECU.
+  if (automatic && st_.feat[prof::F_DTC_EXTENDED].state == 2) ext = false;
+  unlock();
   svc::FaultMemory fm;
   LinkStatus s = svc::readFaultMemory(*session_, fm, ext);
   bool ok = fm.valid;
@@ -390,14 +396,19 @@ bool DiagEngine::readDtc(char* msg, size_t n) {
     lock();
     st_.dtc.fm = fm;
     st_.dtc.valid = true;
+    st_.dtc.automatic = automatic;
     st_.dtc.tMs = millis();
     st_.dtc.count = decodeAll(fm, st_.profile, st_.dtc.items, 48);
     st_.dtc.inferred = dtc::inferBankMapping(st_.dtc.items, st_.dtc.count);
     if (st_.dtc.count) snprintf(msg, n, "Память неисправностей прочитана: записей %u", st_.dtc.count);
     else snprintf(msg, n, "Память неисправностей прочитана: записей нет");
     unlock();
-    if (fm.extValid) featMark(prof::F_DTC_EXTENDED, true);
+    dtcRefresh_.readOk(millis(), automatic);
+    if (ext) featMark(prof::F_DTC_EXTENDED, fm.extValid);
+    // Extended bytes not answered: both banks are complete, resume the read session.
+    if (s != LinkStatus::Ok) recoverRead();
   } else {
+    dtcRefresh_.readFailed(millis(), automatic);
     snprintf(msg, n, "Ошибка чтения памяти неисправностей (%s)", linkStatusCode(s));
     recoverRead();
   }
@@ -405,18 +416,23 @@ bool DiagEngine::readDtc(char* msg, size_t n) {
   return ok;
 }
 
-// Optional read of the fault memory right after a connection (setting), so the
-// result is known (and signalled) without another tap. Not after an automatic
-// recovery when a readout of this ECU already exists.
-void DiagEngine::dtcAfterConnect(bool recovering) {
-  if (!settings_->dtcOnConnect || !session_->ready()) return;
+// The engine reads the fault memory by itself (setting; F1, read only): right
+// after a connection and after the link was lost and restored, so the readout
+// that is shown always belongs to the current link (D-033). When and how often:
+// DtcRefresh.h. Returns true if a read was attempted.
+bool DiagEngine::autoReadDtc(bool byUser) {
+  if (!settings_->dtcOnConnect || !session_->ready() || !dtcRefresh_.due(millis())) return false;
+  // Never between the steps of a service operation; after FAULT_STOP only
+  // with the user's own "Connect".
+  const guard::State g = guard_.state();
+  if (g != guard::State::Idle && !(byUser && g == guard::State::FaultStop)) return false;
   lock();
   bool allowed = st_.profile.caps[prof::F_DTC_READ].allowed;
-  bool have = st_.dtc.valid;
   unlock();
-  if (!allowed || (recovering && have)) return;
+  if (!allowed) return false;
   char m[160];
-  readDtc(m, sizeof m);
+  readDtc(m, sizeof m, !byUser);
+  return true;
 }
 
 bool DiagEngine::recoverRead() {
@@ -498,6 +514,8 @@ void DiagEngine::execute(Job j, uint32_t arg, const char* text) {
       }
       if (recoverRead()) {
         snprintf(msg, sizeof msg, "Связь с ЭБУ восстановлена");
+        dtcRefresh_.userConnected();
+        autoReadDtc(true);
         break;
       }
       doConnect(msg, sizeof msg, ok, 2);
@@ -509,7 +527,8 @@ void DiagEngine::execute(Job j, uint32_t arg, const char* text) {
       if (ok) {
         char keep[256];
         strlcpy(keep, msg, sizeof keep);
-        dtcAfterConnect(false);
+        dtcRefresh_.userConnected();
+        autoReadDtc(true);
         strlcpy(msg, keep, sizeof msg);
       }
       break;
@@ -990,6 +1009,7 @@ void DiagEngine::maintainLink() {
     st_.recoverAttempts = 0;
     snprintf(st_.autoMsg, sizeof st_.autoMsg, "Связь восстановлена автоматически");
     unlock();
+    autoReadDtc();  // the readout taken before the loss is not current any more
     return;
   }
   // 2. Line silence until the ECU dropped its session (not blocking: jobs
@@ -1007,7 +1027,10 @@ void DiagEngine::maintainLink() {
   bool ok = false;
   doConnect(msg, sizeof msg, ok, 1);
   if (ok) doIdentify(msg, sizeof msg, ok);
-  if (ok && session_->ready()) dtcAfterConnect(recovering);
+  if (ok && session_->ready()) {
+    dtcRefresh_.connected();
+    autoReadDtc();
+  }
   lock();
   st_.autoAttempts++;
   if (ok && session_->ready()) {
@@ -1059,6 +1082,8 @@ void DiagEngine::updateLink() {
     else
       snprintf(m, sizeof m, "%s", st_.autoMsg[0] ? st_.autoMsg : "Поиск ЭБУ…");
   }
+  // Link lost: the stored fault readout is re-read once the link is back.
+  if (st_.link == LinkPhase::Ready && ph != LinkPhase::Ready) dtcRefresh_.linkLost(millis());
   st_.link = ph;
   strlcpy(st_.linkMsg, m, sizeof st_.linkMsg);
   st_.faultStop = guard_.state() == guard::State::FaultStop;
@@ -1101,8 +1126,12 @@ void DiagEngine::run() {
     if (have) {
       execute(qj.job, qj.arg, qj.text);
     } else if (session_->ready()) {
-      if (liveOn) livePoll();
-      else keepAlive();
+      // A re-read of the fault memory that is still due (recovery inside a
+      // job, repeated attempt) comes first; otherwise polling / keep-alive.
+      if (!autoReadDtc()) {
+        if (liveOn) livePoll();
+        else keepAlive();
+      }
     } else {
       maintainLink();
     }

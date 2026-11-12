@@ -5,6 +5,7 @@
 #ifdef ARDUINO
 #include <Arduino.h>
 
+#include "DtcRefresh.h"
 #include "HfmLive.h"
 #include "HfmServices.h"
 #include "ImpulseDecoder.h"
@@ -49,6 +50,7 @@ struct DtcView {
   uint16_t count = 0;
   dtc::BankMapping inferred = dtc::BankMapping::Unknown;  // OEM intermittent rule
   uint32_t tMs = 0;
+  bool automatic = false;  // read by the engine itself (connection / link recovery), not by a job
 };
 
 struct ImpulseView {
@@ -165,8 +167,8 @@ class DiagEngine {
   bool ensureConnected(char* msg, size_t n);
   void doConnect(char* msg, size_t n, bool& ok, uint8_t attempts = 0);
   void doIdentify(char* msg, size_t n, bool& ok);
-  bool readDtc(char* msg, size_t n);
-  void dtcAfterConnect(bool recovering);
+  bool readDtc(char* msg, size_t n, bool automatic = false);
+  bool autoReadDtc(bool byUser = false);
   bool recoverRead();
   void afterResolve();
   void livePoll();
@@ -221,6 +223,7 @@ class DiagEngine {
   live::Decoded prevLive_;
   uint8_t extFails_ = 0;
   bool extDisabled_ = false;
+  DtcRefresh dtcRefresh_;  // engine task only
 };
 
 extern DiagEngine Engine;

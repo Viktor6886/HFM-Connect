@@ -675,7 +675,7 @@ R.dtc = async () => {
     const ints = d.items.filter(x => x.intermittent);
     const grid = (title, hex) => `<div class="mt"><div class="small muted">${title}</div><div class="hex">${hex}</div></div>`;
     setHTML('#dtcBox', `
-      <div class="small muted">Прочитано ${agoMin(d.age_ms)} · записей: ${d.items.length}</div>
+      <div class="small muted">Прочитано ${agoMin(d.age_ms)}${d.auto ? ' · автоматически' : ''} · записей: ${d.items.length}</div>
       <div class="note mt info">Банки F1: <b>${esc({A_STORED_B_CURRENT: 'A = сохранённые, B = текущие', A_CURRENT_B_STORED: 'A = текущие, B = сохранённые', UNKNOWN: 'не определены (Банк A/B)'}[d.bank_mapping] || d.bank_mapping)}</b> ${badge(d.bank_mapping_conf)}<br><span class="small">${esc(d.bank_mapping_basis || '')}</span></div>
       ${groups.current ? '<div class="note mt small">Текущие неисправности имеют смысл только при включённом зажигании и <b>работающем</b> двигателе; при неработающем двигателе часть из них появляется закономерно.</div>' : ''}
       ${d.dtc_map === 'GENERIC' ? '<div class="note mt small warn">Выберите автомобиль в разделе «Автомобили», чтобы применить заводскую карту кодов для 4/6 цилиндров.</div>' : ''}
@@ -1228,7 +1228,7 @@ R.settings = async () => {
     <div class="list">
       ${sw('experimental_reads', 'Экспериментальное чтение', 'Чтение у нераспознанных ЭБУ, Live Data варианта VDO, расширенные рецепты (скорость, нижний O2, CTP/T50), VIN F9, биты DTC 129–152. Уровень ГИП.')}
       ${sw('auto_connect', 'Автоподключение', 'Подключаться к ЭБУ автоматически и восстанавливать связь после обрыва')}
-      ${sw('dtc_on_connect', 'Читать ошибки при подключении', 'Сразу после подключения прочитать память неисправностей (только чтение) — результат виден и слышен без лишних нажатий')}
+      ${sw('dtc_on_connect', 'Читать ошибки при подключении', 'Читать память неисправностей (только чтение) сразу после подключения и заново после автоматического восстановления связи — показанный результат всегда относится к текущему соединению')}
       ${sw('keep_alive', 'Keep-alive (F0:00)', 'Безопасное чтение раз в 0,7 с при простое')}
       ${sw('trace_capture', 'RAW журнал TX/RX', 'Кольцевой буфер в ОЗУ (1536 событий)')}
       ${sw('mask_vin', 'Скрывать VIN в отчётах', '')}

@@ -29,8 +29,8 @@ ESP32-S3 с USB K-Line адаптером FTDI (USB-хост, по умолча�
 
 ## Архитектурные правила
 
-- Платформонезависимое ядро (`Hfm*.cpp`, `TraceLog`, `ServiceGuard`, `ImpulseDecoder`, `KLineWake`)
-  **не включает Arduino.h**; Arduino-код — в `#ifdef ARDUINO`.
+- Платформонезависимое ядро (`Hfm*.cpp`, `TraceLog`, `ServiceGuard`, `ImpulseDecoder`, `KLineWake`,
+  `DtcRefresh.h`, `OledModel`) **не включает Arduino.h**; Arduino-код — в `#ifdef ARDUINO`.
 - Только `DiagEngine` владеет K-Line; HTTP — через `submit(Job)` и снимки под `lock()`.
 - Транспорт: `FtdiLink` (USB-хост, `HFM_TRANSPORT_FTDI 1`) или `KLineUart`; оба — `ByteLink`.
   Сборка с FTDI: «USB CDC On Boot: Disabled», «USB Mode: Hardware CDC and JTAG» (D-021).
@@ -43,6 +43,9 @@ ESP32-S3 с USB K-Line адаптером FTDI (USB-хост, по умолча�
 - Справочник карточек (D-030): `data/reference/hfm_reference.json` (импорт
   `tools/import_reference.py`), встраивается `build_webui.py` как `/ref.json`. Тексты кодов
   ядра — `dtc.csv`. Справочник не добавляет команд: новые адреса — только с источником.
+- Память неисправностей движок читает сам после подключения и заново после восстановления
+  связи (D-033, только чтение F1). Когда и сколько раз — `DtcRefresh.h`; пределы повторов
+  не снимать: они не дают чтению зациклиться на плохой линии.
 - Индикация (D-031): `Indicator` — своя задача, только читает `EngineState`; к K-Line не
   обращается. Пищалка и светодиоды на разных таймерах LEDC (разная разрядность).
 - Коды DTC — по заводской карте варианта (`dtc::selectMap`), ремапы — по позиции (D-022).

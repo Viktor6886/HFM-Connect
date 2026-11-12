@@ -198,6 +198,8 @@ struct Snap {
   bool dtcValid = false;
   uint16_t dtcCount = 0;
   uint32_t dtcT = 0;
+  bool dtcAuto = false;   // readout made by the engine itself (link recovery)
+  uint32_t dtcSig = 0;    // content of the readout (both F1 banks)
   bool faultStop = false;
   bool service = false;
 };
@@ -212,6 +214,11 @@ Snap readSnap() {
   s.dtcValid = e.dtc.valid;
   s.dtcCount = e.dtc.count;
   s.dtcT = e.dtc.tMs;
+  s.dtcAuto = e.dtc.automatic;
+  uint32_t h = 2166136261u;  // FNV-1a
+  for (uint8_t i = 0; i < 16; i++) h = (h ^ e.dtc.fm.bankA[i]) * 16777619u;
+  for (uint8_t i = 0; i < 16; i++) h = (h ^ e.dtc.fm.bankB[i]) * 16777619u;
+  s.dtcSig = h;
   s.faultStop = e.faultStop;
   s.service = e.serviceActive;
   Engine.unlock();
@@ -255,7 +262,8 @@ void task(void*) {
   Snap prev = readSnap();
   bool first = true, adapterSeen = false, wasRecovering = false;
   uint32_t readySince = 0, bootMs = millis(), lastLight = 0, flashUntil = 0, lastFlash = 0;
-  uint32_t lastCycles = prev.cycles, lastDtcT = prev.dtcT;
+  uint32_t lastCycles = prev.cycles, lastDtcT = prev.dtcT, lastDtcSig = 0;
+  bool haveDtcSig = false;
   for (;;) {
     uint32_t now = millis();
     // 1. Sounds queued by events.
@@ -300,7 +308,15 @@ void task(void*) {
           }
           if (s.link == LinkPhase::Paused || s.link == LinkPhase::Idle) wasRecovering = false;
         }
-        if (s.dtcValid && s.dtcT != lastDtcT) indicatorPlay(s.dtcCount ? Sound::DtcPresent : Sound::DtcNone);
+        if (!s.dtcValid) haveDtcSig = false;  // another ECU: its first readout is announced
+        if (s.dtcValid && s.dtcT != lastDtcT) {
+          // The engine's own re-read after a link recovery is announced only
+          // when the fault memory changed: no chime for the same result again.
+          const bool same = haveDtcSig && s.dtcSig == lastDtcSig;
+          if (!(s.dtcAuto && same)) indicatorPlay(s.dtcCount ? Sound::DtcPresent : Sound::DtcNone);
+          lastDtcSig = s.dtcSig;
+          haveDtcSig = true;
+        }
         if (s.faultStop && !prev.faultStop) indicatorPlay(Sound::Fault);
       }
       lastDtcT = s.dtcT;

@@ -89,7 +89,7 @@ def ecu():
 
 def dtc():
     return {"dtc": {"valid": True, "bank_mapping": "UNKNOWN", "bank_mapping_conf": "GIP", "bank_mapping_basis": "Назначение банков для этого ЭБУ не подтверждено",
-                    "m111_texts": False, "dtc_map": "CB1E", "cylinders": 6, "vendor": "B", "diag_raw": "40", "age_ms": 70000,
+                    "m111_texts": False, "dtc_map": "CB1E", "cylinders": 6, "vendor": "B", "diag_raw": "40", "age_ms": 70000, "auto": True,
                     "bank_a": "40 00 08 00 00 00 00 00 00 00 00 00 00 00 00 00", "bank_b": "40 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00", "ext_valid": False,
                     "items": [{"bank": "bank_a", "index": "00", "bit": 6, "pos": 7, "base": 10, "code": 10, "remapped": False, "map": "CB1E", "rule": "", "text": "Датчик массового расхода воздуха: обрыв цепи.", "source": "oem", "intermittent": False},
                               {"bank": "bank_b", "index": "17", "bit": 1, "pos": 58, "base": 75, "code": 75, "remapped": False, "map": "CB1E", "rule": "", "text": "Реле подогрева впуска PSV (K3/1): электрическая неисправность, характер не уточнён.", "source": "candidate", "intermittent": False}]}}

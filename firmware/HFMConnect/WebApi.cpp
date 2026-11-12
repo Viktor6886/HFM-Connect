@@ -161,7 +161,7 @@ static void writeDtc(JsonWriter& w, const EngineState& s) {
   w.kv("vendor", s.profile.variant.manufacturer == 1 ? "B" : "V");
   w.key("diag_raw").hex(s.profile.variant.diagRaw);
   if (d.valid) {
-    w.kv("age_ms", (uint32_t)(millis() - d.tMs));
+    w.kv("age_ms", (uint32_t)(millis() - d.tMs)).kv("auto", d.automatic);
     w.key("bank_a").hexBytes(d.fm.bankA, 16);
     w.key("bank_b").hexBytes(d.fm.bankB, 16);
     w.kv("ext_valid", d.fm.extValid);
