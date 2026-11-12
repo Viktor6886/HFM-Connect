@@ -19,11 +19,12 @@ SET = {"break_ms": 177, "post_break_ms": 214, "byte_timeout_ms": 750, "ftdi_mode
        "experimental_reads": True, "engineer_mode": False, "auto_connect": True, "keep_alive": True,
        "impulse_enabled": False, "trace_capture": True, "battery_manual_confirm": False, "vehicle_idx": 2,
        "production_ym": 199301, "vin": "***", "mask_vin": True, "ap_ssid": "HFM Connect", "ap_default_pass": True,
-       "sta_ssid": "", "imp_press_ms": 3000, "imp_end_gap_ms": 2500, "vbat_adc": False, "ui_theme": "auto",
+       "sta_ssid": "", "imp_press_ms": 3000, "imp_end_gap_ms": 2500, "imp_clear_ms": 7000, "require_write_key": False,
+       "vbat_adc": False, "ui_theme": "auto",
        "live_sel": "rpm,maf,o2_mv,lambda", "live_cat": "all", "code9": "", "wake_learned": True,
        "sound_level": 2, "light_level": 2, "dtc_on_connect": True, "buzzer_fitted": True, "led_fitted": True,
        "oled": {"built": True, "on": True, "type": 0, "flip": False, "level": 2, "present": True, "address": "0x3C", "frames": 120}}
-STATE = {"live": False}
+STATE = {"live": False, "plan": {}, "result": ""}
 
 PARAMS = [("rpm", "Обороты двигателя", "об/мин", 0, 0, 7000, 0, False, 600, 800),
           ("ect", "Температура ОЖ", "°C", 0, -40, 130, 1, False, None, None),
@@ -33,6 +34,7 @@ PARAMS = [("rpm", "Обороты двигателя", "об/мин", 0, 0, 7000
           ("lambda", "Лямбда-регулирование", "%", 1, -50, 50, 0, False, -10, 10),
           ("inj_ms", "Время впрыска", "мс", 1, 0, 20, 1, False, 2.5, 3.8),
           ("ign_deg", "Угол опережения зажигания", "°ПКВ", 2, -35, 55, 1, False, 6, 10),
+          ("speed", "Скорость автомобиля", "км/ч", 5, 0, 250, 0, False, None, None),
           ("idle_contact", "Контакт ХХ (CTP)", "", 5, 0, 1, 0, True, None, None),
           ("resonance", "Резонансная заслонка Y22/6", "", 4, 0, 1, 0, True, None, None)]
 
@@ -42,19 +44,19 @@ def live(defs):
     vals = []
     for k, name, unit, cat, mn, mx, dec, b, lo, hi in PARAMS:
         v = {"rpm": 760 + 20 * math.sin(t), "ect": 86.0, "maf": 21.4 + math.sin(t), "throttle": 1.2, "o2_mv": 450 + 300 * math.sin(3 * t),
-             "lambda": -14 + 2 * math.sin(t), "inj_ms": 3.1, "ign_deg": 8.5, "idle_contact": 1, "resonance": 0}[k]
-        o = {"k": k, "v": round(v, dec), "q": "VALID"}
+             "lambda": -9.2 + 0.3 * math.sin(t), "inj_ms": 3.1, "ign_deg": 8.5, "speed": None, "idle_contact": 1, "resonance": 0}[k]
+        o = {"k": k, "v": None if v is None else round(v, dec), "q": "NOT_SUPPORTED" if v is None else "VALID"}
         if lo is not None:
             o.update({"lo": lo, "hi": hi, "nnote": "ХХ, P/N, ОЖ >80 °C", "nsrc": "I07 p.2",
                       "norm": "BELOW" if v < lo else "ABOVE" if v > hi else "IN_SPEC"})
         else:
             o["norm"] = "NO_NORM"
         if defs:
-            o.update({"name": name, "unit": unit, "src": "20:B7", "formula": "f", "conf": "REK", "ev": "AV", "cat": cat,
+            o.update({"name": name, "unit": unit, "src": "20:B7", "formula": "f", "conf": "GIP" if k in ("lambda", "inj_ms", "speed") else "REK", "ev": "AV", "cat": cat,
                       "bool": b, "min": mn, "max": mx, "dec": dec})
         vals.append(o)
     return {"live": {"active": STATE["live"], "seq": int(t * 3), "cycles": 5, "age_ms": 120, "cycle_ms": 310,
-                     "link_ready": True, "warm_idle": True, "warm_running": True, "norms_vehicle": True, "plan": "bosch",
+                     "link_ready": True, "warm_idle": True, "warm_running": True, "norms_vehicle": True, "plan": "bosch", "plan_echo": False,
                      "groups": [{"name": "rpm_low", "prefix": "20", "ok": True, "raw": "4C"}, {"name": "airflow", "prefix": "20", "ok": True, "raw": "1E 04 1E 50 7E 80"}],
                      "values": vals}}
 
@@ -70,29 +72,56 @@ def status():
             "vehicle": {"idx": 2, "chassis": "W124", "model": "124.032", "name": "E320", "engine": "104.992", "norms": "M104_HFM34_EARLY", "connector": "W124_X11_4_16"}}
 
 
-CAPS = [("ident", "Идентификация ЭБУ (F0 00–1B)", True, "REK", "ok"), ("dtc_read", "Чтение памяти неисправностей", True, "REK", "ok"),
-        ("live_native", "Live Data — нативные группы", True, "REK", "ok"), ("adapt_read", "Чтение самоадаптаций", True, "REK", "never"),
-        ("dtc_clear", "Стирание памяти неисправностей", False, "BLOCK", "never")]
+CAPS = [("ident", "Идентификация ЭБУ", True, "REK", "ok", False, "F0 00–1B"),
+        ("dtc_read", "Чтение памяти неисправностей", True, "REK", "ok", False, "F1 00–1F"),
+        ("live_native", "Текущие параметры двигателя (Live Data)", True, "GIP", "ok", False, "Bosch 20/21"),
+        ("adapt_read", "Чтение самоадаптаций смеси", True, "REK", "unsupported", False, "24:90/92/93"),
+        ("coding_read", "Чтение кодировки комплектации", True, "REK", "unsupported", False, "27:02 + 24:F0"),
+        ("vin_read", "Чтение VIN", True, "GIP", "unsupported", False, "F9 00–0D"),
+        ("dtc_clear", "Стирание памяти неисправностей", True, "REK", "never", True, "10 00 · F3 FF (×2)"),
+        ("adapt_reset", "Сброс самоадаптаций смеси", True, "REK", "never", True, "CF FF · C1 FC → E0 00 · CF 00 · C0 FC"),
+        ("version_coding_write", "Запись 9-значного кода комплектации", False, "BLOCK", "never", True, "Variantencodierung"),
+        ("throttle_learn", "Обучение упора дроссельной заслонки", False, "BLOCK", "never", True, "Variantencodierung")]
 
 
 def ecu():
-    return {"ident": {"present": True, "raw": "27 42 4D 30", "vendor": "BOSCH", "vendor_known": True, "vendor_code": "27 42", "system_group": 1,
+    return {"ident": {"present": True, "raw": "27 56 4D 30", "vendor": "VDO", "vendor_known": True, "vendor_code": "27 56", "system_group": 1,
                       "identifier": "M0 22146 ZR0", "part": "013 545 08 32", "part_valid": True, "hw_date": "38/91", "sw_date": "34/92",
                       "diag_index": "40/00", "diag_index_bcd": 40, "fingerprint": "0135450832/4000", "ext_present": False},
-            "profile": {"id": "GENERIC_BOSCH_HFM_40", "name": "Bosch HFM-SFI 013 545 08 32, diag 40/00", "resolved": True, "reference_ecu": False,
-                        "bank_mapping": "A_STORED_B_CURRENT", "bank_mapping_conf": "GIP", "vdo_candidate": False, "vdo_units": False, "live_plan": "bosch",
-                        "caps": [{"id": a, "name": b, "allowed": c, "conf": d, "write": False, "reason": "" if c else "Заблокировано: нет проверенной трассы",
-                                  "run": e, "run_age_s": 95} for a, b, c, d, e in CAPS]},
-            "adapt": {"valid": True, "age_ms": 30000, "raw": {"idle": "83", "lower": "85", "upper": "7E"}, "vdo": False, "idle_kg_h": 0.6, "lower": 1.04, "upper": 0.98},
-            "coding": {"valid": False}, "vin": {"valid": False}}
+            "profile": {"id": "VDO_HFM_40", "name": "VDO HFM 013 545 08 32, diag 40/00", "resolved": True, "reference_ecu": False,
+                        "bank_mapping": "A_CURRENT_B_STORED", "bank_mapping_conf": "ZAV",
+                        "bank_text": "Банк A (F1 00–0F) — текущие, банк B (F1 10–1F) — сохранённые",
+                        "bank_basis": "Определено по последнему чтению: периодические (перемежающиеся) неисправности бывают только в банке сохранённых (заводская документация Engine 104/111, 11/3)",
+                        "variant": {"diag_raw": "40", "vendor": "V", "cylinders": 6, "dtc_map": "C8EE"},
+                        "vdo_candidate": False, "vdo_units": True, "live_plan": "bosch",
+                        "caps": [{"id": a, "name": b, "allowed": c, "conf": d, "write": w, "tech": t,
+                                  "reason": ("Доступно: пароль точки доступа, предупреждение и проверка условий перед выполнением" if c else "Недоступно: последовательность байтов команды не восстановлена ни из одного источника"),
+                                  "run": e, "run_age_s": 95} for a, b, c, d, e, w, t in CAPS]},
+            "adapt": {"valid": False, "unsupported": True},
+            "coding": {"valid": False, "unsupported": True}, "vin": {"valid": False, "unsupported": True, "not_stored": False}}
 
 
 def dtc():
-    return {"dtc": {"valid": True, "bank_mapping": "UNKNOWN", "bank_mapping_conf": "GIP", "bank_mapping_basis": "Назначение банков для этого ЭБУ не подтверждено",
-                    "m111_texts": False, "dtc_map": "CB1E", "cylinders": 6, "vendor": "B", "diag_raw": "40", "age_ms": 70000, "auto": True,
+    return {"dtc": {"valid": True, "bank_mapping": "A_CURRENT_B_STORED", "bank_mapping_conf": "ZAV",
+                    "bank_text": "Банк A (F1 00–0F) — текущие, банк B (F1 10–1F) — сохранённые",
+                    "bank_mapping_basis": "Определено по последнему чтению: периодические (перемежающиеся) неисправности бывают только в банке сохранённых (заводская документация Engine 104/111, 11/3)",
+                    "m111_texts": False, "dtc_map": "C8EE", "cylinders": 6, "vendor": "V", "diag_raw": "40", "age_ms": 70000, "auto": True,
                     "bank_a": "40 00 08 00 00 00 00 00 00 00 00 00 00 00 00 00", "bank_b": "40 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00", "ext_valid": False,
-                    "items": [{"bank": "bank_a", "index": "00", "bit": 6, "pos": 7, "base": 10, "code": 10, "remapped": False, "map": "CB1E", "rule": "", "text": "Датчик массового расхода воздуха: обрыв цепи.", "source": "oem", "intermittent": False},
-                              {"bank": "bank_b", "index": "17", "bit": 1, "pos": 58, "base": 75, "code": 75, "remapped": False, "map": "CB1E", "rule": "", "text": "Реле подогрева впуска PSV (K3/1): электрическая неисправность, характер не уточнён.", "source": "candidate", "intermittent": False}]}}
+                    "items": [{"bank": "current", "index": "00", "bit": 6, "pos": 7, "base": 10, "code": 10, "remapped": False, "map": "C8EE", "rule": "", "text": "Датчик массового расхода воздуха: обрыв цепи.", "source": "oem", "intermittent": False},
+                              {"bank": "stored", "index": "17", "bit": 1, "pos": 58, "base": 75, "code": 75, "remapped": False, "map": "C8EE", "rule": "", "text": "Реле подогрева впуска PSV (K3/1): электрическая неисправность, характер не уточнён.", "source": "candidate", "intermittent": True}]},
+            "impulse": {"valid": True, "last_n": 2, "complete": True, "glitches": 0, "edges": 5,
+                        "codes": [{"n": 2, "a": [{"code": 2, "text": "Датчик температуры ОЖ"}, {"code": 3, "text": "Датчик температуры ОЖ: обрыв"}]}]},
+            "impulse_enabled": bool(SET.get("impulse_enabled"))}
+
+
+OPS = [("dtc_clear", "Стирание памяти неисправностей"), ("adapt_reset", "Сброс самоадаптаций смеси"),
+       ("purge_test", "Проверка клапана продувки адсорбера Y58/1"), ("impulse_clear", "Импульсное стирание кода")]
+
+
+def services():
+    return {"services": {"interlock": False, "require_write_key": False, "pw_lock_s": 0,
+                         "ops": [{"id": i, "name": n, "allowed": True, "conf": "REK", "reason": "Доступно"} for i, n in OPS],
+                         "last_result": STATE["result"], "purge_on": False, "battery_manual_confirm": False, "plan": STATE["plan"]}}
 
 
 class H(BaseHTTPRequestHandler):
@@ -119,7 +148,7 @@ class H(BaseHTTPRequestHandler):
         if p == "/ref.json":
             return self.send(REF)
         api = {"/api/status": status, "/api/ecu": ecu, "/api/dtc": dtc, "/api/settings": lambda: SET,
-               "/api/services": lambda: {"services": {"interlock": False, "ops": [{"id": "purge_test", "name": "Тест Y58/1", "allowed": False, "conf": "BLOCK", "reason": "Заблокировано"}], "last_result": "", "purge_on": False, "battery_manual_confirm": False, "plan": {}}},
+               "/api/services": services,
                "/api/vehicles": lambda: {"vehicles": [{"idx": 2, "chassis": "W124", "model": "124.032", "name": "E320", "engine": "104.992", "from": "09/1992", "to": "02/1994", "gen": "EARLY_AUTO", "gen_name": "HFM 3.4 ранний", "norms": "M104_HFM34_EARLY", "connector": "W124_X11_4_16", "dm": "", "conf": "ZAV", "source": "I07"}], "connectors": [], "norms": []},
                "/api/trace": lambda: {"last": 3, "count": 3, "events": [] if q.get("after", ["0"])[0] != "0" else [{"seq": i, "t_us": 1000 * i, "phase": "SELECTOR", "par": "S", "tx": "B7", "echo": "B7", "rx": "1E", "n": 2, "st": "OK"} for i in range(1, 4)]},
                "/api/files": lambda: {"total": 1000000, "used": 2000, "files": []}}
@@ -130,7 +159,7 @@ class H(BaseHTTPRequestHandler):
             return self.send(j) if j else self.send({"ok": False, "error": "unknown job"}, 404)
         if p == "/api/report":
             r = {"schema": "hfm.report.v1", "generator": "HFM Connect 0.5.0", "disclaimer": "Программные испытания", "status": status()}
-            r.update(ecu()); r.update(dtc()); r.update(live(True)); r["impulse"] = {"codes": []}
+            r.update(ecu()); r.update(dtc()); r.update(live(True)); r["impulse"] = {"codes": []}; r["adapt"] = ecu()["adapt"]
             return self.send(r)
         if p in api:
             return self.send(api[p]())
@@ -145,7 +174,23 @@ class H(BaseHTTPRequestHandler):
             i = NEXT[0]; NEXT[0] += 1
             if f.get("job") == "live_start": STATE["live"] = True
             if f.get("job") == "live_stop": STATE["live"] = False
-            JOBS[i] = {"id": i, "job": f.get("job"), "state": "done", "message": "Выполнено: " + f.get("job", "")}
+            ok, msg = True, "Выполнено: " + f.get("job", "")
+            if f.get("job") == "svc_prepare":
+                STATE["plan"] = {"op": f.get("op"), "ok": True, "token": "0BADF00D", "expires_in_ms": 60000, "block_reason": "",
+                                 "checks": [{"id": "capability", "text": "Операция разрешена профилем ЭБУ", "result": True},
+                                            {"id": "session", "text": "Связь с ЭБУ по K-Line есть", "result": True},
+                                            {"id": "battery", "text": "Напряжение бортсети не ниже 11 В (измерено или подтверждено вами)", "result": True},
+                                            {"id": "engine_stopped", "text": "Зажигание включено, двигатель заглушен (по оборотам или подтверждено вами)", "result": f.get("confirm") == "1"}]}
+                if f.get("confirm") != "1":
+                    STATE["plan"]["ok"] = False
+                    STATE["plan"]["block_reason"] = "Зажигание включено, двигатель заглушен (по оборотам или подтверждено вами)"
+            if f.get("job") == "svc_execute":
+                if f.get("password") != "12345678":
+                    ok, msg = False, "Неверный пароль. Нужен пароль Wi-Fi точки доступа HFM Connect"
+                else:
+                    STATE["plan"] = {}
+                    STATE["result"] = "Память неисправностей стёрта: записей было 2, при повторном чтении — 0"
+            JOBS[i] = {"id": i, "job": f.get("job"), "state": "done" if ok else "failed", "message": msg}
             return self.send({"ok": True, "id": i})
         if u.path == "/api/settings":
             for k, v in f.items():

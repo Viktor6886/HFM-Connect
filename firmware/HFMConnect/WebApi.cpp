@@ -50,6 +50,36 @@ static void writeTri(JsonWriter& w, const char* k, int8_t v) {
   if (v < 0) w.null(); else w.value(v != 0);
 }
 
+// One orientation of the F1 banks for every page (identification, faults,
+// report): the factory intermittent-fault rule observed in the current readout
+// wins over the profile; a profile assumption (GIP) keeps neutral names.
+struct BankEff {
+  dtc::BankMapping map;
+  const char* conf;
+  const char* basis;
+};
+static BankEff effectiveBanks(const EngineState& s) {
+  const DtcView& d = s.dtc;
+  bool byRule = d.valid && d.inferred != dtc::BankMapping::Unknown;
+  bool proven = byRule || s.profile.bankMappingConf == Confidence::REK;
+  BankEff e;
+  e.map = byRule ? d.inferred : (proven ? s.profile.bankMapping : dtc::BankMapping::Unknown);
+  e.conf = byRule ? "ZAV" : (proven ? confidenceCode(s.profile.bankMappingConf) : "GIP");
+  e.basis = byRule ? "Определено по последнему чтению: периодические (перемежающиеся) неисправности бывают только "
+                     "в банке сохранённых (заводская документация Engine 104/111, 11/3)"
+                   : (proven ? "Профиль эталонного ЭБУ спецификации"
+                             : "Для этого ЭБУ не определено: источники расходятся, какой банк текущий. Определится "
+                               "автоматически, когда в чтении появится периодическая неисправность");
+  return e;
+}
+static const char* bankText(dtc::BankMapping m) {
+  switch (m) {
+    case dtc::BankMapping::AStoredBCurrent: return "Банк A (F1 00–0F) — сохранённые, банк B (F1 10–1F) — текущие";
+    case dtc::BankMapping::ACurrentBStored: return "Банк A (F1 00–0F) — текущие, банк B (F1 10–1F) — сохранённые";
+    default: return "Не определено — коды показаны как «банк A» и «банк B»";
+  }
+}
+
 // ---- JSON sections -------------------------------------------------------------------
 static void writeIdent(JsonWriter& w, const EngineState& s) {
   const EcuIdent& id = s.ident;
@@ -74,7 +104,11 @@ static void writeIdent(JsonWriter& w, const EngineState& s) {
   const prof::EcuProfile& p = s.profile;
   w.key("profile").beginObject();
   w.kv("id", p.id).kv("name", p.name).kv("resolved", p.resolved).kv("reference_ecu", p.referenceEcu);
-  w.kv("bank_mapping", dtc::bankMappingCode(p.bankMapping)).kv("bank_mapping_conf", conf(p.bankMappingConf));
+  {
+    BankEff be = effectiveBanks(s);
+    w.kv("bank_mapping", dtc::bankMappingCode(be.map)).kv("bank_mapping_conf", be.conf);
+    w.kv("bank_text", bankText(be.map)).kv("bank_basis", be.basis);
+  }
   const DtcVariantMap* vm = dtc::selectMap(p.variant);
   w.key("variant").beginObject();
   w.key("diag_raw").hex(p.variant.diagRaw);
@@ -84,12 +118,12 @@ static void writeIdent(JsonWriter& w, const EngineState& s) {
   w.key("caps").beginArray();
   for (uint8_t f = 0; f < prof::F_COUNT; f++) {
     w.beginObject();
-    w.kv("id", prof::featureCode(f)).kv("name", prof::featureName(f));
+    w.kv("id", prof::featureCode(f)).kv("name", prof::featureName(f)).kv("tech", prof::featureTech(f));
     w.kv("allowed", p.caps[f].allowed).kv("conf", conf(p.caps[f].conf)).kv("write", prof::featureIsWrite(f));
     w.kv("reason", p.caps[f].reason ? p.caps[f].reason : "");
     // What really happened on this ECU (not only the expected support).
-    static const char* const kRun[] = {"never", "ok", "failed"};
-    w.kv("run", kRun[s.feat[f].state < 3 ? s.feat[f].state : 0]);
+    static const char* const kRun[] = {"never", "ok", "failed", "unsupported"};
+    w.kv("run", kRun[s.feat[f].state < 4 ? s.feat[f].state : 0]);
     w.kv("run_age_s", s.feat[f].state ? (uint32_t)((millis() - s.feat[f].tMs) / 1000) : 0u);
     w.endObject();
   }
@@ -99,7 +133,7 @@ static void writeIdent(JsonWriter& w, const EngineState& s) {
 
 static void writeAdaptCoding(JsonWriter& w, const EngineState& s) {
   w.key("adapt").beginObject();
-  w.kv("valid", s.adapt.valid);
+  w.kv("valid", s.adapt.valid).kv("unsupported", s.adapt.echo);
   if (s.adapt.valid) {
     w.kv("age_ms", (uint32_t)(millis() - s.adapt.tMs));
     w.key("raw").beginObject().key("idle").hex(s.adapt.rawIdle).key("lower").hex(s.adapt.rawLower).key("upper").hex(s.adapt.rawUpper).endObject();
@@ -108,7 +142,7 @@ static void writeAdaptCoding(JsonWriter& w, const EngineState& s) {
   }
   w.endObject();
   w.key("coding").beginObject();
-  w.kv("valid", s.coding.valid);
+  w.kv("valid", s.coding.valid).kv("unsupported", s.coding.echo);
   if (s.coding.valid) {
     const hfm::CodingInfo& c = s.coding.info;
     w.key("coding_byte").hex(c.coding).key("mask_byte").hex(c.mask);
@@ -122,7 +156,7 @@ static void writeAdaptCoding(JsonWriter& w, const EngineState& s) {
     w.kv("screen", (int)c.screen);
   }
   w.endObject();
-  w.key("vin").beginObject().kv("valid", s.vin.valid);
+  w.key("vin").beginObject().kv("valid", s.vin.valid).kv("unsupported", s.vin.unsupported).kv("not_stored", s.vin.notStored);
   if (s.vin.valid) w.kv("text", AppSettings.maskVin ? "*** (скрыт настройкой)" : s.vin.text);
   w.endObject();
 }
@@ -135,26 +169,17 @@ static bool vehicleIsM111() {
 
 static void writeDtc(JsonWriter& w, const EngineState& s) {
   const DtcView& d = s.dtc;
-  // Effective bank orientation: the factory intermittent-fault rule observed
-  // in this readout wins over the profile assumption.
-  bool byRule = d.inferred != dtc::BankMapping::Unknown;
-  // Banks are named current/stored only when proven for this readout (factory
-  // intermittent-fault rule) or by the reference profile (REK); a profile
-  // assumption (GIP) keeps the neutral names Bank A / Bank B (REV 1.2 E-06, C-01).
-  bool proven = byRule || s.profile.bankMappingConf == Confidence::REK;
-  dtc::BankMapping eff = byRule ? d.inferred : (proven ? s.profile.bankMapping : dtc::BankMapping::Unknown);
-  const char* effConf = byRule ? "ZAV" : (proven ? conf(s.profile.bankMappingConf) : "GIP");
-  const char* effBasis =
-      byRule ? "Определено по этому чтению: перемежающиеся неисправности бывают только в сохранённых (OEM 11/3)"
-             : (proven ? "Профиль эталонного ЭБУ (РЕК)"
-                       : "Назначение банков для этого ЭБУ не подтверждено: показаны банки A и B. Определится "
-                         "автоматически, если в чтении появится перемежающаяся неисправность");
+  // Same orientation as on the identification page (effectiveBanks).
+  BankEff be = effectiveBanks(s);
+  dtc::BankMapping eff = be.map;
+  const char* effConf = be.conf;
+  const char* effBasis = be.basis;
   bool m111 = vehicleIsM111();
   w.key("dtc").beginObject();
   w.kv("valid", d.valid);
   w.kv("bank_mapping", dtc::bankMappingCode(eff));
   w.kv("bank_mapping_conf", effConf);
-  w.kv("bank_mapping_basis", effBasis);
+  w.kv("bank_mapping_basis", effBasis).kv("bank_text", bankText(eff));
   w.kv("m111_texts", m111);
   const DtcVariantMap* vm = dtc::selectMap(s.profile.variant);
   w.kv("dtc_map", vm ? vm->id : "GENERIC").kv("cylinders", (unsigned)s.profile.variant.cylinders);
@@ -235,6 +260,7 @@ static void writeLive(JsonWriter& w, const EngineState& s, bool withDefs) {
   w.kv("warm_idle", d.conditionsWarmIdle).kv("warm_running", d.conditionsWarmRunning);
   int16_t vi = AppSettings.vehicleIdx;
   w.kv("norms_vehicle", vi >= 0);
+  w.kv("plan_echo", s.snap.planEcho);
   // Groups of the address plan actually polled (Bosch full8 or VDO).
   w.kv("plan", s.snap.vdoPlan ? "vdo" : "bosch");
   w.key("groups").beginArray();
@@ -281,7 +307,8 @@ static void writeLive(JsonWriter& w, const EngineState& s, bool withDefs) {
 
 static void writeServices(JsonWriter& w, const EngineState& s) {
   w.key("services").beginObject();
-  w.kv("interlock", s.interlock).kv("engineer_mode", AppSettings.engineerMode);
+  w.kv("interlock", s.interlock).kv("require_write_key", AppSettings.requireWriteKey);
+  w.kv("pw_lock_s", s.pwLockS);
   w.kv("battery_manual_confirm", AppSettings.batteryManualConfirm);
   w.kv("last_result", s.lastServiceResult);
   w.kv("purge_on", s.purgeOn);
@@ -300,7 +327,6 @@ static void writeServices(JsonWriter& w, const EngineState& s) {
     char tok[12];
     snprintf(tok, sizeof tok, "%08lX", (unsigned long)p.token);
     w.kv("token", p.ok ? tok : "");
-    w.kv("phrase", p.phrase);
     w.kv("expires_in_ms", p.ok ? (int32_t)(p.expiresMs - millis()) : 0);
     w.kv("block_reason", p.blockReason ? p.blockReason : "");
     w.key("checks").beginArray();
@@ -459,6 +485,8 @@ static void hDtc() {
   Engine.lock();
   w.beginObject();
   writeDtc(w, Engine.state());
+  writeImpulse(w, Engine.state());
+  w.kv("impulse_enabled", AppSettings.impulseEnabled);
   w.endObject();
   Engine.unlock();
   sendSmall(w);
@@ -618,11 +646,16 @@ static void hJob() {
     for (uint8_t o = 0; o < (uint8_t)guard::Op::Count; o++)
       if (op == guard::opCode((guard::Op)o)) arg = o;
   }
+  // "Ignition ON, engine stopped" confirmed by the user in the service dialog.
+  if (server.arg("confirm") == "1") arg |= 0x100;
+  if (job == Job::ImpulseRead && server.arg("fresh") == "1") arg = 1;
   String text;
   if (server.hasArg("token")) {
+    // TOKEN|password - the password is checked by the engine against the
+    // access point password and wiped after the job.
     text = server.arg("token");
     text += "|";
-    text += server.arg("phrase");
+    text += server.arg("password");
   }
   uint32_t id = Engine.submit(job, arg, text.c_str());
   JsonWriter w;
@@ -640,6 +673,7 @@ static void hSettingsGet() {
   w.kv("byte_timeout_ms", (unsigned)s.byteTimeoutMs);
   w.kv("ftdi_modem", (unsigned)s.ftdiModem).kv("wake_auto", s.wakeAuto);
   w.kv("experimental_reads", s.experimentalReads).kv("engineer_mode", s.engineerMode);
+  w.kv("require_write_key", s.requireWriteKey).kv("imp_clear_ms", (unsigned)s.impClearMs);
   w.kv("auto_connect", s.autoConnect).kv("keep_alive", s.keepAlive).kv("impulse_enabled", s.impulseEnabled).kv("trace_capture", s.traceCapture);
   w.kv("battery_manual_confirm", s.batteryManualConfirm);
   w.kv("vehicle_idx", (int)s.vehicleIdx).kv("production_ym", s.productionYm);
@@ -713,6 +747,8 @@ static void hSettingsPost() {
   }
   s.experimentalReads = argBool("experimental_reads", s.experimentalReads);
   s.engineerMode = argBool("engineer_mode", s.engineerMode);
+  s.requireWriteKey = argBool("require_write_key", s.requireWriteKey);
+  if (server.hasArg("imp_clear_ms")) s.impClearMs = (uint16_t)constrain(server.arg("imp_clear_ms").toInt(), 5000, 8000);
   s.keepAlive = argBool("keep_alive", s.keepAlive);
   s.autoConnect = argBool("auto_connect", s.autoConnect);
   s.impulseEnabled = argBool("impulse_enabled", s.impulseEnabled);

@@ -180,6 +180,14 @@ void DiagEngine::featMark(uint8_t f, bool ok) {
   unlock();
 }
 
+void DiagEngine::featUnsupported(uint8_t f) {
+  if (f >= prof::F_COUNT) return;
+  lock();
+  st_.feat[f].state = 3;
+  st_.feat[f].tMs = millis();
+  unlock();
+}
+
 void DiagEngine::readHardware() {
   bool il = digitalRead(HFM_WRITE_EN_PIN) == (HFM_WRITE_EN_ACTIVE_LOW ? LOW : HIGH);
   float v = -1;
@@ -354,6 +362,7 @@ void DiagEngine::doIdentify(char* msg, size_t n, bool& ok) {
       st_.snap = live::Snapshot();
       for (uint8_t f = 0; f < prof::F_COUNT; f++) st_.feat[f] = FeatRun();
       extDisabled_ = false;
+      planTried_ = 0;
     }
     st_.ident = id;
   }
@@ -372,8 +381,10 @@ void DiagEngine::doIdentify(char* msg, size_t n, bool& ok) {
 void DiagEngine::afterResolve() {
   // Live-data address plan: by vendor; unknown vendor -> remembered probe
   // result, otherwise the documented Bosch plan first.
-  st_.livePlanVdo = st_.profile.vdoUnits;
-  if (st_.profile.vdoCandidate && strcmp(settings_->ecuFp, st_.ident.fingerprint) == 0 &&
+  // VDO: the VDO plan of the factory tester templates first only with the
+  // experimental opt-in, otherwise the Bosch read pages (checked, D-034).
+  st_.livePlanVdo = st_.profile.vdoUnits && st_.profile.vdoPlanFirst;
+  if ((st_.profile.vdoCandidate || st_.profile.vdoUnits) && strcmp(settings_->ecuFp, st_.ident.fingerprint) == 0 &&
       (settings_->ecuFlags & ECU_F_PLAN_KNOWN))
     st_.livePlanVdo = (settings_->ecuFlags & ECU_F_PLAN_VDO) != 0 && settings_->experimentalReads;
 }
@@ -407,6 +418,10 @@ bool DiagEngine::readDtc(char* msg, size_t n, bool automatic) {
     if (ext) featMark(prof::F_DTC_EXTENDED, fm.extValid);
     // Extended bytes not answered: both banks are complete, resume the read session.
     if (s != LinkStatus::Ok) recoverRead();
+  } else if (fm.echo) {
+    dtcRefresh_.readFailed(millis(), automatic);
+    snprintf(msg, n, "ЭБУ ответил на запрос памяти неисправностей повтором адресов F1 00–1F — данных нет, "
+                     "результат не показан");
   } else {
     dtcRefresh_.readFailed(millis(), automatic);
     snprintf(msg, n, "Ошибка чтения памяти неисправностей (%s)", linkStatusCode(s));
@@ -463,6 +478,8 @@ void DiagEngine::fillFacts(guard::Facts& f) {
   uint32_t now = millis();
   f.sessionReady = session_->ready();
   f.interlockClosed = st_.interlock;
+  f.interlockRequired = settings_->requireWriteKey;
+  f.engineStoppedConfirm = svcConfirmStopped_;
   const live::Value& rpm = st_.live.v[live::P_RPM];
   const live::Value& ect = st_.live.v[live::P_ECT];
   f.liveAgeMs = st_.live.tMs ? now - st_.live.tMs : 0xFFFFFFFF;
@@ -558,10 +575,20 @@ void DiagEngine::execute(Job j, uint32_t arg, const char* text) {
       LinkStatus s = svc::readAdaptations(*session_, a);
       ok = a.valid;
       lock();
-      if (ok) st_.adapt = a;
+      if (ok || a.echo) st_.adapt = a;
       unlock();
-      if (!ok) snprintf(msg, sizeof msg, "Ошибка чтения адаптаций 24* 90/92/93 (%s)", linkStatusCode(s));
-      else snprintf(msg, sizeof msg, "Самоадаптации прочитаны");
+      if (a.echo) {
+        snprintf(msg, sizeof msg, "Этот ЭБУ не выдаёт самоадаптации: на запрос 24:90/92/93 он вернул сами адреса "
+                                  "(90 92 93), а не значения");
+        featUnsupported(prof::F_ADAPT_READ);
+        break;
+      }
+      if (!ok) {
+        snprintf(msg, sizeof msg, "Ошибка чтения самоадаптаций (%s)", linkStatusCode(s));
+        recoverRead();
+      } else {
+        snprintf(msg, sizeof msg, "Самоадаптации прочитаны");
+      }
       featMark(prof::F_ADAPT_READ, ok);
       break;
     }
@@ -571,10 +598,20 @@ void DiagEngine::execute(Job j, uint32_t arg, const char* text) {
       LinkStatus s = svc::readCoding(*session_, c);
       ok = c.valid;
       lock();
-      if (ok) st_.coding = c;
+      if (ok || c.echo) st_.coding = c;
       unlock();
-      if (!ok) snprintf(msg, sizeof msg, "Ошибка чтения кодировки 27* 02 24* F0 (%s)", linkStatusCode(s));
-      else snprintf(msg, sizeof msg, "Кодировка прочитана");
+      if (c.echo) {
+        snprintf(msg, sizeof msg, "Этот ЭБУ не выдаёт байт кодировки: на запрос 27:02 / 24:F0 он вернул сами адреса "
+                                  "(02 / F0), а не данные");
+        featUnsupported(prof::F_CODING_READ);
+        break;
+      }
+      if (!ok) {
+        snprintf(msg, sizeof msg, "Ошибка чтения кодировки (%s)", linkStatusCode(s));
+        recoverRead();
+      } else {
+        snprintf(msg, sizeof msg, "Кодировка прочитана");
+      }
       featMark(prof::F_CODING_READ, ok);
       break;
     }
@@ -586,8 +623,23 @@ void DiagEngine::execute(Job j, uint32_t arg, const char* text) {
       lock();
       st_.vin = v;
       unlock();
-      snprintf(msg, sizeof msg, ok ? (v.valid ? "VIN прочитан" : "VIN в ЭБУ не записан (00/FF)") : "Ошибка F9 (%s)",
-               linkStatusCode(s));
+      if (v.unsupported) {
+        // Older ECUs have no VIN service: F9 is answered with another byte
+        // (or not at all). Read-only - the session is resumed at once, no
+        // link loss is reported (D-034).
+        recoverRead();
+        if (s == LinkStatus::BadAck)
+          snprintf(msg, sizeof msg, "Этот ЭБУ не поддерживает чтение VIN: на запрос F9 он ответил %02X вместо 06. "
+                                    "Связь продолжается", v.ackSeen);
+        else
+          snprintf(msg, sizeof msg, "Этот ЭБУ не поддерживает чтение VIN: на запрос F9 ответа нет. Связь продолжается");
+        featUnsupported(prof::F_VIN_READ);
+        ok = false;
+        break;
+      }
+      if (!ok) recoverRead();
+      snprintf(msg, sizeof msg, ok ? (v.valid ? "VIN прочитан" : "VIN в ЭБУ не записан (00/FF)")
+                                   : "Ошибка чтения VIN (%s)", linkStatusCode(s));
       featMark(prof::F_VIN_READ, ok);
       break;
     }
@@ -621,10 +673,14 @@ void DiagEngine::execute(Job j, uint32_t arg, const char* text) {
       snprintf(msg, sizeof msg, "Опрос остановлен");
       break;
     case Job::SvcPrepare: {
-      guard::Op op = (guard::Op)arg;
-      if (!ensureConnected(msg, sizeof msg)) { ok = false; break; }
+      guard::Op op = (guard::Op)(arg & 0xFF);
+      svcConfirmStopped_ = (arg & 0x100) != 0;
+      if (op == guard::Op::ImpulseClear) {
+        // Pulse-counter procedure: no K-Line session is used.
+        if (!impulseVehicleOk(msg, sizeof msg)) { ok = false; break; }
+      } else if (!ensureConnected(msg, sizeof msg)) { ok = false; break; }
       // Fresh read of engine state immediately before planning.
-      if (st_.profile.caps[prof::F_LIVE_NATIVE].allowed) {
+      if (op != guard::Op::ImpulseClear && st_.profile.caps[prof::F_LIVE_NATIVE].allowed) {
         live::Snapshot snap = st_.snap;
         bool vdo = st_.livePlanVdo;
         if (live::pollNative(*session_, snap, vdo) == LinkStatus::Ok) {
@@ -633,7 +689,7 @@ void DiagEngine::execute(Job j, uint32_t arg, const char* text) {
           lock();
           st_.snap = snap;
           prevLive_ = st_.live;
-          live::decode(snap, ve ? ve->norms : prof::NormGroup::None, vdo, &prevLive_, st_.live,
+          live::decode(snap, ve && ve->norms != prof::NormGroup::None ? ve->norms : prof::NormGroup::HFM_GENERIC, vdo, &prevLive_, st_.live,
                        st_.profile.variant.diagRaw);
           unlock();
         } else {
@@ -648,7 +704,7 @@ void DiagEngine::execute(Job j, uint32_t arg, const char* text) {
       ok = guard_.prepare(op, st_.profile, st_.ident, f, millis(), esp_random() | 1, plan);
       st_.plan = plan;
       unlock();
-      snprintf(msg, sizeof msg, ok ? "План готов: подтвердите в течение 20 с" : "Условия не выполнены");
+      snprintf(msg, sizeof msg, ok ? "Условия выполнены: введите пароль в течение 60 с" : "Условия не выполнены");
       break;
     }
     case Job::SvcExecute: {
@@ -657,15 +713,77 @@ void DiagEngine::execute(Job j, uint32_t arg, const char* text) {
       lock();
       guard::Facts f;
       fillFacts(f);
-      uint32_t token = st_.plan.token;  // token is echoed by the UI in text
-      (void)token;
-      uint32_t given = strtoul(text, nullptr, 16);
-      const char* phrase = strchr(text, '|');
-      guard::AuthResult ar = guard_.authorize(op, given, phrase ? phrase + 1 : "", st_.profile, st_.ident, f, millis());
+      uint32_t given = strtoul(text, nullptr, 16);  // "TOKEN|password"
+      const char* pw = strchr(text, '|');
+      const char* expected = settings_->apPass[0] ? settings_->apPass : HFM_AP_DEFAULT_PASS;
+      guard::AuthResult ar = guard_.authorize(op, given, pw ? pw + 1 : "", expected, st_.profile, st_.ident, f, millis());
+      st_.pwLockS = guard_.passwordLockS(millis());
+      if (ar != guard::AuthResult::Ok) st_.plan = guard_.plan();
       unlock();
       if (ar != guard::AuthResult::Ok) {
         ok = false;
-        snprintf(msg, sizeof msg, "Отказано: %s", guard::authCode(ar));
+        switch (ar) {
+          case guard::AuthResult::BadPassword:
+            snprintf(msg, sizeof msg, "Неверный пароль. Нужен пароль Wi-Fi точки доступа HFM Connect");
+            break;
+          case guard::AuthResult::PasswordLocked:
+            snprintf(msg, sizeof msg, "Пароль введён неверно 5 раз: ввод заблокирован на %lu с",
+                     (unsigned long)guard_.passwordLockS(millis()));
+            break;
+          case guard::AuthResult::Expired:
+          case guard::AuthResult::NoPlan:
+          case guard::AuthResult::BadToken:
+            snprintf(msg, sizeof msg, "Время подтверждения истекло — проверьте условия заново");
+            break;
+          case guard::AuthResult::ChecksFailed:
+            snprintf(msg, sizeof msg, "Условия изменились (связь, обороты, данные) — проверьте их заново");
+            break;
+          case guard::AuthResult::IdentChanged:
+            snprintf(msg, sizeof msg, "Подключён другой ЭБУ — операция отменена");
+            break;
+          case guard::AuthResult::InterlockOpen:
+            snprintf(msg, sizeof msg, "Аппаратный ключ WRITE-EN разомкнут");
+            break;
+          default:
+            snprintf(msg, sizeof msg, "Отказано: %s", guard::authCode(ar));
+        }
+        lock();
+        strlcpy(st_.lastServiceResult, msg, sizeof st_.lastServiceResult);
+        unlock();
+        break;
+      }
+      if (op == guard::Op::ImpulseClear) {
+        lock();
+        guard_.begin(op);
+        unlock();
+        char res[320];
+        bool done = false;
+        lock();
+        st_.liveActive = false;
+        unlock();
+        session_->disconnect();  // the line must be idle: no K-Line session during the procedure
+        userDisconnected_ = true;
+        if (ftdi_) ftdi_->open();
+        if (ftdi_ || kline_) {
+          uint16_t holdMs = settings_->impClearMs;
+          if (ftdi_) done = ftdi_->impulseHold(holdMs);
+          else done = kline_->impulseHold(holdMs);
+        }
+        guard_.finish(true);  // the factory procedure has no reply to verify
+        snprintf(res, sizeof res, done ? "Контакт удерживался на массе %u с. Код, показанный перед этим, должен быть "
+                                         "стёрт — прочитайте следующий код: если снова показан тот же, повторите."
+                                       : "Адаптер недоступен — процедура не выполнена",
+                 (unsigned)(settings_->impClearMs / 1000));
+        lock();
+        strlcpy(st_.lastServiceResult, res, sizeof st_.lastServiceResult);
+        st_.plan = guard::Plan();
+        unlock();
+        ok = done;
+        snprintf(msg, sizeof msg, "%s", ok ? "Выполнено" : "Ошибка");
+        if (done) {
+          char m2[96];
+          impulseCapture(m2, sizeof m2);  // show the next code at once
+        }
         break;
       }
       lock();
@@ -674,10 +792,13 @@ void DiagEngine::execute(Job j, uint32_t arg, const char* text) {
       unlock();
       session_->armWrite(esp_random() | 1);
       LinkStatus s = LinkStatus::Ok;
-      char res[160];
+      char res[320];
       if (op == guard::Op::DtcClear) {
         bool verified = false;
         svc::FaultMemory after;
+        lock();
+        uint16_t before = st_.dtc.count;
+        unlock();
         s = svc::dtcClear(*session_, verified, after);
         ok = s == LinkStatus::Ok;
         lock();
@@ -689,19 +810,31 @@ void DiagEngine::execute(Job j, uint32_t arg, const char* text) {
           st_.dtc.inferred = dtc::inferBankMapping(st_.dtc.items, st_.dtc.count);
         }
         unlock();
-        snprintf(res, sizeof res, ok ? (verified ? "Стирание выполнено, повторное чтение: все 32 байта = 00"
-                                                 : "Команды приняты, но память не пуста — неисправность активна?")
-                                     : "ОШИБКА при стирании (%s). Состояние неизвестно — запись заблокирована.",
-                 linkStatusCode(s));
+        uint16_t left = 0;
+        lock();
+        if (after.valid) left = st_.dtc.count;
+        unlock();
+        if (ok && verified)
+          snprintf(res, sizeof res, "Память неисправностей стёрта: записей было %u, при повторном чтении — 0", before);
+        else if (ok)
+          snprintf(res, sizeof res, "ЭБУ принял команду стирания. Записей было %u, после стирания %u: оставшиеся "
+                                    "неисправности присутствуют сейчас, ЭБУ записывает их снова — устраните причину",
+                   before, left);
+        else
+          snprintf(res, sizeof res, "ОШИБКА при стирании (%s). Результат неизвестен — запись заблокирована до "
+                                    "квитирования; прочитайте память неисправностей",
+                   linkStatusCode(s));
         featMark(prof::F_DTC_CLEAR, ok && verified);
         guard_.finish(ok);
       } else if (op == guard::Op::AdaptReset) {
         uint8_t r[10];
         s = svc::adaptationReset(*session_, r);
         ok = s == LinkStatus::Ok;
-        snprintf(res, sizeof res, ok ? "Команды сброса приняты. Обязателен цикл зажигания ВЫКЛ/ВКЛ; результат не "
-                                       "подтверждён ЭБУ — прочитайте адаптации повторно."
-                                     : "ОШИБКА сброса (%s). Состояние неизвестно — запись заблокирована.",
+        snprintf(res, sizeof res, ok ? "ЭБУ принял команды сброса (вход подтверждён ответами 00/03). Выключите "
+                                       "зажигание минимум на 10 с, затем прочитайте самоадаптации: базовые значения — "
+                                       "0,0 и 1,00"
+                                     : "ОШИБКА сброса (%s): ЭБУ не подтвердил шаг — сброс не выполнен или выполнен "
+                                       "частично. Выключите зажигание; запись заблокирована до квитирования",
                  linkStatusCode(s));
         if (!ok) featMark(prof::F_ADAPT_RESET, false);  // success is confirmed only by a new readout
         guard_.finish(ok);
@@ -775,33 +908,13 @@ void DiagEngine::execute(Job j, uint32_t arg, const char* text) {
       break;
     case Job::ImpulseRead: {
       if (!settings_->impulseEnabled) { ok = false; snprintf(msg, sizeof msg, "Включите импульсный режим в настройках"); break; }
-      if (!kline_) { ok = false; snprintf(msg, sizeof msg, "Импульсный режим требует UART-трансивера; с FTDI-адаптером недоступен"); break; }
-      lock();
-      st_.liveActive = false;
-      unlock();
-      session_->disconnect();
-      if (!kline_->open()) { ok = false; snprintf(msg, sizeof msg, "UART недоступен"); break; }
-      ImpulseConfig cfg;
-      cfg.pressMs = settings_->impPressMs;
-      cfg.endGapMs = settings_->impEndGapMs;
-      ImpulseView v;
-      v.edgeCount = kline_->impulseCapture(cfg, v.edges, 96);
-      v.result = decodeImpulses(v.edges, v.edgeCount, cfg);
-      v.valid = true;
-      v.tMs = millis();
-      lock();
-      ImpulseView& cur = st_.impulse;
-      uint8_t codes[16];
-      uint8_t nc = cur.codeCount;
-      memcpy(codes, cur.codes, sizeof codes);
-      if (v.result.complete && nc < 16) codes[nc++] = v.result.pulses;
-      cur = v;
-      memcpy(cur.codes, codes, sizeof codes);
-      cur.codeCount = nc;
-      unlock();
-      kline_->close();
-      snprintf(msg, sizeof msg, v.result.complete ? "Код N = %u" : "Код не распознан (импульсов: %u)", v.result.pulses);
-      ok = v.result.complete;
+      if (!impulseVehicleOk(msg, sizeof msg)) { ok = false; break; }
+      if (arg == 1) {  // new reading: forget the codes of the previous run
+        lock();
+        st_.impulse.codeCount = 0;
+        unlock();
+      }
+      ok = impulseCapture(msg, sizeof msg);
       featMark(prof::F_IMPULSE_READ, ok);
       break;
     }
@@ -809,6 +922,64 @@ void DiagEngine::execute(Job j, uint32_t arg, const char* text) {
       break;
   }
   finishJob(ok, msg);
+}
+
+// Pulse-counter procedure (OEM Engine 104/111 11/5): only up to model year
+// 1995 (diagnosis version <= 46) and not for model 210 (WIS).
+bool DiagEngine::impulseVehicleOk(char* msg, size_t n) {
+  int16_t vi = settings_->vehicleIdx;
+  const prof::VehicleEntry* ve = vi >= 0 ? prof::vehicleByIndex((uint16_t)vi) : nullptr;
+  if (ve && strcmp(ve->chassis, "W210") == 0) {
+    snprintf(msg, n, "Импульсная диагностика не предусмотрена для W210 (заводская документация) — только по K-Line");
+    return false;
+  }
+  if (!ftdi_ && !kline_) {
+    snprintf(msg, n, "Нет адаптера K-Line");
+    return false;
+  }
+  return true;
+}
+
+// One code of the pulse counter: line grounded 2-4 s, then the ECU blinks N
+// times. The K-Line session is closed first; afterwards automatic connection
+// waits for the user's "Connect" (the ECU may still be in pulse mode).
+bool DiagEngine::impulseCapture(char* msg, size_t n) {
+  lock();
+  st_.liveActive = false;
+  unlock();
+  session_->disconnect();
+  userDisconnected_ = true;
+  ImpulseConfig cfg;
+  cfg.pressMs = settings_->impPressMs;
+  cfg.endGapMs = settings_->impEndGapMs;
+  ImpulseView v;
+  if (ftdi_) {
+    if (!ftdi_->open()) { snprintf(msg, n, "Адаптер недоступен"); return false; }
+    v.edgeCount = ftdi_->impulseCapture(cfg, v.edges, 96, v.result);
+  } else {
+    if (!kline_->open()) { snprintf(msg, n, "UART недоступен"); return false; }
+    v.edgeCount = kline_->impulseCapture(cfg, v.edges, 96);
+    v.result = decodeImpulses(v.edges, v.edgeCount, cfg);
+    kline_->close();
+  }
+  v.valid = true;
+  v.tMs = millis();
+  lock();
+  ImpulseView& cur = st_.impulse;
+  uint8_t codes[16];
+  uint8_t nc = cur.codeCount;
+  memcpy(codes, cur.codes, sizeof codes);
+  if (v.result.complete && nc < 16) codes[nc++] = v.result.pulses;
+  cur = v;
+  memcpy(cur.codes, codes, sizeof codes);
+  cur.codeCount = nc;
+  unlock();
+  if (v.result.complete)
+    snprintf(msg, n, v.result.pulses == 1 ? "N = 1: неисправностей нет" : "Код N = %u", v.result.pulses);
+  else
+    snprintf(msg, n, "Код не распознан (вспышек: %u). Проверьте зажигание и подключение к контакту диагностики",
+             v.result.pulses);
+  return v.result.complete;
 }
 
 void DiagEngine::livePoll() {
@@ -820,8 +991,8 @@ void DiagEngine::livePoll() {
   snap = st_.snap;
   bool vdo = st_.livePlanVdo;
   bool ext = st_.profile.caps[prof::F_LIVE_EXTENDED].allowed && !vdo && !extDisabled_;
-  bool probe = st_.profile.vdoCandidate && !(strcmp(settings_->ecuFp, st_.ident.fingerprint) == 0 &&
-                                             (settings_->ecuFlags & ECU_F_PLAN_KNOWN));
+  bool probe = (st_.profile.vdoCandidate || st_.profile.vdoUnits) &&
+               !(strcmp(settings_->ecuFp, st_.ident.fingerprint) == 0 && (settings_->ecuFlags & ECU_F_PLAN_KNOWN));
   int16_t vi = settings_->vehicleIdx;
   uint8_t diagRaw = st_.profile.variant.diagRaw;
   char fp[24];
@@ -838,11 +1009,14 @@ void DiagEngine::livePoll() {
       recoverRead();
     } else {
       extFails_ = 0;
+      if (snap.extEcho) extDisabled_ = true;  // addresses repeated: nothing to read there
     }
   }
-  prof::NormGroup ng = prof::NormGroup::None;
+  // Without a selected automobile (or one without its own norms) the widest
+  // factory range of all HFM-SFI engines applies.
+  prof::NormGroup ng = prof::NormGroup::HFM_GENERIC;
   const prof::VehicleEntry* ve = vi >= 0 ? prof::vehicleByIndex((uint16_t)vi) : nullptr;
-  if (ve) ng = ve->norms;
+  if (ve && ve->norms != prof::NormGroup::None) ng = ve->norms;
   lock();
   st_.snap = snap;
   if (s == LinkStatus::Ok) {
@@ -858,6 +1032,27 @@ void DiagEngine::livePoll() {
   st_.txCount = session_->txCount();
   st_.errCount = session_->errorCount();
   unlock();
+  if (s == LinkStatus::Ok && snap.planEcho) {
+    // The ECU answered the main groups of this plan with the addresses
+    // themselves (D-034): try the other documented plan once, otherwise stop
+    // polling with the reason instead of showing invented numbers.
+    planTried_ |= vdo ? 2 : 1;
+    bool canVdo = settings_->experimentalReads && (st_.profile.vdoUnits || st_.profile.vdoCandidate);
+    lock();
+    if (vdo && !(planTried_ & 1)) {
+      st_.livePlanVdo = false;
+    } else if (!vdo && canVdo && !(planTried_ & 2)) {
+      st_.livePlanVdo = true;
+    } else {
+      st_.liveActive = false;
+      st_.feat[prof::F_LIVE_NATIVE].state = 3;
+      st_.feat[prof::F_LIVE_NATIVE].tMs = millis();
+      snprintf(st_.autoMsg, sizeof st_.autoMsg,
+               "Опрос Live Data остановлен: ЭБУ отвечает повтором адресов — по известным адресам данных нет");
+    }
+    unlock();
+    return;
+  }
   if (s == LinkStatus::Ok) {
     if (probe) rememberEcu(settings_, fp, (uint8_t)(ECU_F_PLAN_KNOWN | (vdo ? ECU_F_PLAN_VDO : 0)), vdo ? 0 : ECU_F_PLAN_VDO);
     if (st_.recording) recordRow();
@@ -1115,6 +1310,7 @@ void DiagEngine::run() {
       qj = q_[0];
       memmove(&q_[0], &q_[1], (qCount_ - 1) * sizeof(QJob));
       qCount_--;
+      memset(q_[qCount_].text, 0, sizeof q_[qCount_].text);  // stale copy after the shift
       have = true;
       st_.job = JobInfo();
       st_.job.id = qj.id;
@@ -1125,6 +1321,9 @@ void DiagEngine::run() {
     unlock();
     if (have) {
       execute(qj.job, qj.arg, qj.text);
+      // The text of a service job carries the password: not kept anywhere.
+      volatile char* t = qj.text;
+      for (size_t i = 0; i < sizeof qj.text; i++) t[i] = 0;
     } else if (session_->ready()) {
       // A re-read of the fault memory that is still due (recovery inside a
       // job, repeated attempt) comes first; otherwise polling / keep-alive.

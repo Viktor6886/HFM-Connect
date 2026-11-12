@@ -178,13 +178,14 @@ TEST(command_policy_blocks_unknown_and_write_prefixes) {
   r.s.connect();
   CHECK(r.s.prefix(0x55) == LinkStatus::NotAllowed);   // unknown opcode never sent
   CHECK(r.s.prefix(0xF3) == LinkStatus::NotAllowed);   // erase without token
-  CHECK(r.s.prefix(0xF9) == LinkStatus::NotAllowed);   // VIN experimental, gated
+  CHECK(r.s.prefix(0x12) == LinkStatus::NotAllowed);   // VDO template page: experimental, gated
   CHECK_EQ(r.s.txCount(), 0u);
   CHECK(r.s.ready());  // policy rejection does not tear down the session
   uint8_t d;
   CHECK(r.s.selector(0x00, d) == LinkStatus::NotAllowed);  // no page context
+  CHECK(r.s.prefix(0xF9) == LinkStatus::Ok);  // VIN is a plain read (D-034)
   r.s.setExperimentalReads(true);
-  CHECK(r.s.prefix(0xF9) == LinkStatus::Ok);
+  CHECK(r.s.prefix(0x12) == LinkStatus::Ok);
   CHECK(r.s.argument(0x00, d) == LinkStatus::NotAllowed);  // argument only on write page
 }
 
@@ -285,11 +286,12 @@ TEST(guard_full_dtc_clear_flow_on_sim) {
   guard::Plan plan;
   guard::Facts f = readyFacts();
   CHECK(g.prepare(guard::Op::DtcClear, p, id, f, 1000, 0xCAFE, plan));
-  CHECK_STR(plan.phrase, "CLEAR DTC 0135451332");
-  CHECK(g.authorize(guard::Op::DtcClear, 0xBEEF, plan.phrase, p, id, f, 1500) == guard::AuthResult::BadToken);
-  CHECK(g.authorize(guard::Op::DtcClear, 0xCAFE, "clear", p, id, f, 1500) == guard::AuthResult::BadPhrase);
-  CHECK(g.authorize(guard::Op::DtcClear, 0xCAFE, plan.phrase, p, id, f, 1500) == guard::AuthResult::Ok);
-  CHECK(g.authorize(guard::Op::DtcClear, 0xCAFE, plan.phrase, p, id, f, 1600) != guard::AuthResult::Ok);  // one-time token
+  const char* ap = "12345678";  // access point password (D-035)
+  CHECK(g.authorize(guard::Op::DtcClear, 0xBEEF, ap, ap, p, id, f, 1500) == guard::AuthResult::BadToken);
+  CHECK(g.authorize(guard::Op::DtcClear, 0xCAFE, "1234567", ap, p, id, f, 1500) == guard::AuthResult::BadPassword);
+  CHECK(g.authorize(guard::Op::DtcClear, 0xCAFE, "", ap, p, id, f, 1500) == guard::AuthResult::BadPassword);
+  CHECK(g.authorize(guard::Op::DtcClear, 0xCAFE, ap, ap, p, id, f, 1500) == guard::AuthResult::Ok);
+  CHECK(g.authorize(guard::Op::DtcClear, 0xCAFE, ap, ap, p, id, f, 1600) != guard::AuthResult::Ok);  // one-time token
   g.begin(guard::Op::DtcClear);
   r.s.armWrite(1);
   bool verified = false;
@@ -299,6 +301,59 @@ TEST(guard_full_dtc_clear_flow_on_sim) {
   CHECK(!r.s.writeArmed());
   g.finish(verified);
   CHECK(g.state() == guard::State::Idle);
+}
+
+TEST(guard_password_lock_after_five_wrong_entries) {
+  Rig r;
+  r.s.connect();
+  uint8_t raw[28];
+  r.s.readIdent(raw, 28);
+  EcuIdent id;
+  parseIdent(raw, 28, id);
+  prof::EcuProfile p;
+  refProfile(id, p, false);
+  guard::ServiceGuard g;
+  guard::Plan plan;
+  guard::Facts f = readyFacts();
+  CHECK(g.prepare(guard::Op::DtcClear, p, id, f, 0, 9, plan));
+  for (int i = 0; i < 4; i++)
+    CHECK(g.authorize(guard::Op::DtcClear, 9, "wrong", "secret99", p, id, f, 100) == guard::AuthResult::BadPassword);
+  CHECK(g.authorize(guard::Op::DtcClear, 9, "wrong", "secret99", p, id, f, 100) == guard::AuthResult::PasswordLocked);
+  CHECK(g.passwordLockS(100) == 60);
+  // Locked: even the right password is refused, the plan is gone.
+  CHECK(g.authorize(guard::Op::DtcClear, 9, "secret99", "secret99", p, id, f, 30000) == guard::AuthResult::PasswordLocked);
+  CHECK(g.passwordLockS(60200) == 0);
+  CHECK(g.prepare(guard::Op::DtcClear, p, id, f, 60200, 11, plan));
+  CHECK(g.authorize(guard::Op::DtcClear, 11, "secret99", "secret99", p, id, f, 60300) == guard::AuthResult::Ok);
+}
+
+TEST(guard_engine_state_from_rpm_or_user_confirmation) {
+  Rig r;
+  r.s.connect();
+  uint8_t raw[28];
+  r.s.readIdent(raw, 28);
+  EcuIdent id;
+  parseIdent(raw, 28, id);
+  prof::EcuProfile p;
+  refProfile(id, p, false);
+  guard::ServiceGuard g;
+  guard::Plan plan;
+  guard::Facts f = readyFacts();
+  f.liveAgeMs = 0xFFFFFFFF;  // this ECU gives no rpm
+  f.engineStopped = -1;
+  CHECK(!g.prepare(guard::Op::DtcClear, p, id, f, 0, 1, plan));
+  f.engineStoppedConfirm = true;  // "ignition ON, engine stopped" confirmed in the dialog
+  CHECK(g.prepare(guard::Op::DtcClear, p, id, f, 0, 1, plan));
+  // A fresh rpm reading wins over the confirmation: running engine -> refused.
+  f.liveAgeMs = 200;
+  f.engineStopped = 0;
+  CHECK(!g.prepare(guard::Op::DtcClear, p, id, f, 0, 1, plan));
+  // The WRITE-EN key is checked only when the setting asks for it.
+  f = readyFacts();
+  f.interlockClosed = false;
+  CHECK(g.prepare(guard::Op::DtcClear, p, id, f, 0, 1, plan));
+  f.interlockRequired = true;
+  CHECK(!g.prepare(guard::Op::DtcClear, p, id, f, 0, 1, plan));
 }
 
 TEST(guard_blocks_without_interlock_engineer_or_fresh_data) {
@@ -313,8 +368,9 @@ TEST(guard_blocks_without_interlock_engineer_or_fresh_data) {
   guard::Plan plan;
   guard::Facts f = readyFacts();
   refProfile(id, p, false);
-  CHECK(!g.prepare(guard::Op::DtcClear, p, id, f, 0, 1, plan));  // engineer mode off
-  refProfile(id, p, true);
+  CHECK(g.prepare(guard::Op::DtcClear, p, id, f, 0, 1, plan));  // engineer mode not needed (D-035)
+  g.cancel();
+  f.interlockRequired = true;
   f.interlockClosed = false;
   CHECK(!g.prepare(guard::Op::DtcClear, p, id, f, 0, 1, plan));
   f = readyFacts();
@@ -325,7 +381,7 @@ TEST(guard_blocks_without_interlock_engineer_or_fresh_data) {
   CHECK(!g.prepare(guard::Op::AdaptReset, p, id, f, 0, 1, plan));
   f = readyFacts();
   CHECK(g.prepare(guard::Op::AdaptReset, p, id, f, 0, 7, plan));
-  CHECK(g.authorize(guard::Op::AdaptReset, 7, plan.phrase, p, id, f, 25000) == guard::AuthResult::Expired);
+  CHECK(g.authorize(guard::Op::AdaptReset, 7, "12345678", "12345678", p, id, f, 65000) == guard::AuthResult::Expired);
 }
 
 TEST(guard_fault_stop_requires_acknowledge) {
@@ -338,7 +394,7 @@ TEST(guard_fault_stop_requires_acknowledge) {
   prof::resolve(id, prof::ResolveOptions(), p);
   guard::Plan plan;
   CHECK(!g.prepare(guard::Op::DtcClear, p, id, readyFacts(), 0, 1, plan));
-  CHECK(g.authorize(guard::Op::DtcClear, 1, "x", p, id, readyFacts(), 0) == guard::AuthResult::Locked);
+  CHECK(g.authorize(guard::Op::DtcClear, 1, "x", "x", p, id, readyFacts(), 0) == guard::AuthResult::Locked);
   g.acknowledgeFault();
   CHECK(!g.locked());
 }

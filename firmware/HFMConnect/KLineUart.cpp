@@ -137,6 +137,17 @@ int KLineUart::rxLevel() const {
   return rxInv_ ? !l : l;
 }
 
+bool KLineUart::impulseHold(uint32_t ms) {
+  const bool wasOpen = open_;
+  if (!wasOpen && !open()) return false;
+  lineLow(true);  // diagnostic contact grounded, as the pulse-counter button
+  delay(ms);
+  lineLow(false);
+  uart_flush_input(port_);
+  if (!wasOpen) close();
+  return true;
+}
+
 uint16_t KLineUart::impulseCapture(const ImpulseConfig& cfg, ImpulseEdge* edges, uint16_t maxEdges) {
   if (!open_) return 0;
   lineLow(true);  // "button pressed": diagnostic contact grounded

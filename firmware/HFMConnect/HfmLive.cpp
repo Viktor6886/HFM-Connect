@@ -20,6 +20,8 @@ static const GroupDef kExt[X_COUNT] = {
     {"o2_rear", 0x20, 1, {0x25}},      // alt O2 formula                   AC
     {"idle_target", 0x20, 1, {0x67}},  // 25*raw (variant I6A >= 0x41)      AC
     {"status98", 0x20, 1, {0x98}},     // status bits                      AC
+    {"trim_plug", 0x20, 1, {0x39}},    // trimming plug voltage (PC tester, Bosch 40/41)
+    {"altitude", 0x24, 1, {0x7C}},     // altitude pressure      (PC tester, Bosch 40/41)
 };
 
 // VDO plan (factory tester templates for vendor V, GIP; never field-tested).
@@ -56,7 +58,11 @@ static LinkStatus pollVdo(HfmSession& s, Snapshot& snap) {
     st = s.readGroup(d.prefix, d.sel, d.n, snap.vdo[g]);
     if (st != LinkStatus::Ok) break;
     snap.vdoOk[g] = true;
+    snap.vdoEcho[g] = repliesEchoRequest(d.sel, snap.vdo[g], d.n);
   }
+  snap.planEcho = snap.vdoOk[V_P12] && snap.vdoOk[V_P22] && snap.vdoEcho[V_P12] && snap.vdoEcho[V_P22];
+  // A single O2 byte cannot be judged alone: it follows the plan.
+  snap.vdoEcho[V_O2] = snap.vdoEcho[V_O2] || snap.planEcho;
   snap.lastStatus = st;
   snap.tMs = s.link().nowMs();
   snap.cycleMs = (uint16_t)(snap.tMs - t0);
@@ -75,7 +81,21 @@ LinkStatus pollNative(HfmSession& s, Snapshot& snap, bool vdo) {
     st = s.readGroup(d.prefix, d.sel, d.n, snap.g[g]);
     if (st != LinkStatus::Ok) break;
     snap.groupOk[g] = true;
+    snap.groupEcho[g] = repliesEchoRequest(d.sel, snap.g[g], d.n);
   }
+  // Single-byte groups are judged in pairs: MAF 48/49 and injection 54/55.
+  {
+    static const uint8_t mafReq[2] = {0x48, 0x49};
+    const uint8_t mafGot[2] = {snap.g[G_MAF_LO][0], snap.g[G_MAF_HI][0]};
+    bool e = snap.groupOk[G_MAF_LO] && snap.groupOk[G_MAF_HI] && repliesEchoRequest(mafReq, mafGot, 2);
+    snap.groupEcho[G_MAF_LO] = snap.groupEcho[G_MAF_HI] = e;
+    static const uint8_t injReq[2] = {0x54, 0x55};
+    const uint8_t injGot[2] = {snap.g[G_RPM_LOW][0], snap.g[G_RPM_HIGH][0]};
+    if (snap.groupOk[G_RPM_LOW] && snap.groupOk[G_RPM_HIGH] && repliesEchoRequest(injReq, injGot, 2))
+      snap.groupEcho[G_RPM_LOW] = true;
+  }
+  snap.planEcho = snap.groupOk[G_AIRFLOW] && snap.groupOk[G_COOLANT] && snap.groupEcho[G_AIRFLOW] &&
+                  snap.groupEcho[G_COOLANT];
   // MAF bytes must belong to the same cycle; partial cycle invalidates both.
   if (!(snap.groupOk[G_MAF_LO] && snap.groupOk[G_MAF_HI])) snap.groupOk[G_MAF_LO] = snap.groupOk[G_MAF_HI] = false;
   snap.lastStatus = st;
@@ -95,6 +115,14 @@ LinkStatus pollExtended(HfmSession& s, Snapshot& snap) {
     if (st != LinkStatus::Ok) break;
     snap.extOk[x] = true;
   }
+  // Single reads are judged together: all of them equal to their selectors.
+  uint8_t req[X_COUNT];
+  bool all = true;
+  for (uint8_t x = 0; x < X_COUNT; x++) {
+    req[x] = kExt[x].sel[0];
+    all = all && snap.extOk[x];
+  }
+  snap.extEcho = all && repliesEchoRequest(req, snap.ext, X_COUNT);
   return st;
 }
 
@@ -125,7 +153,25 @@ static const ParamDef kParams[P_COUNT] = {
     {"idle_target", "Заданные обороты ХХ", "об/мин", Category::Extended, "20:67 / 21:D7", "25 × raw; источник 21:D7 при diag < 0x41, иначе 20:67; 0 при n = 0", Confidence::GIP, "AC", 0, 2000, 0, false},
     {"idle_contact", "Контакт ХХ (CTP)", "", Category::Extended, "20:98 & 0x80", "бит (вариант таблицы q=0); альтернатива: T50", Confidence::GIP, "AC", 0, 1, 0, true},
     {"starter", "Стартер (клемма 50)", "", Category::Extended, "20:98 & 0x40", "бит (вариант таблицы q=1); альтернатива: 0x80", Confidence::GIP, "AC", 0, 1, 0, true},
+    {"trim_v", "Корректирующий штекер (CO), напряжение", "В", Category::Extended, "20:39", "raw × 5 / 255 (таблица ПК-тестера для Bosch diag 40/41)", Confidence::GIP, "AC", 0, 5, 2, false},
+    {"alt_p", "Высотная коррекция (давление)", "мбар", Category::Extended, "24:7C", "raw × 5 (таблица ПК-тестера для Bosch diag 40/41; единица — кандидат по величине)", Confidence::GIP, "AC", 500, 1100, 0, false},
 };
+
+// Physically possible ranges (engine and sensors), not norms. A value outside
+// is a wrong address or a wrong formula for this ECU, never a measurement.
+bool physRange(uint8_t p, float* lo, float* hi) {
+  switch (p) {
+    case P_RPM: *lo = 0; *hi = 8000; return true;
+    case P_ECT: *lo = -40; *hi = 150; return true;
+    case P_IAT: *lo = -40; *hi = 100; return true;
+    case P_MAF: *lo = 0; *hi = 900; return true;    // M104 3.2 l at 6500 rpm ~ 710 kg/h
+    case P_INJ: *lo = 0; *hi = 30; return true;     // engine cycle at 6500 rpm ~ 18 ms
+    case P_SPEED: *lo = 0; *hi = 260; return true;
+    case P_IDLE_TARGET: *lo = 0; *hi = 2000; return true;
+    case P_ALT: *lo = 500; *hi = 1100; return true;
+    default: return false;
+  }
+}
 
 const ParamDef& param(uint8_t p) { return kParams[p < P_COUNT ? p : 0]; }
 
@@ -136,6 +182,7 @@ const char* qualityCode(Quality q) {
     case Quality::Partial: return "PARTIAL";
     case Quality::NoData: return "NO_DATA";
     case Quality::OutOfDomain: return "OUT_OF_DOMAIN";
+    case Quality::NotSupported: return "NOT_SUPPORTED";
     default: return "IMPLAUSIBLE";
   }
 }
@@ -171,12 +218,32 @@ static void setBit(Value& o, uint8_t raw, uint8_t mask) { setVal(o, (raw & mask)
 
 // VDO plan: same byte converters as Bosch (GIP - the VDO scaling is not
 // documented); values that need an unknown VDO formula are not shown.
+static void notSupported(Decoded& d, const uint8_t* ps, uint8_t n, uint8_t raw) {
+  for (uint8_t i = 0; i < n; i++) setNoData(d.v[ps[i]], Quality::NotSupported, raw);
+}
+
 static void decodeVdo(const Snapshot& s, const Decoded* prev, Decoded& d) {
   const uint8_t* A = s.vdo[V_P12];
   const uint8_t* B = s.vdo[V_P22];
   const uint8_t* S = s.vdo[V_P23];
+  // Groups answered with their own addresses carry no data (D-034).
+  const bool p12 = s.vdoOk[V_P12] && !s.vdoEcho[V_P12];
+  const bool p22 = s.vdoOk[V_P22] && !s.vdoEcho[V_P22];
+  const bool pinj = s.vdoOk[V_INJ] && !s.vdoEcho[V_INJ];
+  const bool p23 = s.vdoOk[V_P23] && !s.vdoEcho[V_P23];
+  const bool po2 = s.vdoOk[V_O2] && !s.vdoEcho[V_O2];
+  static const uint8_t k12[] = {P_ECT, P_RPM, P_IAT, P_AC, P_PREHEAT, P_SPEED};
+  static const uint8_t k22[] = {P_THROTTLE, P_MAF, P_LAMBDA, P_IDLE_CONTACT, P_FULL_LOAD, P_CAMSHAFT, P_RESONANCE, P_DECEL_CUT, P_AIR_PUMP};
+  static const uint8_t k23[] = {P_STARTER, P_POSTSTART, P_WARMUP};
+  static const uint8_t kInj[] = {P_INJ};
+  static const uint8_t kO2[] = {P_O2, P_O2_ALT};
+  if (s.vdoOk[V_P12] && !p12) notSupported(d, k12, sizeof k12, A[0]);
+  if (s.vdoOk[V_P22] && !p22) notSupported(d, k22, sizeof k22, B[0]);
+  if (s.vdoOk[V_P23] && !p23) notSupported(d, k23, sizeof k23, S[0]);
+  if (s.vdoOk[V_INJ] && !pinj) notSupported(d, kInj, 1, s.vdo[V_INJ][0]);
+  if (s.vdoOk[V_O2] && !po2) notSupported(d, kO2, 2, s.vdo[V_O2][0]);
   uint8_t rpmByte = A[1];
-  if (s.vdoOk[V_P12]) {
+  if (p12) {
     float ect = hfm::coolantNativeC(A[0]);
     setVal(d.v[P_ECT], ect, A[0]);
     bool havePrev = prev && prev->v[P_ECT].hasValue;
@@ -190,11 +257,11 @@ static void decodeVdo(const Snapshot& s, const Decoded* prev, Decoded& d) {
     setBit(d.v[P_PREHEAT], A[4], kMaskVdo[Q_INTAKE]);
     setVal(d.v[P_SPEED], (float)hfm::speedKmh(A[5]), A[5]);
   }
-  if (s.vdoOk[V_P22]) {
+  if (p22) {
     setVal(d.v[P_THROTTLE], hfm::throttleDeg(B[0]), B[0]);
     setVal(d.v[P_MAF], hfm::mafKgH(B[1], B[2]), B[1], B[2], 2);
     int32_t lp;
-    if (s.vdoOk[V_P12] && hfm::lambdaPct(B[3], rpmByte, &lp)) setVal(d.v[P_LAMBDA], (float)lp, B[3]);
+    if (p12 && hfm::lambdaPct(B[3], rpmByte, &lp)) setVal(d.v[P_LAMBDA], (float)lp, B[3]);
     else setNoData(d.v[P_LAMBDA], Quality::NoData, B[3]);
     setBit(d.v[P_IDLE_CONTACT], B[4], kMaskVdo[Q_IDLE]);
     setBit(d.v[P_FULL_LOAD], B[4], kMaskVdo[Q_WOT]);
@@ -203,18 +270,18 @@ static void decodeVdo(const Snapshot& s, const Decoded* prev, Decoded& d) {
     setBit(d.v[P_DECEL_CUT], B[4], kMaskVdo[Q_DECEL]);
     setBit(d.v[P_AIR_PUMP], B[5], kMaskVdo[Q_AIR]);
   }
-  if (s.vdoOk[V_INJ] && s.vdoOk[V_P12]) {
+  if (pinj && p12) {
     float ms;
     uint8_t lo = s.vdo[V_INJ][0], hi = s.vdo[V_INJ][1];
     if (hfm::injectionMs(lo, hi, rpmByte, &ms)) setVal(d.v[P_INJ], ms, lo, hi, 2);
     else setNoData(d.v[P_INJ], Quality::NoData, lo, hi, 2);
   }
-  if (s.vdoOk[V_P23]) {
+  if (p23) {
     setBit(d.v[P_STARTER], S[0], kMaskVdo[Q_STARTER]);
     setBit(d.v[P_POSTSTART], S[1], kMaskVdo[Q_POSTSTART]);
     setBit(d.v[P_WARMUP], S[2], kMaskVdo[Q_WARMUP]);
   }
-  if (s.vdoOk[V_O2]) {
+  if (po2) {
     uint8_t o = s.vdo[V_O2][0];
     setVal(d.v[P_O2], (float)hfm::o2AltMv(o), o);
     setVal(d.v[P_O2_ALT], hfm::o2NativeMv(o), o);
@@ -228,12 +295,29 @@ void decode(const Snapshot& s, prof::NormGroup ng, bool vdo, const Decoded* prev
   if (s.vdoPlan) {
     decodeVdo(s, prev, d);
   } else {
-  const bool af = s.groupOk[G_AIRFLOW], co = s.groupOk[G_COOLANT], mx = s.groupOk[G_MIXTURE];
-  const bool rl = s.groupOk[G_RPM_LOW], rh = s.groupOk[G_RPM_HIGH], maf = s.groupOk[G_MAF_LO] && s.groupOk[G_MAF_HI];
+  // Groups answered with their own addresses carry no data (D-034).
+  const bool af = s.groupOk[G_AIRFLOW] && !s.groupEcho[G_AIRFLOW];
+  const bool co = s.groupOk[G_COOLANT] && !s.groupEcho[G_COOLANT];
+  const bool mx = s.groupOk[G_MIXTURE] && !s.groupEcho[G_MIXTURE];
+  const bool rl = s.groupOk[G_RPM_LOW] && !s.groupEcho[G_RPM_LOW];
+  const bool rh = s.groupOk[G_RPM_HIGH] && !s.groupEcho[G_RPM_HIGH];
+  const bool maf = s.groupOk[G_MAF_LO] && s.groupOk[G_MAF_HI] && !s.groupEcho[G_MAF_LO];
   const uint8_t* A = s.g[G_AIRFLOW];
   const uint8_t* C = s.g[G_COOLANT];
   const uint8_t* M = s.g[G_MIXTURE];
   uint8_t rpmByte = A[2];
+  {
+    static const uint8_t kAf[] = {P_RPM, P_THROTTLE, P_LOAD, P_IGN, P_LAMBDA};
+    static const uint8_t kCo[] = {P_ECT, P_IAT, P_POSTSTART, P_WARMUP, P_FULL_LOAD, P_PREHEAT, P_AIR_PUMP, P_CAMSHAFT, P_RESONANCE};
+    static const uint8_t kMx[] = {P_O2, P_O2_ALT, P_AC, P_DECEL_CUT};
+    static const uint8_t kMaf[] = {P_MAF};
+    static const uint8_t kInj[] = {P_INJ};
+    if (s.groupOk[G_AIRFLOW] && !af) notSupported(d, kAf, sizeof kAf, A[0]);
+    if (s.groupOk[G_COOLANT] && !co) notSupported(d, kCo, sizeof kCo, C[0]);
+    if (s.groupOk[G_MIXTURE] && !mx) notSupported(d, kMx, sizeof kMx, M[0]);
+    if (s.groupOk[G_MAF_LO] && s.groupOk[G_MAF_HI] && !maf) notSupported(d, kMaf, 1, s.g[G_MAF_LO][0]);
+    if (s.groupOk[G_RPM_LOW] && s.groupOk[G_RPM_HIGH] && s.groupEcho[G_RPM_LOW]) notSupported(d, kInj, 1, s.g[G_RPM_LOW][0]);
+  }
 
   if (af) {
     setVal(d.v[P_RPM], hfm::rpm(rpmByte), rpmByte);
@@ -279,7 +363,12 @@ void decode(const Snapshot& s, prof::NormGroup ng, bool vdo, const Decoded* prev
     if (hfm::injectionMs(lo, hi, rpmByte, &ms)) setVal(d.v[P_INJ], ms, lo, hi, 2);
     else setNoData(d.v[P_INJ], Quality::NoData, lo, hi, 2);
   }
-  if (s.extRead) {
+  if (s.extRead && s.extEcho) {
+    static const uint8_t kExtP[] = {P_SPEED, P_O2_REAR, P_IDLE_CONTACT, P_STARTER, P_TRIM, P_ALT};
+    notSupported(d, kExtP, sizeof kExtP, s.ext[0]);
+  } else if (s.extRead) {
+    if (s.extOk[X_TRIM]) setVal(d.v[P_TRIM], s.ext[X_TRIM] * 5.0f / 255.0f, s.ext[X_TRIM]);
+    if (s.extOk[X_ALT]) setVal(d.v[P_ALT], s.ext[X_ALT] * 5.0f, s.ext[X_ALT]);
     if (s.extOk[X_SPEED]) setVal(d.v[P_SPEED], (float)hfm::speedKmh(s.ext[X_SPEED]), s.ext[X_SPEED]);
     if (s.extOk[X_O2_REAR]) setVal(d.v[P_O2_REAR], (float)hfm::o2AltMv(s.ext[X_O2_REAR]), s.ext[X_O2_REAR]);
     if (s.extOk[X_STATUS98]) {
@@ -291,7 +380,7 @@ void decode(const Snapshot& s, prof::NormGroup ng, bool vdo, const Decoded* prev
   // diagnosis byte is below 0x41, otherwise 20:67; 0 while the engine is stopped.
   {
     bool early = diagRaw < 0x41;
-    bool srcOk = early ? co : (s.extRead && s.extOk[X_IDLE_TARGET]);
+    bool srcOk = early ? co : (s.extRead && s.extOk[X_IDLE_TARGET] && !s.extEcho);
     if (srcOk && af) {
       uint16_t target, rpmOut;
       uint8_t src = early ? C[0] : s.ext[X_IDLE_TARGET];
@@ -299,6 +388,18 @@ void decode(const Snapshot& s, prof::NormGroup ng, bool vdo, const Decoded* prev
       setVal(d.v[P_IDLE_TARGET], (float)target, src);
     }
   }
+  }
+
+  // ---- physical plausibility ---------------------------------------------------
+  // A number outside what the engine can do comes from a wrong address or
+  // formula for this ECU: it is not shown (raw bytes stay for the report).
+  for (uint8_t p = 0; p < P_COUNT; p++) {
+    Value& val = d.v[p];
+    float lo, hi;
+    if (val.hasValue && physRange(p, &lo, &hi) && (val.v < lo || val.v > hi)) {
+      val.hasValue = false;
+      val.q = Quality::Implausible;
+    }
   }
 
   // ---- norm layer -------------------------------------------------------------

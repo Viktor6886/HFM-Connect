@@ -18,7 +18,8 @@ namespace live {
 // Native groups: polling profile full8 (REV 1.1 s.6).
 enum GroupId : uint8_t { G_RPM_LOW, G_RPM_HIGH, G_MIXTURE, G_AIRFLOW, G_COOLANT, G_MAF_LO, G_MAF_HI, G_COUNT };
 // Extended reads (AC, gated by F_LIVE_EXTENDED).
-enum ExtId : uint8_t { X_SPEED, X_O2_REAR, X_IDLE_TARGET, X_STATUS98, X_COUNT };
+// X_TRIM / X_ALT: PC tester table for Bosch diag 40/41 (20:39, 24:7C).
+enum ExtId : uint8_t { X_SPEED, X_O2_REAR, X_IDLE_TARGET, X_STATUS98, X_TRIM, X_ALT, X_COUNT };
 // VDO variant plan (factory tester templates, vendor V): other addresses.
 enum VdoGroupId : uint8_t { V_P12, V_P22, V_INJ, V_P23, V_O2, V_COUNT };
 
@@ -37,13 +38,19 @@ struct Snapshot {
   uint32_t tMs = 0;
   uint16_t cycleMs = 0;       // duration of the poll cycle
   bool groupOk[G_COUNT] = {};
+  bool groupEcho[G_COUNT] = {};  // replies equal the selectors: no data (D-034)
   uint8_t g[G_COUNT][6] = {};
   bool extRead = false;
   bool extOk[X_COUNT] = {};
+  bool extEcho = false;       // all extended replies equal their selectors
   uint8_t ext[X_COUNT] = {};
   bool vdoPlan = false;       // snapshot taken with the VDO address plan
   bool vdoOk[V_COUNT] = {};
+  bool vdoEcho[V_COUNT] = {};
   uint8_t vdo[V_COUNT][6] = {};
+  // The main groups of the plan were answered with their own addresses: this
+  // ECU does not serve the plan (the engine switches or stops polling).
+  bool planEcho = false;
   LinkStatus lastStatus = LinkStatus::Ok;
 };
 
@@ -55,7 +62,8 @@ LinkStatus pollExtended(HfmSession& s, Snapshot& snap);
 
 // ---- registry -------------------------------------------------------------------
 enum class Category : uint8_t { Base, Mixture, Ignition, Throttle, Status, Extended };
-enum class Quality : uint8_t { Valid, NotRead, Partial, NoData, OutOfDomain, Implausible };
+// NotSupported: the ECU answered with the address itself (D-034).
+enum class Quality : uint8_t { Valid, NotRead, Partial, NoData, OutOfDomain, Implausible, NotSupported };
 enum class NormState : uint8_t { NoNorm, NotApplicable, InSpec, Below, Above };
 
 const char* qualityCode(Quality q);
@@ -64,7 +72,7 @@ const char* normStateCode(NormState n);
 enum ParamId : uint8_t {
   P_RPM, P_ECT, P_IAT, P_MAF, P_THROTTLE, P_LOAD, P_IGN, P_O2, P_O2_ALT, P_LAMBDA, P_INJ,
   P_AC, P_DECEL_CUT, P_POSTSTART, P_WARMUP, P_FULL_LOAD, P_PREHEAT, P_AIR_PUMP, P_CAMSHAFT, P_RESONANCE,
-  P_SPEED, P_O2_REAR, P_IDLE_TARGET, P_IDLE_CONTACT, P_STARTER,
+  P_SPEED, P_O2_REAR, P_IDLE_TARGET, P_IDLE_CONTACT, P_STARTER, P_TRIM, P_ALT,
   P_COUNT
 };
 
@@ -82,6 +90,9 @@ struct ParamDef {
   bool isBool;
 };
 const ParamDef& param(uint8_t p);
+// Physically possible range of a value (not a norm): outside it the decoded
+// number is not shown (Quality::Implausible). false = no limit for p.
+bool physRange(uint8_t p, float* lo, float* hi);
 
 struct Value {
   float v = 0;

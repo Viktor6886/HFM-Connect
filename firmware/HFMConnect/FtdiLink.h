@@ -19,6 +19,7 @@
 #include <atomic>
 
 #include "ByteLink.h"
+#include "ImpulseDecoder.h"
 #include "KLineWake.h"
 #include "UsbRetry.h"
 #include "usb/usb_host.h"
@@ -108,6 +109,14 @@ class FtdiLink : public ByteLink {
   bool lastWake(kwake::Diag& d) const;
   kwake::Profile wakeProfile() const;
   bool wakeLocked() const { return wakeLocked_; }
+
+  // Pulse-counter mode (OEM Engine 104/111 11/5) through the adapter: BREAK
+  // holds the K-Line low = the button of the pulse counter. A fall of the line
+  // driven by the ECU reaches the UART as a 0x00 byte / break flag, so the
+  // code N is the number of falls in one burst; the low time itself is not
+  // visible (phases are stored fall-to-fall). Not verified on hardware.
+  uint16_t impulseCapture(const ImpulseConfig& cfg, ImpulseEdge* edges, uint16_t maxEdges, ImpulseResult& res);
+  bool impulseHold(uint32_t ms);
   uint32_t wakeAttempts() const { return wakeAttempts_; }
 
  private:

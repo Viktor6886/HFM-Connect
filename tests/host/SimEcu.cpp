@@ -21,7 +21,7 @@ void SimEcu::setFaultByte(uint8_t index, uint8_t value) { dtc_[index & 0x3F] = v
 void SimEcu::setPageByte(uint8_t page, uint8_t sel, uint8_t value) {
   for (uint8_t i = 0; i < ovN_; i++)
     if (ovPage_[i] == page && ovSel_[i] == sel) { ovVal_[i] = value; return; }
-  if (ovN_ < 8) { ovPage_[ovN_] = page; ovSel_[ovN_] = sel; ovVal_[ovN_] = value; ovN_++; }
+  if (ovN_ < 32) { ovPage_[ovN_] = page; ovSel_[ovN_] = sel; ovVal_[ovN_] = value; ovN_++; }
 }
 
 void SimEcu::setScenario(Scenario s) {

@@ -12,13 +12,36 @@ const LS = {
   get(k, d) { try { const v = localStorage.getItem('hfm.' + k); return v == null ? d : JSON.parse(v); } catch (e) { return d; } },
   set(k, v) { try { localStorage.setItem('hfm.' + k, JSON.stringify(v)); } catch (e) {} }
 };
-const CONF = {ZAV: 'ЗАВ', REK: 'РЕК', GIP: 'ГИП', VAL: 'VAL', BLOCK: 'БЛОК'};
+const CONF = {ZAV: 'заводские данные', REK: 'по протоколу', GIP: 'не подтверждено', VAL: 'проверено на ЭБУ', BLOCK: 'недоступно'};
 const CONF_HINT = {
-  ZAV: 'Заводской документ Mercedes-Benz', REK: 'Реконструированные данные протокола (REV 1.1), не заводской документ',
-  GIP: 'Гипотеза, требует проверки', VAL: 'Проверено трассой на конкретном ЭБУ', BLOCK: 'Заблокировано до аппаратной верификации'
+  ZAV: 'Указано в заводской документации Mercedes-Benz', REK: 'Восстановлено из протокола обмена (спецификация REV 1.1, заводской и ПК-тестер), не заводской документ',
+  GIP: 'Предположение: адрес или формула не подтверждены на реальном ЭБУ', VAL: 'Проверено записью обмена на конкретном ЭБУ', BLOCK: 'Нет подтверждённой команды — функция заблокирована'
 };
 const badge = c => `<span class="badge b-${esc(c)}" title="${esc(CONF_HINT[c] || '')}">${esc(CONF[c] || c)}</span>`;
 const VENDOR = {BOSCH: 'Bosch', VDO: 'VDO', SIEMENS: 'Siemens'};
+const MONTHS = ['январь', 'февраль', 'март', 'апрель', 'май', 'июнь', 'июль', 'август', 'сентябрь', 'октябрь', 'ноябрь', 'декабрь'];
+// "38/91" (week/year of manufacture, BCD in the ECU) -> readable text.
+function weekDate(t) {
+  const m = /^(\d{1,2})\/(\d{2})$/.exec(t || '');
+  if (!m) return t || '—';
+  const w = +m[1], y = +m[2] < 50 ? 2000 + +m[2] : 1900 + +m[2];
+  const d = new Date(y, 0, 1 + (w - 1) * 7 + 3);
+  return `${w}-я неделя ${y} г. (${MONTHS[d.getMonth()]} ${d.getFullYear()})`;
+}
+function diagText(di) {
+  const m = /^([0-9A-F]{2})\/([0-9A-F]{2})$/.exec(di || '');
+  if (!m) return di || '—';
+  const v = parseInt(m[1], 10);
+  const range = v >= 40 && v <= 59 ? 'HFM-SFI (диапазон 40–59)' : v >= 60 && v <= 79 ? 'PMS (60–79) — другая система' : 'вне известных диапазонов';
+  return `${m[1]}/${m[2]} — версия диагностики ЭБУ ${m[1]}: ${range}; ${m[2]} — подверсия`;
+}
+const DTC_MAP_TEXT = {
+  C86E: '4 цилиндра, ранние ЭБУ (Bosch и VDO)', C8EE: '6 цилиндров, ранние ЭБУ (Bosch и VDO)',
+  C96E: '4 цилиндра, VDO, поздние', CB9E: '4 цилиндра, VDO, самые поздние', CA9E: '4 цилиндра, Bosch, поздние',
+  CA06: '6 цилиндров, VDO, поздние', CB1E: '6 цилиндров, Bosch, поздние',
+  GENERIC: 'общая таблица — выберите автомобиль, чтобы применить заводскую карту для 4 или 6 цилиндров'
+};
+const details = (sum, html) => html ? `<details class="tech"${S.settings && S.settings.engineer_mode ? ' open' : ''}><summary>${esc(sum)}</summary>${html}</details>` : '';
 const ago = ms => ms == null || ms > 4e9 ? '' : ms < 60000 ? Math.max(1, Math.round(ms / 1000)) + ' с назад' : ms < 3600000 ? Math.round(ms / 60000) + ' мин назад' : Math.round(ms / 3600000) + ' ч назад';
 const agoMin = ms => ms == null || ms > 4e9 ? '' : ms < 60000 ? 'только что' : ago(ms);
 const dur = s => { s = s | 0; const h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60), x = s % 60; return (h ? h + ' ч ' : '') + (h || m ? m + ' мин ' : '') + x + ' с'; };
@@ -600,52 +623,75 @@ async function pollTrace() {
 }
 
 // ---- ECU identification
-const RUN = {ok: ['b-ZAV', 'работает'], failed: ['b-BLOCK', 'ошибка'], never: ['b-REK', 'доступно']};
 function capRow(c) {
-  let st, sub = c.reason || '';
-  if (!c.allowed) st = '<span class="badge b-gray">недоступно</span>';
-  else {
-    const r = RUN[c.run] || RUN.never;
-    st = `<span class="badge ${r[0]}">${r[1]}</span>`;
-    sub = c.run === 'never' ? 'ещё не выполнялось в этом сеансе' : (c.run === 'ok' ? 'выполнено ' : 'ошибка ') + agoMin(c.run_age_s * 1000);
-  }
-  return `<div class="row"><div class="grow"><div class="t">${esc(c.name)}</div>${sub ? `<div class="s">${esc(sub)}</div>` : ''}</div>${badge(c.conf)}${st}</div>`;
+  let st;
+  if (c.run === 'unsupported') st = '<span class="badge b-gray">не поддерживается этим ЭБУ</span>';
+  else if (!c.allowed) st = '<span class="badge b-gray">недоступно</span>';
+  else if (c.run === 'ok') st = '<span class="badge b-ZAV">работает</span>';
+  else if (c.run === 'failed') st = '<span class="badge b-BLOCK">ошибка</span>';
+  else st = '<span class="badge b-REK">доступно</span>';
+  let sub = '';
+  if (c.run === 'unsupported') sub = 'Проверено ' + agoMin(c.run_age_s * 1000) + ': ЭБУ не выдаёт эти данные (ответил повтором адреса или не принял запрос)';
+  else if (!c.allowed) sub = c.reason;
+  else if (c.run === 'ok') sub = 'Выполнено ' + agoMin(c.run_age_s * 1000);
+  else if (c.run === 'failed') sub = 'Ошибка ' + agoMin(c.run_age_s * 1000) + ' — см. журнал обмена';
+  else if (c.write) sub = c.reason;
+  const tech = details('Подробнее', `<div class="small muted">${esc(c.tech)} · ${esc(CONF[c.conf] || c.conf)}</div>`);
+  return `<div class="row"><div class="grow"><div class="t">${esc(c.name)}</div>
+    <div class="flex wrap" style="gap:6px;margin:4px 0 2px">${st}${c.write ? '<span class="badge b-GIP">изменяет данные ЭБУ</span>' : ''}</div>
+    ${sub ? `<div class="s">${esc(sub)}</div>` : ''}${tech}</div></div>`;
 }
 
 R.ecu = async () => {
   page('Идентификация ЭБУ', '<div id="ecuBox"></div>');
+  try { await loadSettings(); } catch (e) {}
   const load = async () => {
     S.ecu = await api('ecu');
     if (!$('#ecuBox')) return;
     const e = S.ecu, id = e.ident, p = e.profile;
     if (!id.present) { setHTML('#ecuBox', needEcu()); return; }
     const c = e.coding;
-    const tri = v => v == null ? '<span class="muted">нет данных</span>' : (v ? 'да' : 'нет');
-    const vendor = id.vendor_known ? `${VENDOR[id.vendor] || id.vendor} (код ${id.vendor_code})` : `не определён (код ${id.vendor_code || '—'})`;
+    const tri = v => v == null ? '<span class="muted">не применимо для этого ЭБУ</span>' : (v ? 'да' : 'нет');
+    const vendor = id.vendor_known ? `${VENDOR[id.vendor] || id.vendor}` : `не определён (код ${id.vendor_code || '—'})`;
+    const map = p.variant.dtc_map;
+    let coding;
+    if (c.unsupported) coding = `<div class="note">Этот ЭБУ не выдаёт байт кодировки: на запрос он вернул сами адреса (27:02 / 24:F0), а не данные. У ранних блоков HFM 3.4 (до 02/1994) комплектация — тип КПП, катализатор — распознаётся автоматически по заводской документации, отдельной кодировки может не быть.</div>`;
+    else if (c.valid) coding = kvTable([
+      ['Коробка передач', c.automatic == null ? '<span class="muted">не применимо</span>' : c.automatic ? 'автоматическая' + (c.gears > 0 ? `, ${c.gears} ступеней` : '') : 'механическая', true],
+      ['Каталитический нейтрализатор', tri(c.catalyst), true], ['Исполнение для США', tri(c.usa), true],
+      ['Электронная педаль / круиз (EFP, TPM)', tri(c.efp), true], ['Диагностический модуль DM', tri(c.diag_module), true],
+      ['Упор дроссельной заслонки обучен', c.throttle_taught ? 'да' : 'нет']]) +
+      `<p class="small muted">Это сведения о комплектации, записанные в самом ЭБУ (байт кодировки), а не 9-значный код заводского тестера. «Не применимо» — маска ЭБУ говорит, что этот признак у блока не используется.</p>` +
+      details('Технические данные', `<p class="small muted">Байт кодировки c = ${esc(c.coding_byte)}, маска неприменимых признаков m = ${esc(c.mask_byte)} (адреса 27:02 и 24:F0)${c.screen > 0 ? `; заводской тестер показывает такую кодировку на экране № ${c.screen} — служебная величина` : ''}. Расшифровка битов восстановлена по заводскому тестеру и требует проверки на автомобиле.</p>`);
+    else coding = '<p class="muted" style="margin:0">Не прочитана.</p>';
+    let vin;
+    if (e.vin.unsupported) vin = '<p class="muted" style="margin-top:0">Этот ЭБУ не поддерживает чтение VIN (запрос F9 не принят). Связь при этом не прерывается.</p>';
+    else if (e.vin.not_stored) vin = '<p class="muted" style="margin-top:0">VIN в ЭБУ не записан.</p>';
+    else if (e.vin.valid) vin = `<p class="mono" style="margin-top:0">${esc(e.vin.text)}</p>`;
+    else vin = '<p class="muted" style="margin-top:0">Не прочитан.</p>';
     setHTML('#ecuBox', `
       <div class="card pad">
-        <div class="flex between wrap"><div><div class="muted small">ЭБУ двигателя N3/4</div><div style="font-size:24px;font-weight:700">${esc(id.part)}</div></div>
-        <span class="badge ${p.resolved ? 'b-ZAV' : 'b-GIP'}">${p.resolved ? 'профиль определён' : 'общий профиль'}</span></div>
-        ${kvTable([['Производитель', vendor], ['Идентификатор', id.identifier],
-          ['Дата HW (неделя/год)', id.hw_date || '—'], ['Дата SW (неделя/год)', id.sw_date || '—'], ['Диагностический индекс', id.diag_index],
-          ['Профиль', p.name], ['Банки DTC', `${esc(p.bank_mapping)} ${badge(p.bank_mapping_conf)}`, true]])}
+        <div class="flex between wrap"><div><div class="muted small">Блок управления двигателем N3/4</div><div style="font-size:24px;font-weight:700">${esc(id.part)}</div></div>
+        <span class="badge ${p.resolved ? 'b-ZAV' : 'b-GIP'}">${p.resolved ? 'распознан как HFM-SFI' : 'не распознан'}</span></div>
+        ${kvTable([['Производитель', vendor], ['Обозначение программы', id.identifier],
+          ['Изготовление (аппаратная часть)', weekDate(id.hw_date)], ['Версия программы', weekDate(id.sw_date)],
+          ['Диагностический индекс', esc(diagText(id.diag_index)), true],
+          ['Профиль диагностики', esc(p.name) + '<div class="small muted">набор команд и таблиц, по которому устройство работает с этим блоком</div>', true],
+          ['Память неисправностей', esc(p.bank_text) + `<div class="small muted">${esc(p.bank_basis)}</div>`, true],
+          ['Таблица кодов неисправностей', esc(DTC_MAP_TEXT[map] || map), true],
+          ['Параметры Live Data', p.live_plan === 'vdo' ? 'шаблоны VDO заводского тестера (экспериментально)' : 'страницы Bosch 20/21 с проверкой ответов']])}
+        ${details('Технические данные', kvTable([['Код производителя', esc(id.vendor_code)], ['Карта кодов', esc(map)], ['Байт диагностики F0:26', esc(p.variant.diag_raw)],
+          ['Страница ПЗУ / адрес таблицы', id.ext_present ? `${esc(id.rom_page)} / ${esc(id.desc_addr)}` : 'не читались'], ['Профиль', esc(p.id)], ['RAW F0 00–1B', `<span class="hex">${esc(id.raw)}</span>`]].map(r => [r[0], r[1], true])))}
       </div>
-      <h2 class="section">Кодировка комплектации</h2>
-      <div class="card pad">${c.valid ? kvTable([['Байт кодировки c / маска m', `${c.coding_byte} / ${c.mask_byte}`],
-        ['АКПП', tri(c.automatic), true], ['Ступеней АКПП', c.gears > 0 ? c.gears : '<span class="muted">нет данных</span>', true],
-        ['Катализатор', tri(c.catalyst), true], ['Исполнение USA', tri(c.usa), true], ['EFP/TPM', tri(c.efp), true],
-        ['Диагностический модуль', tri(c.diag_module), true], ['Упоры дросселя', c.throttle_taught ? 'обучены' : 'не обучены'],
-        ['Экран (кандидат)', c.screen > 0 ? c.screen : '—']]) + `<p class="small muted">Это байт кодировки ЭБУ, не 9-значный код комплектации заводского тестера.</p>`
-        : '<p class="muted" style="margin:0">Не прочитана.</p>'}
-        <div class="btns mt"><button class="btn sec" id="codBtn">Прочитать кодировку</button></div></div>
+      <h2 class="section">Комплектация (кодировка ЭБУ)</h2>
+      <div class="card pad">${coding}<div class="btns mt"><button class="btn sec" id="codBtn">Прочитать кодировку</button></div></div>
       <h2 class="section">VIN</h2>
-      <div class="card pad">${e.vin.valid ? `<p class="mono" style="margin-top:0">${esc(e.vin.text)}</p>` : '<p class="muted" style="margin-top:0">Не прочитан.</p>'}
-        <div class="btns"><button class="btn sec" id="vinBtn">Прочитать VIN (F9)</button></div></div>
-      <h2 class="section">Матрица возможностей профиля</h2>
+      <div class="card pad">${vin}<div class="btns"><button class="btn sec" id="vinBtn">Прочитать VIN</button></div></div>
+      <h2 class="section">Что умеет этот ЭБУ</h2>
       <div class="list">${p.caps.map(capRow).join('')}</div>
-      <p class="foot">Возможности определяются идентификацией ЭБУ (производитель, номер, диагностический индекс). Год и модель автомобиля команды не разблокируют.</p>`);
-    $('#codBtn').onclick = async ev => { if (await job('read_coding', {}, ev.target)) load(); };
-    $('#vinBtn').onclick = async ev => { if (await job('read_vin', {}, ev.target)) load(); };
+      <p class="foot">Функции определяются по идентификации ЭБУ (производитель, номер, диагностический индекс) и по его фактическим ответам. Год и модель автомобиля команды не разблокируют. Операции, изменяющие данные ЭБУ, выполняются только после проверки условий, предупреждения и пароля точки доступа.</p>`);
+    $('#codBtn').onclick = async ev => { if (await job('read_coding', {}, ev.target)) load(); else load(); };
+    $('#vinBtn').onclick = async ev => { await job('read_vin', {}, ev.target); load(); };
   };
   loop(load, 5000);
 };
@@ -668,7 +714,7 @@ R.dtc = async () => {
       }
     }
     if (!d.valid) { setHTML('#dtcBox', '<div class="note">Память неисправностей ещё не прочитана.</div>'); return; }
-    const names = {stored: 'Сохранённые', current: 'Текущие', bank_a: 'Банк A (F1 00–0F)', bank_b: 'Банк B (F1 10–1F)'};
+    const names = {stored: 'Сохранённые (были раньше)', current: 'Текущие (есть сейчас)', bank_a: 'Банк A', bank_b: 'Банк B'};
     const groups = {};
     d.items.forEach(x => (groups[x.bank] = groups[x.bank] || []).push(x));
     const order = ['current', 'stored', 'bank_a', 'bank_b'].filter(k => groups[k]);
@@ -676,23 +722,46 @@ R.dtc = async () => {
     const grid = (title, hex) => `<div class="mt"><div class="small muted">${title}</div><div class="hex">${hex}</div></div>`;
     setHTML('#dtcBox', `
       <div class="small muted">Прочитано ${agoMin(d.age_ms)}${d.auto ? ' · автоматически' : ''} · записей: ${d.items.length}</div>
-      <div class="note mt info">Банки F1: <b>${esc({A_STORED_B_CURRENT: 'A = сохранённые, B = текущие', A_CURRENT_B_STORED: 'A = текущие, B = сохранённые', UNKNOWN: 'не определены (Банк A/B)'}[d.bank_mapping] || d.bank_mapping)}</b> ${badge(d.bank_mapping_conf)}<br><span class="small">${esc(d.bank_mapping_basis || '')}</span></div>
+      <div class="note mt info"><b>${esc(d.bank_text || '')}</b><br><span class="small">${esc(d.bank_mapping_basis || '')}</span></div>
       ${groups.current ? '<div class="note mt small">Текущие неисправности имеют смысл только при включённом зажигании и <b>работающем</b> двигателе; при неработающем двигателе часть из них появляется закономерно.</div>' : ''}
       ${d.dtc_map === 'GENERIC' ? '<div class="note mt small warn">Выберите автомобиль в разделе «Автомобили», чтобы применить заводскую карту кодов для 4/6 цилиндров.</div>' : ''}
       ${d.m111_texts ? '<div class="note mt small">Тексты кодов 045–069/093–096 показаны по заводской таблице Engine 111 (4 цилиндра).</div>' : ''}
       ${d.items.length === 0 ? '<div class="card pad mt"><b style="color:var(--green)">Неисправностей нет.</b><p class="small muted" style="margin:6px 0 0">Отсутствие записей не доказывает исправность системы — проверьте также Live Data и модуль DM (отдельно).</p></div>' : ''}
       ${order.map(k => `<h2 class="section">${names[k]} · ${groups[k].length}</h2><div class="list">${groups[k].map(x => dtcRow(x, d)).join('')}</div>`).join('')}
       ${ints.length ? `<p class="foot">Периодические (перемежающийся контакт) отмечены оранжевым: ${ints.length}. По OEM они фиксируются при 5 появлениях за поездку.</p>` : ''}
-      <h2 class="section">RAW битовая карта</h2>
-      <div class="card pad">${grid('F1 00–0F (банк A)', esc(d.bank_a))}${grid('F1 10–1F (банк B)', esc(d.bank_b))}${d.ext_valid ? grid('F1 30–32 / 40–42 (эксп.)', esc(d.ext)) : ''}
-        <p class="small muted">Карта: ${esc(d.dtc_map || 'GENERIC')} (${d.cylinders ? d.cylinders + ' цил.' : 'число цилиндров неизвестно'}, ${d.vendor === 'B' ? 'Bosch' : 'вариант V'}, diag ${esc(d.diag_raw || '')}). Коды вне каталога и неиспользуемые позиции показываются RAW.</p></div>
+      ${details('Технические данные (битовые карты)', `<div class="card pad">${grid('F1 00–0F (банк A)', esc(d.bank_a))}${grid('F1 10–1F (банк B)', esc(d.bank_b))}${d.ext_valid ? grid('F1 30–32 / 40–42 (эксп.)', esc(d.ext)) : ''}
+        <p class="small muted">Таблица кодов: ${esc(DTC_MAP_TEXT[d.dtc_map] || d.dtc_map || 'GENERIC')} (${esc(d.dtc_map || 'GENERIC')}, ${d.vendor === 'B' ? 'Bosch' : 'вариант V'}, байт F0:26 = ${esc(d.diag_raw || '')}). Коды вне каталога и неиспользуемые позиции показываются без расшифровки.</p></div>`)}
       <h2 class="section">Справка</h2>
       <div class="note">HFM хранит неисправности при отключении АКБ; исчезнувшие стираются автоматически за 19 поездок (WIS GF07.51). Коды P0xxx/P1xxx относятся к отдельному модулю DM N59/1 и здесь не отображаются.</div>`);
   };
   $('#rdBtn').addEventListener('click', async e => { if (await job('read_dtc', {}, e.target)) render(); });
   $('#clrBtn').addEventListener('click', () => serviceFlow('dtc_clear'));
   loop(render, 4000);
+  loop(renderImpulse, 3000);
 };
+
+// Pulse counter (blink code): factory procedure for ECUs up to model year
+// 1995 - the diagnostic contact is grounded through the adapter (BREAK).
+async function renderImpulse() {
+  const r = await api('dtc');
+  if (!$('#impBox')) {
+    const host = $('#dtcBox');
+    if (!host || !host.parentNode) return;
+    host.insertAdjacentHTML('afterend', '<h2 class="section">Импульсная диагностика (счётчик импульсов)</h2><div class="card pad" id="impBox"></div>');
+  }
+  const im = r.impulse || {codes: []};
+  const codes = im.codes.map(c => `<div class="dtc"><div class="code">N ${c.n}</div><div class="grow">${c.a.map(a => `<div>${a.code === 1 ? '' : String(a.code).padStart(3, '0') + ' · '}${esc(a.text)}</div>`).join('')}</div></div>`).join('');
+  setHTML('#impBox', `<p class="small" style="margin-top:0">Заводской способ без обмена данными: контакт диагностики замыкается на массу на 2–4 с, после чего ЭБУ «моргает» номером кода N. Адаптер делает это сам (удерживает линию K-Line). Только для ЭБУ до конца 1995 модельного года, кроме W210. На время процедуры связь по K-Line закрывается; после неё нажмите «Подключить».</p>
+    ${r.impulse_enabled ? '' : '<div class="note warn small">Включите «Импульсный считыватель» в разделе «Настройки» → «Сервисные операции».</div>'}
+    ${codes ? `<div class="list mt">${codes}</div>` : '<p class="muted small">Коды ещё не считывались.</p>'}
+    ${im.valid && !im.complete ? `<div class="note small mt">Последняя попытка: код не распознан (вспышек: ${im.last_n}).</div>` : ''}
+    <div class="btns mt"><button class="btn sec" id="impRd" ${r.impulse_enabled ? '' : 'disabled'}>Прочитать следующий код</button><button class="btn sec" id="impNew" ${r.impulse_enabled ? '' : 'disabled'}>Начать заново</button><button class="btn red" id="impClr" ${r.impulse_enabled && im.codes.length ? '' : 'disabled'}>Стереть показанный код…</button></div>
+    <p class="small muted">Код N = 1 — неисправностей нет. Коды повторяются по кругу: когда снова показан первый, все прочитаны. Стирание удаляет только последний показанный код (контакт на массе ${Math.round((S.settings && S.settings.imp_clear_ms || 7000) / 1000)} с).</p>`);
+  const rd = $('#impRd'), nw = $('#impNew'), cl = $('#impClr');
+  if (rd) rd.onclick = ev => job('impulse_read', {}, ev.target).then(renderImpulse);
+  if (nw) nw.onclick = ev => job('impulse_read', {fresh: 1}, ev.target).then(renderImpulse);
+  if (cl) cl.onclick = () => serviceFlow('impulse_clear');
+}
 
 const SRC_NAME = {oem: 'заводской текст', reference: 'справочный текст', reconcile: 'требует сверки', unverified: 'не подтверждён',
   app_label: 'метка приложения', candidate: 'предварительно (HHT)', oem_m111: 'заводской текст M111', unknown: 'вне каталога'};
@@ -725,8 +794,8 @@ R.live = async () => {
     <div class="mt" id="catBox">${cats.map(c => `<button class="chip ${S.cat === c[0] ? 'on' : ''}" data-cat="${c[0]}">${c[1]}</button>`).join('')}</div>
     <div class="grid auto" id="tiles"></div>
     <h2 class="section">Заводские нормы, которые устройство не читает</h2><div class="card pad" id="extraNorms"></div>
-    <h2 class="section">RAW группы опроса</h2><div class="card pad" id="rawBox"></div>
-    <p class="foot">Отклонение от нормы подсвечивается только при выполненных условиях проверки (ОЖ > 80 °C, обороты ХХ) и достоверном чтении. При обрыве/КЗ датчиков ОЖ, IAT и HFM ЭБУ подставляет замещающее значение — неисправность видна только в памяти DTC (OEM 11/3). Нажмите на карточку, чтобы добавить параметр на график (до 4).</p>`);
+    <h2 class="section">Технические данные опроса</h2><div class="card pad" id="rawBox"></div>
+    <p class="foot">Рамка карточки: <b style="color:var(--green)">зелёная</b> — в норме, <b style="color:var(--accent)">синяя</b> — близко к границе нормы (в пределах 10 % её ширины), <b style="color:var(--red)">красная</b> — вне нормы. Без рамки — норма не задана или условия её проверки не выполнены (прогретый двигатель > 80 °C, холостой ход). Значения, которых двигатель дать не может, и ответы ЭБУ повтором адреса не показываются. При обрыве/КЗ датчиков ОЖ, IAT и HFM ЭБУ подставляет замещающее значение — неисправность видна только в памяти DTC (OEM 11/3). Нажмите на карточку, чтобы добавить параметр на график (до 4).</p>`);
   try { if (!S.dtc) S.dtc = (await api('dtc')).dtc; } catch (e) {}
   document.querySelectorAll('[data-cat]').forEach(b => b.addEventListener('click', () => {
     S.cat = b.dataset.cat;
@@ -793,7 +862,8 @@ function renderLive() {
   else fresh = `<span class="badge b-ZAV">обновлено</span><span class="badge b-gray">цикл ${L.cycle_ms} мс</span>`;
   setHTML('#condBox', `<span class="badge ${L.active ? 'b-ZAV' : 'b-gray'}">${L.active ? (L.link_ready ? 'опрос' : 'ожидание связи') : 'остановлен'}</span>
     ${fresh}<span class="badge ${L.warm_idle ? 'b-ZAV' : 'b-gray'}">прогретый ХХ ${L.warm_idle ? '✓' : '—'}</span>
-    ${L.norms_vehicle ? '' : '<span class="badge b-GIP">нормы: выберите автомобиль</span>'}
+    ${L.norms_vehicle ? '' : '<span class="badge b-gray">нормы: общие для HFM-SFI — выберите автомобиль</span>'}
+    ${L.plan_echo ? '<span class="badge b-BLOCK">ЭБУ не отдаёт параметры по этим адресам</span>' : ''}
     ${st && st.link === 'recovering' ? '<span class="badge b-GIP">восстановление связи</span>' : ''}`);
   const tiles = L.values.filter(v => defs[v.k] && (S.cat === 'all' || String(defs[v.k].cat) === S.cat));
   const box = $('#tiles');
@@ -810,7 +880,7 @@ function renderLive() {
     const d = defs[v.k];
     const alarm = !stale && (v.norm === 'BELOW' || v.norm === 'ABOVE');
     const open = S.open.has('p-' + v.k);
-    el.className = 'tile ' + v.norm + (alarm ? ' alarm' : '') + (S.sel.includes(v.k) ? ' sel' : '') + (open ? ' open' : '');
+    el.className = 'tile ' + (stale ? 'NOT_APPLICABLE' : normClass(v)) + (alarm ? ' alarm' : '') + (S.sel.includes(v.k) ? ' sel' : '') + (open ? ' open' : '');
     el.title = d.src + ': ' + d.formula + (v.nnote ? '\n' + v.nnote + ' [' + v.nsrc + ']' : '');
     setHTML(el.querySelector('.tl'), tileInner(v, d, subst[v.k] && subst[v.k].some(x => dcodes.includes(x))));
     if (open) setHTML(el.querySelector('.pnow'), paramNow(v.k));
@@ -821,13 +891,23 @@ function renderLive() {
     setHTML('#extraNorms', rows.length ? kvTable(rows.map(n => [n.param, `${esc(n.range)} ${esc(n.unit)} <span class="small muted">· ${esc(n.cond)} · ${esc(n.profile)} · ${esc(n.src)}</span>`, true])) + '<p class="small muted">Эти величины показывает заводской тестер; адрес и формула для их чтения по K-Line не подтверждены, поэтому устройство их не опрашивает.</p>'
       : `<p class="small muted" style="margin:0">${ng ? 'Для вашего двигателя таких норм в справочнике нет.' : 'Выберите автомобиль, чтобы увидеть нормы вашего двигателя.'}</p>`);
   }
-  setHTML('#rawBox', `<div class="small muted">План опроса: ${L.plan === 'vdo' ? 'VDO (12/22/23)' : 'Bosch full8 (20/21)'}</div><table class="kv">${L.groups.map(g => `<tr><td>${g.name} <span class="muted">${g.prefix}</span></td><td class="hex">${g.ok ? esc(g.raw) : '<span style="color:var(--red)">не прочитано</span>'}</td></tr>`).join('')}</table>`);
+  setHTML('#rawBox', details('Показать байты последнего цикла', `<div class="small muted">План опроса: ${L.plan === 'vdo' ? 'шаблоны VDO (12/22/23)' : 'страницы Bosch 20/21 (full8)'}</div><table class="kv">${L.groups.map(g => `<tr><td>${g.name} <span class="muted">${g.prefix}</span></td><td class="hex">${g.ok ? esc(g.raw) : '<span style="color:var(--red)">не прочитано</span>'}</td></tr>`).join('')}</table>`));
   drawChart();
+}
+
+// Frame colour: green in the norm, blue within 10 % of the norm width from a
+// limit, red outside; no frame when no norm applies (conditions not met).
+function normClass(v) {
+  if (v.norm === 'IN_SPEC' && v.lo != null && v.v != null) {
+    const m = (v.hi - v.lo) * 0.1;
+    if (v.v < v.lo + m || v.v > v.hi - m) return 'NEAR';
+  }
+  return v.norm;
 }
 
 function tileInner(v, d, substOn) {
   const val = d.bool ? (v.v == null ? '—' : (v.v ? 'ВКЛ' : 'выкл')) : fmt(v.v, d.dec);
-  const QT = {VALID: '', NOT_READ: 'не опрашивается', PARTIAL: 'частично', NO_DATA: 'нет данных (n=0)', OUT_OF_DOMAIN: 'вне диапазона таблицы', IMPLAUSIBLE: 'неправдоподобно'};
+  const QT = {VALID: '', NOT_READ: 'не опрашивается', PARTIAL: 'прочитано частично', NO_DATA: 'нет данных (двигатель не работает)', OUT_OF_DOMAIN: 'вне диапазона датчика', IMPLAUSIBLE: 'недостоверно: такого значения быть не может', NOT_SUPPORTED: 'ЭБУ не отдаёт этот параметр'};
   const qtxt = v.q in QT ? QT[v.q] : v.q;
   const arrow = v.norm === 'BELOW' ? '<span class="arrow" title="ниже нормы">↓</span>' : v.norm === 'ABOVE' ? '<span class="arrow" title="выше нормы">↑</span>' : '';
   let bar = '';
@@ -836,13 +916,13 @@ function tileInner(v, d, substOn) {
     bar = `<div class="bar"><i style="left:${p(v.lo)}%;width:${p(v.hi) - p(v.lo)}%"></i><b style="left:${p(v.v)}%"></b></div>`;
   }
   let norm = '';
-  if (v.lo != null) norm = `норма ${fmt(v.lo, d.dec)}…${fmt(v.hi, d.dec)}${d.unit ? ' ' + esc(d.unit) : ''}${v.norm === 'NOT_APPLICABLE' ? ' · ' + esc(v.nnote || 'условия не выполнены') : ''}`;
+  if (v.lo != null) norm = `норма ${fmt(v.lo, d.dec)}…${fmt(v.hi, d.dec)}${d.unit ? ' ' + esc(d.unit) : ''}${v.norm === 'NOT_APPLICABLE' ? ' · проверяется на прогретом ХХ' : ''}`;
   else if (EXPECT[v.k]) norm = EXPECT[v.k];
   const sub = substOn ? '<div class="small" style="color:var(--orange)">есть DTC датчика — возможно замещающее значение</div>' : '';
   return `<div class="dot ${v.norm}"></div>${S.sel.includes(v.k) ? '<div class="gmark" title="на графике"></div>' : ''}<div class="name">${esc(d.name)}</div>
     <div class="val">${val}${d.unit && !d.bool ? `<small>${esc(d.unit)}</small>` : ''}${arrow}</div>${bar}
     ${norm ? `<div class="norm">${norm}</div>` : ''}${sub}
-    <div class="meta"><span>${qtxt || esc(d.src)}</span><span>${badge(d.conf)}</span></div>`;
+    <div class="meta"><span>${esc(qtxt)}</span>${d.conf === 'GIP' ? '<span title="Адрес или формула не подтверждены на реальном ЭБУ">формула не подтверждена</span>' : ''}</div>`;
 }
 
 const PALETTE = ['#007aff', '#ff9500', '#34c759', '#af52de'];
@@ -889,58 +969,87 @@ R.adapt = () => {
     const e = await api('ecu');
     if (!$('#adBox')) return;
     const a = e.adapt;
-    if (!a.valid) { setHTML('#adBox', '<div class="note">Адаптации не прочитаны.</div>' + (e.ident.present ? '' : needEcu())); return; }
-    const card = (title, val, unit, lo, hi, base, raw, hint) => {
-      const ok = val >= lo && val <= hi;
+    if (a.unsupported) { setHTML('#adBox', '<div class="note">Этот ЭБУ не выдаёт самоадаптации по адресам 24:90/92/93: на запрос он вернул сами адреса (90, 92, 93), а не значения. Прежде показанные «RAW 90» и «1,07» были именно этими адресами. Сброс самоадаптаций для такого блока тоже недоступен — нет значений «до сброса» для сравнения.</div>'); return; }
+    if (!a.valid) { setHTML('#adBox', '<div class="note">Самоадаптации не прочитаны.</div>' + (e.ident.present ? '' : needEcu())); return; }
+    // Colour as on Live Data tiles: green / blue near a limit / red outside.
+    const cls = (v, lo, hi) => v < lo || v > hi ? 'BELOW' : (v < lo + (hi - lo) * .1 || v > hi - (hi - lo) * .1 ? 'NEAR' : 'IN_SPEC');
+    const card = (key, title, val, unit, lo, hi, base, raw, explain) => {
+      const c = cls(val, lo, hi);
       const pos = Math.max(0, Math.min(100, (val - (lo - (hi - lo) * .5)) / ((hi - lo) * 2) * 100));
-      return `<div class="card pad"><div class="small muted">${title}</div>
-        <div class="stat"><span class="n" style="color:${ok ? 'inherit' : 'var(--red)'}">${val.toFixed(unit === '' ? 2 : 1)}</span><span class="u">${unit}</span>${ok ? '' : `<span class="arrow">${val < lo ? '↓' : '↑'}</span>`}</div>
-        <div class="tile" style="padding:0;box-shadow:none;background:none;border:0"><div class="bar"><i style="left:25%;width:50%"></i><b style="left:${pos}%"></b></div></div>
-        <div class="small muted mt">Норма ${lo}…${hi} · базовое ${base} · RAW ${raw}</div><div class="small mt">${hint}</div></div>`;
+      return `<div class="tile ${c}" style="cursor:default"><div class="name">${title}</div>
+        <div class="val">${val.toFixed(unit === '' ? 2 : 1)}${unit ? `<small>${unit}</small>` : ''}${c === 'BELOW' ? `<span class="arrow">${val < lo ? '↓' : '↑'}</span>` : ''}</div>
+        <div class="bar"><i style="left:25%;width:50%"></i><b style="left:${pos}%"></b></div>
+        <div class="norm">норма ${lo}…${hi}${unit ? ' ' + unit : ''} · базовое ${base}</div><div class="small mt">${explain}</div>
+        ${details('Подробнее', `<div class="small muted">исходный байт ${esc(raw)}</div>`)}
+        ${xcard('p-' + key, 'карточка параметра', () => paramCard(key))}</div>`;
     };
-    const raw = (title, r, why) => `<div class="card pad"><div class="small muted">${title}</div><div class="stat"><span class="n">RAW ${esc(r)}</span></div><div class="small muted">${why}</div></div>`;
-    const tend = (v, base) => v < base ? 'Тенденция: богатая смесь (ЭБУ уменьшает подачу)' : v > base ? 'Тенденция: бедная смесь (ЭБУ увеличивает подачу)' : 'Базовое значение';
+    const mult = v => {
+      const pc = Math.round((v - 1) * 100);
+      if (pc === 0) return 'Базовое значение: ЭБУ не корректирует подачу топлива в этом режиме.';
+      return pc > 0 ? `ЭБУ добавляет ${pc} % топлива: смесь в этом режиме была бедной (подсос воздуха, слабый бензонасос, загрязнённые форсунки, ошибка расходомера).`
+        : `ЭБУ убирает ${-pc} % топлива: смесь в этом режиме была богатой (давление топлива, подтекающие форсунки, продувка адсорбера, ошибка расходомера).`;
+    };
+    const add = v => Math.abs(v) < 0.05 ? 'Базовое значение: поправки на холостом ходу нет.'
+      : v > 0 ? `ЭБУ добавляет ${v.toFixed(1)} кг/ч на холостом ходу: обычно подсос воздуха после расходомера или бедная смесь.`
+      : `ЭБУ убирает ${(-v).toFixed(1)} кг/ч на холостом ходу: обычно богатая смесь (давление топлива, форсунки).`;
     const p = e.profile;
-    // Units follow the identified ECU: Bosch kg/h; VDO and unknown vendor - RAW (no unconfirmed formula).
-    const idle = p.vdo_units ? raw('ХХ, аддитивная (VDO)', a.raw.idle, 'Масштаб VDO не подтверждён — показано исходное значение')
-      : p.vdo_candidate ? raw('ХХ, аддитивная', a.raw.idle, 'Производитель ЭБУ не определён — единицы неизвестны, показано исходное значение')
-      : card('ХХ, аддитивная', a.idle_kg_h, 'кг/ч', -2, 2, '0.0', a.raw.idle, tend(a.idle_kg_h, 0));
+    // Units follow the identified ECU: Bosch kg/h; VDO and unknown vendor - the formula is not confirmed.
+    const idle = p.vdo_units || p.vdo_candidate
+      ? `<div class="tile" style="cursor:default"><div class="name">Холостой ход (добавочная поправка)</div><div class="val">—</div><div class="small">Для ЭБУ ${p.vdo_units ? 'VDO' : 'неизвестного производителя'} формула пересчёта не подтверждена: значение не показывается, чтобы не вводить в заблуждение.</div>${details('Подробнее', `<div class="small muted">исходный байт ${esc(a.raw.idle)}; 80 — середина шкалы</div>`)}</div>`
+      : card('adapt_idle', 'Холостой ход (добавочная поправка)', a.idle_kg_h, 'кг/ч', -2, 2, '0,0', a.raw.idle, add(a.idle_kg_h));
     setHTML('#adBox', `<div class="small muted">Прочитано ${agoMin(a.age_ms)}</div>
       <div class="grid c3 mt">
-        ${idle.replace(/<\/div>$/, xcard('p-adapt_idle', 'карточка параметра', () => paramCard('adapt_idle')) + '</div>')}
-        ${card('Частичная нагрузка, нижняя (мульт.)', a.lower, '', 0.85, 1.15, '1.00', a.raw.lower, tend(a.lower, 1)).replace(/<\/div>$/, xcard('p-adapt_lower', 'карточка параметра', () => paramCard('adapt_lower')) + '</div>')}
-        ${card('Частичная нагрузка, верхняя (мульт.)', a.upper, '', 0.85, 1.15, '1.00', a.raw.upper, tend(a.upper, 1)).replace(/<\/div>$/, xcard('p-adapt_upper', 'карточка параметра', () => paramCard('adapt_upper')) + '</div>')}
-      </div>`);
+        ${idle}
+        ${card('adapt_lower', 'Частичная нагрузка, нижняя (множитель)', a.lower, '', 0.85, 1.15, '1,00', a.raw.lower, mult(a.lower))}
+        ${card('adapt_upper', 'Частичная нагрузка, верхняя (множитель)', a.upper, '', 0.85, 1.15, '1,00', a.raw.upper, mult(a.upper))}
+      </div>
+      <p class="foot">Самоадаптация — поправка, которую ЭБУ выучил по сигналу лямбда-зонда. Добавочная действует на холостом ходу (кг/ч воздуха), множители — при частичной нагрузке (1,00 = без поправки, 1,07 = +7 % топлива). Нормы — заводские данные (Test and Adjustment Data); при выходе за них ЭБУ записывает неисправность регулирования смеси. Формулы пересчёта восстановлены по заводскому тестеру.</p>`);
   };
-  $('#adBtn').addEventListener('click', async e => { if (await job('read_adapt', {}, e.target)) render(); });
+  $('#adBtn').addEventListener('click', async e => { await job('read_adapt', {}, e.target); render(); });
   $('#adRst').addEventListener('click', () => serviceFlow('adapt_reset'));
   loop(render, 5000);
 };
 
-// ---- guarded services (prepare -> checks -> phrase -> execute)
+// ---- guarded services: warning -> conditions -> password -> execute (D-035)
+const SVC_WARN = {
+  dtc_clear: 'Будут стёрты все записи памяти неисправностей. Восстановить их нельзя — перед стиранием сохраните отчёт («Отчёты»). Неисправности, которые есть сейчас, ЭБУ сразу запишет снова. Стирание не устраняет причину.',
+  adapt_reset: 'ЭБУ забудет выученные поправки смеси (холостой ход и частичная нагрузка) и вернётся к базовым значениям. Пока он не обучится заново, двигатель может работать неровно; обучение — поездка 10–20 минут в разных режимах на прогретом двигателе. После сброса выключите зажигание минимум на 10 с.',
+  purge_test: 'ЭБУ перейдёт в режим управления и по вашей команде будет открывать клапан продувки адсорбера при работающем двигателе (400–1500 об/мин, ОЖ 80–110 °C). Включение ограничено 30 с, затем исходное состояние восстанавливается. Не отходите от автомобиля и держите его на стояночном тормозе.',
+  impulse_clear: 'Контакт диагностики будет удерживаться на массе несколько секунд — по заводской процедуре так стирается код, показанный последним. Остальные коды остаются.'
+};
+const SVC_STOPPED = {dtc_clear: 1, adapt_reset: 1, impulse_clear: 1};
 async function serviceFlow(op) {
   const sv = (await api('services')).services;
   const o = sv.ops.find(x => x.id === op);
+  const needBat = !(S.status && S.status.battery_v != null);
   sheet(`<h3>${esc(o.name)}</h3>
-    <div class="flex mb">${badge(o.conf)}<span class="badge ${o.allowed ? 'b-ZAV' : 'b-BLOCK'}">${o.allowed ? 'разрешено профилем' : 'заблокировано'}</span></div>
     ${o.allowed ? '' : `<div class="note danger">${esc(o.reason)}</div>`}
-    <div class="note warn mt">Операция изменяет состояние ЭБУ. При ошибке повторной отправки не будет — устройство перейдёт в режим FAULT_STOP.</div>
-    ${sv.battery_manual_confirm || (S.status && S.status.battery_v != null) ? '' : `<label class="row" style="padding:12px 0;background:none"><div class="grow small">Я проверил(а) напряжение бортсети ≥ 11 В</div><span class="switch"><input type="checkbox" id="batCf"><span></span></span></label>`}
+    <div class="note warn mt"><b>Что произойдёт.</b> ${esc(SVC_WARN[op] || '')}<br><span class="small">Если ЭБУ не подтвердит шаг, операция прекращается без повторов, а сервисные операции блокируются до квитирования.</span></div>
+    ${needBat ? `<label class="row" style="padding:10px 0;background:none"><div class="grow small">Напряжение бортсети не ниже 11 В (АКБ заряжена или подключено зарядное)</div><span class="switch"><input type="checkbox" id="batCf"${sv.battery_manual_confirm ? ' checked' : ''}><span></span></span></label>` : ''}
+    ${SVC_STOPPED[op] ? `<label class="row" style="padding:10px 0;background:none"><div class="grow small">Зажигание включено, двигатель заглушен</div><span class="switch"><input type="checkbox" id="stopCf"><span></span></span></label>` : ''}
     <div id="planBox" class="mt"></div>
     <div class="btns mt"><button class="btn sec" onclick="closeSheet()">Отмена</button><button class="btn" id="prepBtn" ${o.allowed ? '' : 'disabled'}>Проверить условия</button></div>`);
   const b = $('#batCf');
   if (b) b.addEventListener('change', () => post('settings', {battery_manual_confirm: b.checked ? 1 : 0}));
   $('#prepBtn').addEventListener('click', async e => {
-    await job('svc_prepare', {op}, e.target);
-    const p = (await api('services')).services.plan;
+    const sc = $('#stopCf');
+    await job('svc_prepare', {op, confirm: sc && sc.checked ? 1 : 0}, e.target);
+    const s2 = (await api('services')).services, p = s2.plan;
+    const lock = s2.pw_lock_s > 0;
     $('#planBox').innerHTML = `<div class="card pad">${p.checks.map(c => `<div class="check"><i class="${c.result == null ? 'unk' : c.result ? 'ok' : 'no'}">${c.result == null ? '?' : c.result ? '✓' : '✕'}</i><div>${esc(c.text)}</div></div>`).join('')}</div>
-      ${p.ok ? `<div class="mt small">Для выполнения введите фразу <b class="mono">${esc(p.phrase)}</b> (действует ${Math.round(p.expires_in_ms / 1000)} с):</div>
-        <input class="field mt" id="phrase" autocomplete="off" autocapitalize="characters" placeholder="${esc(p.phrase)}">
-        <button class="btn red full mt" id="execBtn">Выполнить</button>` : `<div class="note danger mt">Условия не выполнены: ${esc(p.block_reason || '')}</div>`}`;
+      ${p.ok ? `<div class="mt small">Введите пароль Wi-Fi точки доступа <b>HFM Connect</b> (действует ${Math.round(p.expires_in_ms / 1000)} с):</div>
+        <input class="field mt" id="svcPw" type="password" autocomplete="off" placeholder="Пароль точки доступа" ${lock ? 'disabled' : ''}>
+        ${lock ? `<div class="note danger mt small">Ввод пароля заблокирован ещё на ${s2.pw_lock_s} с после 5 неверных попыток.</div>` : ''}
+        <button class="btn red full mt" id="execBtn" ${lock ? 'disabled' : ''}>Выполнить</button>` : `<div class="note danger mt">Условия не выполнены: ${esc(p.block_reason || '')}</div>`}`;
     const x = $('#execBtn');
     if (x) x.addEventListener('click', async ev => {
-      const ok = await job('svc_execute', {op, token: p.token, phrase: $('#phrase').value.trim()}, ev.target);
+      const pw = $('#svcPw').value;
+      if (!pw) return toast('Введите пароль', true);
+      if (!confirm('Выполнить «' + o.name + '»? Действие изменит данные ЭБУ.')) return;
+      const ok = await job('svc_execute', {op, token: p.token, password: pw}, ev.target);
+      $('#svcPw') && ($('#svcPw').value = '');
       const r = (await api('services')).services;
+      if (!ok && r.plan && r.plan.ok) return;  // wrong password: the same plan stays, try again
       $('#planBox').innerHTML = `<div class="note ${ok ? 'info' : 'danger'}">${esc(r.last_result || '')}</div>`;
       if (op === 'purge_test' && ok) { closeSheet(); go('actuators'); }
     });
@@ -948,29 +1057,36 @@ async function serviceFlow(op) {
 }
 
 // ---- actuators
+// Only actuations whose byte sequence is known are offered; for the others the
+// factory tester has screens, but which control telegram drives which part is
+// not restored - sending one at random is not allowed (D-035).
+const NOT_RESTORED = 'В заводском тестере есть экран этой проверки и общие телеграммы управления D0–D3, но какая из них каким механизмом управляет, по источникам не восстановлено. Отправлять их наугад нельзя: команда управления меняет режим работы двигателя.';
 const ACTUATORS = [
-  {id: 'purge_test', name: 'Клапан продувки адсорбера Y58/1', desc: 'D4 1A / D4 00 после входа CF/C1, лимит 30 с, восстановление D0–D4. Условия: 400–1500 об/мин, ОЖ 80–110 °C.'},
-  {name: 'Насос вторичного воздуха Y32/Y33', block: 'Команда активации в источниках не найдена; доступен статус в Live Data (AIR).'},
-  {name: 'Клапан EGR Y27', block: 'Команда активации в источниках не найдена; P0400/P1400 относятся к модулю DM.'},
-  {name: 'Регулирование распредвала Y49', block: 'Команда активации не найдена; статус — в Live Data (M104.995: < 2000 выкл, > 2000 вкл, > 4000 выкл).'},
-  {name: 'Резонансная заслонка Y22/6', block: 'Команда активации не найдена; статус — в Live Data (ХХ выкл / > 4000 об/мин вкл).'},
-  {name: 'Форсунки Y62 / катушки T1', block: 'Команда неизвестна; требуется стенд с имитаторами нагрузки.'},
-  {name: 'Реле топливного насоса, стартер, EA/CC/ISC', block: 'Не выполняется из WebUI (топливо/движение).'}
+  {id: 'purge_test', name: 'Клапан продувки адсорбера Y58/1', desc: 'Включение/выключение клапана командой ЭБУ, до 30 с, затем восстановление. Условия: 400–1500 об/мин, ОЖ 80–110 °C. Последовательность — общий шаблон заводского тестера.'},
+  {name: 'Насос вторичного воздуха', block: NOT_RESTORED, live: 'Состояние видно в Live Data: «Вторичный воздух (AIR)».'},
+  {name: 'Рециркуляция ОГ (EGR)', block: NOT_RESTORED, live: 'Неисправности EGR (P0400/P1400) фиксирует отдельный модуль DM, не HFM.'},
+  {name: 'Регулирование распредвала Y49', block: NOT_RESTORED, live: 'Состояние — в Live Data: «Регулирование распредвала» (M104.995: < 2000 выкл, > 2000 вкл, > 4000 выкл).'},
+  {name: 'Резонансная заслонка Y22/6', block: NOT_RESTORED, live: 'Состояние — в Live Data: «Резонансная заслонка» (ХХ выкл / > 4000 об/мин вкл).'},
+  {name: 'Подогрев впускного коллектора', block: NOT_RESTORED, live: 'Состояние — в Live Data: «Впускной коллектор (частичная нагрузка)».'},
+  {name: 'Форсунки (отключение по цилиндрам)', block: NOT_RESTORED, live: 'Проверка по цилиндрам — по изменению оборотов на ХХ при снятии разъёма форсунки (заводская методика).'},
+  {name: 'Катушки зажигания', block: 'Отдельной проверки катушек у HFM-SFI в заводском тестере нет — только счётчики пропусков у поздних ЭБУ, их адреса не восстановлены.'},
+  {name: 'Реле топливного насоса', block: 'Для HFM-SFI в источниках нет команды управления реле насоса. Проверка — по заводской методике (перемычка в реле, давление топлива).'}
 ];
 
 R.actuators = () => {
-  page('Исполнительные тесты', `<div id="actTop"></div><h2 class="section">Компоненты</h2><div class="list" id="actList"></div>
-    <h2 class="section">Дроссель / ETA / CTP</h2><div class="card pad" id="thrBox"></div>`);
+  page('Исполнительные тесты', `<div id="actTop"></div><h2 class="section">Механизмы</h2><div class="list" id="actList"></div>
+    <h2 class="section">Дроссельная заслонка и контакты</h2><div class="card pad" id="thrBox"></div>`);
   loop(async () => {
     const sv = (await api('services')).services;
     if (!$('#actList')) return;
     const purgeOp = sv.ops.find(o => o.id === 'purge_test');
-    setHTML('#actList', ACTUATORS.map(a => a.id ? `<div class="row tap chev" onclick="serviceFlow('purge_test')"><div class="grow"><div class="t">${a.name}</div><div class="s">${a.desc}</div><div class="s">${esc(purgeOp.allowed ? 'Доступно: проверка условий и подтверждение' : purgeOp.reason)}</div></div>${badge(purgeOp.conf)}</div>`
-      : `<div class="row"><div class="grow"><div class="t">${a.name}</div><div class="s">${a.block}</div></div>${badge('BLOCK')}</div>`).join(''));
+    const chip = (on, t) => `<div class="flex wrap" style="gap:6px;margin:4px 0 2px"><span class="badge ${on ? 'b-REK' : 'b-gray'}">${t}</span></div>`;
+    setHTML('#actList', ACTUATORS.map(a => a.id ? `<div class="row tap chev" onclick="serviceFlow('purge_test')"><div class="grow"><div class="t">${a.name}</div>${chip(purgeOp.allowed, purgeOp.allowed ? 'доступно' : 'недоступно')}<div class="s">${a.desc}</div><div class="s">${esc(purgeOp.allowed ? 'Перед запуском: предупреждение, проверка условий и пароль' : purgeOp.reason)}</div></div></div>`
+      : `<div class="row"><div class="grow"><div class="t">${a.name}</div>${chip(false, 'недоступно')}<div class="s">${esc(a.block)}</div>${a.live ? `<div class="s">${esc(a.live)}</div>` : ''}</div></div>`).join(''));
     const res = sv.last_result;
     const testOn = res && res.startsWith('Режим управления');
     const top = $('#actTop');
-    const topHtml = testOn ? `<div class="card pad"><div class="flex between"><b>Y58/1 — режим управления</b><span class="badge ${sv.purge_on ? 'b-ZAV' : 'b-gray'}">${sv.purge_on ? 'ВКЛ' : 'ВЫКЛ'}</span></div>
+    const topHtml = testOn ? `<div class="card pad"><div class="flex between"><b>Клапан продувки — режим управления</b><span class="badge ${sv.purge_on ? 'b-ZAV' : 'b-gray'}">${sv.purge_on ? 'ВКЛ' : 'ВЫКЛ'}</span></div>
       <div class="btns mt"><button class="btn green" onclick="job('purge_on',{},this)">Включить (≤30 с)</button><button class="btn sec" onclick="job('purge_off',{},this)">Выключить</button></div>
       <button class="btn red big-stop mt" onclick="job('stop',{},this)">STOP / восстановить</button></div>`
       : (res ? `<div class="note">${esc(res)}</div>` : '');
@@ -981,11 +1097,11 @@ R.actuators = () => {
     const val = k => L && L.values.find(v => v.k === k);
     const t = val('throttle'), ctp = val('idle_contact'), wot = val('full_load');
     const fresh = L && L.age_ms < STALE_MS;
-    setHTML('#thrBox', `<p class="small" style="margin-top:0">Пошаговая проверка по Live Data (без управления приводом): 1) педаль отпущена — CTP ВКЛ, угол в норме ХХ; 2) плавно нажмите — угол растёт без скачков; 3) полное открытие — контакт WOT ВКЛ.</p>
+    setHTML('#thrBox', `<p class="small" style="margin-top:0">Проверка по Live Data, без управления приводом: 1) педаль отпущена — контакт ХХ ВКЛ, угол в норме ХХ; 2) плавно нажмите — угол растёт без скачков; 3) педаль до упора — контакт полной нагрузки ВКЛ.</p>
       ${fresh ? '' : '<div class="note small">Запустите Live Data — значения ниже обновляются только во время опроса.</div>'}
-      ${kvTable([['Угол заслонки', t && t.v != null ? t.v.toFixed(2) + ' °' : '—'], ['Контакт ХХ (CTP)', ctp && ctp.v != null ? (ctp.v ? 'ВКЛ' : 'выкл') : 'не опрашивается'],
-        ['Контакт полной нагрузки (WOT)', wot && wot.v != null ? (wot.v ? 'ВКЛ' : 'выкл') : '—']])}
-      <div class="note warn mt">Обучение упоров дросселя: команда заводского тестера не восстановлена ${badge('BLOCK')}. По OEM (M111 11/2) механический упор определяется автоматически и требует повторного распознавания после замены ЭБУ/привода; DTC 133/138 — обучение заводским тестером.</div>`);
+      ${kvTable([['Угол заслонки', t && t.v != null ? t.v.toFixed(2) + ' °' : '—'], ['Контакт ХХ', ctp && ctp.v != null ? (ctp.v ? 'ВКЛ' : 'выкл') : 'не опрашивается (включите «Экспериментальное чтение»)'],
+        ['Контакт полной нагрузки', wot && wot.v != null ? (wot.v ? 'ВКЛ' : 'выкл') : '—']])}
+      <div class="note mt small"><b>Обучение упора заслонки</b> — недоступно: отдельной команды нет, заводской тестер обучает упор в составе процедуры «Variantencodierung» (удаление исполнения и повторное обучение), байты которой не восстановлены. По заводской документации (M111 11/2) упор определяется ЭБУ автоматически и распознаётся заново после замены ЭБУ или привода; неисправности 133/138 сообщают о необученном упоре.</div>`);
   }, 1500);
 };
 
@@ -1196,10 +1312,10 @@ async function buildReport(btn) {
       ['HW / SW', `${id.hw_date || '—'} / ${id.sw_date || '—'}`], ['Профиль', r.profile.name], ['RAW ID', `<span class="hex">${esc(id.raw)}</span>`, true],
       ['9-значный код (введён вручную)', code9 || '—']])}
     <h2 class="section" style="margin-left:0">Память неисправностей</h2>
-    ${d.valid ? `<p class="small muted">Прочитано ${esc(ago(d.age_ms))}</p>` + (d.items.length ? `<div class="list">${d.items.map(x => dtcRow(x, d, false)).join('')}</div>` : '<p>Неисправностей нет.</p>') + `<p class="small muted">Банки: ${esc(d.bank_mapping)} · A: <span class="hex">${esc(d.bank_a)}</span> · B: <span class="hex">${esc(d.bank_b)}</span></p>` : '<p class="muted">Не прочитана.</p>'}
+    ${d.valid ? `<p class="small muted">Прочитано ${esc(ago(d.age_ms))}</p>` + (d.items.length ? `<div class="list">${d.items.map(x => dtcRow(x, d, false)).join('')}</div>` : '<p>Неисправностей нет.</p>') + `<p class="small muted">${esc(d.bank_text || '')} · A: <span class="hex">${esc(d.bank_a)}</span> · B: <span class="hex">${esc(d.bank_b)}</span></p>` : '<p class="muted">Не прочитана.</p>'}
     <h2 class="section" style="margin-left:0">Адаптации и кодировка</h2>
-    ${r.adapt.valid ? kvTable([['ХХ аддитивная', r.adapt.vdo || r.profile.vdo_candidate ? 'RAW ' + r.adapt.raw.idle : r.adapt.idle_kg_h + ' кг/ч'], ['Нижняя мульт.', r.adapt.lower], ['Верхняя мульт.', r.adapt.upper]]) : '<p class="muted">Адаптации не прочитаны.</p>'}
-    ${r.coding.valid ? `<p class="small">Кодировка c=${esc(r.coding.coding_byte)} m=${esc(r.coding.mask_byte)}</p>` : '<p class="muted small">Кодировка не прочитана.</p>'}
+    ${r.adapt.unsupported ? '<p class="muted">Самоадаптации: этот ЭБУ их не выдаёт.</p>' : r.adapt.valid ? kvTable([['Холостой ход, добавочная', r.adapt.vdo || r.profile.vdo_candidate ? 'формула не подтверждена (байт ' + r.adapt.raw.idle + ')' : r.adapt.idle_kg_h + ' кг/ч'], ['Частичная нагрузка, нижняя', r.adapt.lower], ['Частичная нагрузка, верхняя', r.adapt.upper]]) : '<p class="muted">Адаптации не прочитаны.</p>'}
+    ${r.coding.unsupported ? '<p class="muted small">Кодировка: этот ЭБУ её не выдаёт.</p>' : r.coding.valid ? `<p class="small">Кодировка c=${esc(r.coding.coding_byte)} m=${esc(r.coding.mask_byte)}</p>` : '<p class="muted small">Кодировка не прочитана.</p>'}
     <h2 class="section" style="margin-left:0">Live Data (последний снимок)</h2>
     ${live.length ? `<p class="small muted">${esc(liveAge)}</p><table class="kv">${live.map(v => `<tr><td>${esc(v.name)}</td><td>${v.bool ? (v.v ? 'ВКЛ' : 'выкл') : v.v + ' ' + esc(v.unit)}${v.lo != null ? ` <span class="muted small">норма ${v.lo}…${v.hi}</span>` : ''}${v.norm === 'BELOW' ? ' <b style="color:var(--red)">↓</b>' : v.norm === 'ABOVE' ? ' <b style="color:var(--red)">↑</b>' : ''}</td></tr>`).join('')}</table>` : '<p class="muted">Live Data в этом сеансе не опрашивались.</p>'}
     ${r.impulse.codes.length ? `<p>Импульсные коды N: <b>${r.impulse.codes.map(c => c.n).join(', ')}</b></p>` : ''}
@@ -1226,7 +1342,7 @@ R.settings = async () => {
     <div class="card pad"><div class="seg" id="thSeg">${[['auto', 'Авто'], ['light', 'Светлая'], ['dark', 'Тёмная']].map(t => `<button data-t="${t[0]}" class="${theme === t[0] ? 'on' : ''}">${t[1]}</button>`).join('')}</div></div>
     <h2 class="section">Диагностика</h2>
     <div class="list">
-      ${sw('experimental_reads', 'Экспериментальное чтение', 'Чтение у нераспознанных ЭБУ, Live Data варианта VDO, расширенные рецепты (скорость, нижний O2, CTP/T50), VIN F9, биты DTC 129–152. Уровень ГИП.')}
+      ${sw('experimental_reads', 'Экспериментальное чтение', 'Дополнительные параметры (скорость, нижний лямбда-зонд, контакты ХХ и стартера, корректирующий штекер), коды 129–152, шаблоны VDO и чтение у нераспознанных ЭБУ. Адреса и формулы не подтверждены на реальном ЭБУ; ответы проверяются.')}
       ${sw('auto_connect', 'Автоподключение', 'Подключаться к ЭБУ автоматически и восстанавливать связь после обрыва')}
       ${sw('dtc_on_connect', 'Читать ошибки при подключении', 'Читать память неисправностей (только чтение) сразу после подключения и заново после автоматического восстановления связи — показанный результат всегда относится к текущему соединению')}
       ${sw('keep_alive', 'Keep-alive (F0:00)', 'Безопасное чтение раз в 0,7 с при простое')}
@@ -1255,11 +1371,14 @@ R.settings = async () => {
     </div>` : ''}
     <h2 class="section">Сервисные операции</h2>
     <div class="list">
-      ${sw('engineer_mode', 'Режим инженера', 'Разрешает карантинные рецепты РЕК только для эталонного ЭБУ 013 545 13 32 / 41-00. Дополнительно нужен ключ WRITE-EN.', true)}
-      ${sw('impulse_enabled', 'Импульсный считыватель', 'Замыкает диагностическую линию на массу на 2–4 с. Только для diagnosis version ≤ 46; не для W210.', true)}
+      ${sw('engineer_mode', 'Технические подробности', 'Раскрывать в карточках коды команд, адреса, байты и уровни подтверждения')}
+      ${sw('require_write_key', 'Требовать ключ WRITE-EN', 'Если на устройстве установлен аппаратный ключ (GPIO10 на массу): операции записи дополнительно требуют его замкнуть. Без этой настройки защиту обеспечивают предупреждение, проверка условий и пароль точки доступа.')}
+      ${sw('impulse_enabled', 'Импульсный считыватель', 'Замыкает диагностическую линию на массу через адаптер. Только для ЭБУ до конца 1995 модельного года; не для W210.', true)}
     </div>
-    <div class="card pad mt"><div class="grid c2"><div><div class="small muted">Нажатие, мс (2000–4000)</div><input class="field" id="impPr" type="number" value="${s.imp_press_ms}"></div>
-      <div><div class="small muted">Пауза конца кода, мс</div><input class="field" id="impGap" type="number" value="${s.imp_end_gap_ms}"></div></div></div>
+    <div class="card pad mt"><div class="grid c3"><div><div class="small muted">Нажатие для чтения, мс (2000–4000)</div><input class="field" id="impPr" type="number" value="${s.imp_press_ms}"></div>
+      <div><div class="small muted">Пауза конца кода, мс</div><input class="field" id="impGap" type="number" value="${s.imp_end_gap_ms}"></div>
+      <div><div class="small muted">Удержание для стирания, мс (5000–8000)</div><input class="field" id="impClr" type="number" value="${s.imp_clear_ms || 7000}"></div></div>
+      <p class="small muted">Заводская процедура: стирание — удержание 6–8 с после показа кода (Bosch до 08/1993 — 5–6 с).</p></div>
     <h2 class="section">Тайминги K-Line</h2>
     <div class="card pad"><div class="grid c3">
       <div><div class="small muted">BREAK, мс</div><input class="field" id="tBrk" type="number" value="${s.break_ms}"></div>
@@ -1272,7 +1391,7 @@ R.settings = async () => {
       <p class="small muted">${s.wake_learned ? 'Рабочий профиль пробуждения найден на автомобиле и сохранён в устройстве; изменение этих полей его сбрасывает.' : 'Рабочий профиль пробуждения ещё не найден.'}</p></div>
     <h2 class="section">Wi-Fi</h2>
     <div class="card pad">
-      <div class="small muted">Точка доступа: <b>${esc(s.ap_ssid)}</b>${s.ap_default_pass ? ' · используется пароль по умолчанию' : ''}</div>
+      <div class="small muted">Точка доступа: <b>${esc(s.ap_ssid)}</b>${s.ap_default_pass ? ' · используется пароль по умолчанию — смените его: этот же пароль подтверждает стирание ошибок и другие операции записи' : ''}</div>
       <input class="field mt" id="apPass" type="password" placeholder="Новый пароль точки доступа (≥ 8 символов)">
       <div class="small muted mt">Подключение к сети мастерской (необязательно)</div>
       <input class="field mt" id="staSsid" placeholder="SSID" value="${esc(s.sta_ssid)}">
@@ -1293,11 +1412,11 @@ R.settings = async () => {
     try { await post('settings', {ui_theme: b.dataset.t}); } catch (e) { toast(e.message, true); }
   }));
   document.querySelectorAll('input[data-k]').forEach(i => i.addEventListener('change', async () => {
-    if (i.checked && (i.dataset.k === 'engineer_mode' || i.dataset.k === 'impulse_enabled') &&
+    if (i.checked && i.dataset.k === 'impulse_enabled' &&
       !confirm('Включить «' + i.closest('.row').querySelector('.t').textContent + '»? Это разрешает операции, влияющие на ЭБУ/линию.')) { i.checked = false; return; }
     try { await post('settings', {[i.dataset.k]: i.checked ? 1 : 0}); toast('Сохранено'); } catch (e) { toast(e.message, true); i.checked = !i.checked; }
   }));
-  ['impPr', 'impGap'].forEach(id => $('#' + id).addEventListener('change', () => post('settings', {imp_press_ms: $('#impPr').value, imp_end_gap_ms: $('#impGap').value}).then(() => toast('Сохранено'), e => toast(e.message, true))));
+  ['impPr', 'impGap', 'impClr'].forEach(id => $('#' + id).addEventListener('change', () => post('settings', {imp_press_ms: $('#impPr').value, imp_end_gap_ms: $('#impGap').value, imp_clear_ms: $('#impClr').value}).then(() => toast('Сохранено'), e => toast(e.message, true))));
   const saveT = async v => { try { await post('settings', v); toast('Тайминги сохранены'); } catch (e) { toast(e.message, true); } R.settings(); };
   $('#tSave').addEventListener('click', () => saveT({break_ms: $('#tBrk').value, post_break_ms: $('#tPb').value, byte_timeout_ms: $('#tTo').value, ftdi_modem: $('#tModem').value, wake_auto: $('#tAuto').checked ? 1 : 0}));
   $('#tDef').addEventListener('click', () => saveT({break_ms: 177, post_break_ms: 214, byte_timeout_ms: 750, ftdi_modem: 0, wake_auto: 1}));

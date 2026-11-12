@@ -30,6 +30,7 @@ void Settings::load() {
   wakeAuto = prefs.getBool("wauto", true);
   experimentalReads = prefs.getBool("exp", false);
   engineerMode = prefs.getBool("eng", false);
+  requireWriteKey = prefs.getBool("wkey", false);
   keepAlive = prefs.getBool("ka", true);
   autoConnect = prefs.getBool("auto", true);
   impulseEnabled = prefs.getBool("imp", false);
@@ -43,6 +44,7 @@ void Settings::load() {
   prefs.getString("stapass", staPass, sizeof staPass);
   impPressMs = prefs.getUShort("imppr", 3000);
   impEndGapMs = prefs.getUShort("impgap", 2500);
+  impClearMs = prefs.getUShort("impclr", 7000);
   uiTheme = prefs.getUChar("theme", 0) % 3;
   soundLevel = prefs.getUChar("snd", 2) & 3;
   lightLevel = prefs.getUChar("light", 2) & 3;
@@ -81,6 +83,7 @@ void Settings::save() {
   prefs.putBool("wauto", wakeAuto);
   prefs.putBool("exp", experimentalReads);
   prefs.putBool("eng", engineerMode);
+  prefs.putBool("wkey", requireWriteKey);
   prefs.putBool("ka", keepAlive);
   prefs.putBool("auto", autoConnect);
   prefs.putBool("imp", impulseEnabled);
@@ -94,6 +97,7 @@ void Settings::save() {
   prefs.putString("stapass", staPass);
   prefs.putUShort("imppr", impPressMs);
   prefs.putUShort("impgap", impEndGapMs);
+  prefs.putUShort("impclr", impClearMs);
   prefs.putUChar("theme", uiTheme);
   prefs.putUChar("snd", soundLevel);
   prefs.putUChar("light", lightLevel);

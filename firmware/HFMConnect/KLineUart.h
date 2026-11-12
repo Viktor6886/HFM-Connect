@@ -36,6 +36,8 @@ class KLineUart : public ByteLink {
   int rxLevel() const;
   // Pulse-counter procedure: hold line low pressMs, then record edges.
   uint16_t impulseCapture(const ImpulseConfig& cfg, ImpulseEdge* edges, uint16_t maxEdges);
+  // Holds the diagnostic contact on ground (pulse-counter erase, OEM 11/5).
+  bool impulseHold(uint32_t ms);
 
   uint32_t parityErrors() const { return parityErr_; }
   uint32_t frameErrors() const { return frameErr_; }

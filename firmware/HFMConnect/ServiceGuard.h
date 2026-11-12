@@ -1,10 +1,11 @@
 // ServiceGuard.h - two-phase authorisation of state-changing operations.
 //
-// prepare(): evaluates capability, hardware interlock, ECU identity and
-//            operation preconditions; returns a plan with a one-time token
-//            (valid 20 s) and a confirmation phrase.
-// authorize(): re-checks everything at execution time; the UI cannot unlock
-//            anything by itself (REV 1.4 s.59.1, M14-16).
+// prepare(): evaluates capability, ECU identity, the optional hardware
+//            interlock and the operation preconditions; returns a plan with a
+//            one-time token (valid 60 s).
+// authorize(): checks the password of the access point (D-035; five wrong
+//            entries lock it for 60 s) and re-checks everything at execution
+//            time; the UI cannot unlock anything by itself (REV 1.4 s.59.1).
 // Any failed or unknown write result puts the guard into FAULT_STOP
 // (unresolved): further writes are refused until the operator acknowledges,
 // reconnects and re-identifies. No automatic retry exists anywhere.
@@ -16,7 +17,7 @@
 
 namespace guard {
 
-enum class Op : uint8_t { DtcClear, AdaptReset, PurgeTest, Count };
+enum class Op : uint8_t { DtcClear, AdaptReset, PurgeTest, ImpulseClear, Count };
 const char* opCode(Op op);
 const char* opName(Op op);
 uint8_t opFeature(Op op);  // prof::Feature
@@ -29,6 +30,8 @@ const char* stateCode(State s);
 struct Facts {
   bool sessionReady = false;
   bool interlockClosed = false;   // WRITE-EN hardware jumper/key
+  bool interlockRequired = false; // setting: the key is fitted and must be closed
+  bool engineStoppedConfirm = false; // user confirmed "ignition ON, engine stopped" (no rpm reading)
   int8_t engineStopped = -1;      // 20:B7 == 0 from a fresh read
   float rpm = -1;                 // -1 unknown
   float ect = -999;               // -999 unknown
@@ -58,15 +61,19 @@ struct Plan {
   const char* blockReason = nullptr;
 };
 
-enum class AuthResult : uint8_t { Ok, NoPlan, Expired, BadToken, BadPhrase, IdentChanged, ChecksFailed, Locked, InterlockOpen };
+enum class AuthResult : uint8_t { Ok, NoPlan, Expired, BadToken, BadPassword, PasswordLocked, IdentChanged, ChecksFailed, Locked, InterlockOpen };
 const char* authCode(AuthResult r);
 
 class ServiceGuard {
  public:
   bool prepare(Op op, const prof::EcuProfile& p, const EcuIdent& id, const Facts& f, uint32_t nowMs,
                uint32_t random32, Plan& out);
-  AuthResult authorize(Op op, uint32_t token, const char* phrase, const prof::EcuProfile& p, const EcuIdent& id,
-                       const Facts& f, uint32_t nowMs);
+  // password: typed by the user; expected: the access point password (never
+  // sent to the UI). Compared in constant time.
+  AuthResult authorize(Op op, uint32_t token, const char* password, const char* expected, const prof::EcuProfile& p,
+                       const EcuIdent& id, const Facts& f, uint32_t nowMs);
+  // Seconds left of the password lock (0 = not locked).
+  uint32_t passwordLockS(uint32_t nowMs) const;
 
   void begin(Op op) { state_ = (op == Op::PurgeTest) ? State::Active : State::Executing; active_ = op; }
   void restoring() { state_ = State::Restoring; }
@@ -80,13 +87,18 @@ class ServiceGuard {
   const Plan& plan() const { return plan_; }
   void cancel() { if (state_ == State::Prepared) state_ = State::Idle; plan_ = Plan(); }
 
-  static const uint32_t kTokenTtlMs = 20000;
+  static const uint32_t kTokenTtlMs = 60000;   // time to read the warning and type the password
+  static const uint8_t kMaxBadPasswords = 5;
+  static const uint32_t kPasswordLockMs = 60000;
 
  private:
   void evaluate(Op op, const prof::EcuProfile& p, const EcuIdent& id, const Facts& f, Plan& out);
   State state_ = State::Idle;
   Op active_ = Op::Count;
   Plan plan_;
+  uint8_t badPw_ = 0;
+  uint32_t pwLockUntil_ = 0;
+  bool pwLocked_ = false;
 };
 
 }  // namespace guard

@@ -1,6 +1,32 @@
 # Передача состояния следующей сессии
 
-**Дата:** 2026-11-12 · **Сессия:** 4 · **Ветка:** `main` · **Прошивка:** 0.8.1
+**Дата:** 2026-11-12 · **Сессия:** 4 · **Ветка:** `main` · **Прошивка:** 0.9.0
+
+## 0.9.0 — доработки по замечаниям владельца (D-034, D-035, D-036)
+
+- Причина подозрительных значений на 013 545 08 32: ЭБУ отвечает на селекторы страниц
+  12/22/24/27 самими селекторами. `repliesEchoRequest()` (`HfmSession.h`) — общее правило;
+  `Snapshot.groupEcho/vdoEcho/extEcho/planEcho`, `Quality::NotSupported`,
+  `live::physRange()` (невозможные значения), `svc::Adaptations/Coding/FaultMemory.echo`,
+  `svc::Vin.unsupported/notStored`. `FeatRun.state == 3` — «не поддерживается».
+- Движок: VDO читает Live Data по страницам Bosch (VDO-план первым — только с опцией);
+  при `planEcho` пробует другой план, иначе останавливает опрос с причиной. VIN без
+  поддержки → `recoverRead()` и сообщение. Ошибки чтения адаптаций/кодировки → сразу
+  `recoverRead()`.
+- `prof::resolve()`: запись (DTC clear, adapt reset, purge) — для `p.resolved`;
+  `featureTech()`; понятные названия и причины. `NormGroup::HFM_GENERIC`.
+- `ServiceGuard`: пароль вместо фразы (`authorize(…, password, expected, …)`,
+  `passwordLockS()`), `Facts.interlockRequired/engineStoppedConfirm`, `Op::ImpulseClear`,
+  токен 60 с. Настройки `requireWriteKey` (NVS `wkey`), `impClearMs` (`impclr`).
+  `/api/job`: `password`, `confirm=1`, `fresh=1`; `/api/dtc` содержит `impulse`.
+- Импульсный режим через FTDI: `FtdiLink::impulseCapture/impulseHold`,
+  `KLineUart::impulseHold`, `DiagEngine::impulseCapture/impulseVehicleOk`.
+- WebUI: понятные уровни подтверждения, идентификация/кодировка/VIN, матрица, рамки
+  Live Data, адаптации, диалог сервисной операции с паролем, исполнительные тесты с
+  причинами, импульсная диагностика, настройки.
+- Не проверено на ЭБУ: TESTING H29–H38. Открыто: команды «Variantencodierung» и
+  назначение телеграмм D0–D3 (нужна трасса заводского тестера); что отдаёт
+  013 545 08 32 на страницах Bosch 20/21.
 
 ## 0.8.1 — перечитывание памяти неисправностей после восстановления связи (D-033)
 

@@ -41,6 +41,18 @@ enum class PrefixClass : uint8_t { Unknown, Read, ExperimentalRead, Write };
 
 PrefixClass classifyPrefix(uint8_t op);
 
+// An ECU that does not serve an address answers each selector with the
+// selector itself: observed on 013 545 08 32 (VDO, diag 40/00) - 22:72/73 ->
+// 72 73, 24:90/92/93 -> 90 92 93, 27:02 + 24:F0 -> 02 F0 (D-034). A read whose
+// every reply equals its request (at least two bytes, so a single coincidence
+// does not count) carries no data and must not be decoded.
+inline bool repliesEchoRequest(const uint8_t* req, const uint8_t* reply, uint8_t n) {
+  if (n < 2) return false;
+  for (uint8_t i = 0; i < n; i++)
+    if (reply[i] != req[i]) return false;
+  return true;
+}
+
 class HfmSession {
  public:
   HfmSession(ByteLink& link, TraceLog& trace) : link_(link), trace_(trace) {}
@@ -95,6 +107,10 @@ class HfmSession {
   uint32_t connectedAtMs() const { return connectedAtMs_; }
   uint8_t lastSyncEcho() const { return syncEcho_; }
   uint8_t lastSyncByte() const { return syncByte_; }
+  // Byte received after the echo in the last exchange (ACK / data / reply),
+  // also when the exchange failed - tells "wrong ACK" from "no answer".
+  uint8_t lastReply() const { return lastReply_; }
+  uint8_t lastTx() const { return lastTx_; }
 
   ByteLink& link() { return link_; }
 
@@ -123,4 +139,6 @@ class HfmSession {
   uint8_t wakeFails_ = 0;       // failed wake-ups in a row
   uint32_t resyncCount_ = 0;
   bool lastWasWrite_ = false;   // last prefix was a write page (no resync)
+  uint8_t lastReply_ = 0;
+  uint8_t lastTx_ = 0;
 };

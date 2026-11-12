@@ -39,7 +39,7 @@ const char* linkPhaseCode(LinkPhase p);
 
 // Runtime result of a feature (capability matrix: what really worked).
 struct FeatRun {
-  uint8_t state = 0;  // 0 not run, 1 worked, 2 failed
+  uint8_t state = 0;  // 0 not run, 1 worked, 2 failed, 3 not supported by this ECU (D-034)
   uint32_t tMs = 0;
 };
 
@@ -118,7 +118,8 @@ struct EngineState {
   uint32_t purgeOnSinceMs = 0;
   uint32_t purgeActiveSinceMs = 0;
   bool purgeSonde = false;
-  char lastServiceResult[160] = {0};
+  char lastServiceResult[320] = {0};  // Russian text: 2 bytes per letter
+  uint32_t pwLockS = 0;          // seconds left of the password lock (D-035)
   // impulse
   ImpulseView impulse;
   // hardware
@@ -177,6 +178,9 @@ class DiagEngine {
   void updateLink();
   void persistLearned();
   void featMark(uint8_t f, bool ok);
+  void featUnsupported(uint8_t f);
+  bool impulseCapture(char* msg, size_t n);
+  bool impulseVehicleOk(char* msg, size_t n);
   JobInfo* ringFind(uint32_t id);
   uint8_t vehicleCylinders();
   bool adapterPresent();
@@ -223,6 +227,8 @@ class DiagEngine {
   live::Decoded prevLive_;
   uint8_t extFails_ = 0;
   bool extDisabled_ = false;
+  uint8_t planTried_ = 0;        // live plans answered with addresses: 1 Bosch, 2 VDO
+  bool svcConfirmStopped_ = false;  // user confirmed "engine stopped" in the service dialog
   DtcRefresh dtcRefresh_;  // engine task only
 };
 

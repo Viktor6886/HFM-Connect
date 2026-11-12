@@ -142,7 +142,9 @@ TEST(profile_unresolved_allows_only_ident) {
   CHECK(!p.caps[prof::F_DTC_CLEAR].allowed);
 }
 
-TEST(profile_reference_ecu_writes_need_engineer_mode) {
+TEST(profile_reference_ecu_services_without_engineer_mode) {
+  // D-035: the services are gated by ServiceGuard (password, conditions), not
+  // by the engineer mode.
   EcuIdent id;
   parseIdent(kGolden, 28, id);
   prof::EcuProfile p;
@@ -152,17 +154,17 @@ TEST(profile_reference_ecu_writes_need_engineer_mode) {
   CHECK(p.caps[prof::F_DTC_READ].allowed);
   CHECK(p.caps[prof::F_LIVE_NATIVE].allowed);
   CHECK(!p.caps[prof::F_LIVE_EXTENDED].allowed);
-  CHECK(!p.caps[prof::F_DTC_CLEAR].allowed);
-  CHECK(p.bankMapping == dtc::BankMapping::AStoredBCurrent);
-  o.engineerMode = true;
-  prof::resolve(id, o, p);
   CHECK(p.caps[prof::F_DTC_CLEAR].allowed);
   CHECK(p.caps[prof::F_ADAPT_RESET].allowed);
+  CHECK(p.caps[prof::F_PURGE_TEST].allowed);
+  CHECK(p.caps[prof::F_VIN_READ].allowed);  // a read; unsupported ECUs are detected
+  CHECK(p.bankMapping == dtc::BankMapping::AStoredBCurrent);
   CHECK(!p.caps[prof::F_VERSION_CODING_WRITE].allowed);  // no known command
   CHECK(!p.caps[prof::F_THROTTLE_LEARN].allowed);
+  CHECK(prof::featureTech(prof::F_DTC_CLEAR)[0] != 0);
 }
 
-TEST(profile_generic_bosch_blocks_writes_even_in_engineer_mode) {
+TEST(profile_generic_bosch_services_follow_identification) {
   uint8_t raw[28];
   memcpy(raw, kGolden, 28);
   raw[21] = '9';  // different part number
@@ -171,13 +173,22 @@ TEST(profile_generic_bosch_blocks_writes_even_in_engineer_mode) {
   parseIdent(raw, 28, id);
   prof::EcuProfile p;
   prof::ResolveOptions o;
-  o.engineerMode = true;
   prof::resolve(id, o, p);
   CHECK(p.resolved);
   CHECK(!p.referenceEcu);
   CHECK(p.caps[prof::F_DTC_READ].allowed);
+  CHECK(p.caps[prof::F_DTC_CLEAR].allowed);
+  CHECK(p.caps[prof::F_DTC_CLEAR].conf == Confidence::REK);
+  // Outside the HFM range nothing state-changing is offered.
+  raw[26] = 0x65;
+  parseIdent(raw, 28, id);
+  prof::resolve(id, o, p);
+  CHECK(!p.resolved);
   CHECK(!p.caps[prof::F_DTC_CLEAR].allowed);
   CHECK(p.caps[prof::F_DTC_CLEAR].conf == Confidence::BLOCK);
+  raw[26] = 0x45;
+  parseIdent(raw, 28, id);
+  prof::resolve(id, o, p);
   CHECK(p.bankMapping == dtc::BankMapping::AStoredBCurrent);
   CHECK(p.bankMappingConf == Confidence::GIP);
   CHECK_EQ(p.variant.diagRaw, 0x45);
@@ -223,17 +234,21 @@ TEST(profile_vendor_letter_as_pc_tester) {
   CHECK(p.resolved && !p.referenceEcu && !p.vdoCandidate && !p.vdoUnits);
   CHECK(p.caps[prof::F_DTC_READ].allowed && p.caps[prof::F_LIVE_NATIVE].allowed);
   CHECK_EQ(p.variant.manufacturer, 1);
-  // 'V' = VDO: HFM reads allowed, VDO live addresses only with the opt-in.
+  // 'V' = VDO: HFM reads and Live Data (Bosch pages, checked replies); the
+  // VDO template plan is tried first only with the opt-in (D-034).
   raw[1] = 'V';
   parseIdent(raw, 28, id);
   CHECK_STR(id.vendor, "VDO");
   prof::resolve(id, o, p);
   CHECK(p.resolved && p.vdoUnits && !p.vdoCandidate);
   CHECK(p.caps[prof::F_DTC_READ].allowed);
-  CHECK(!p.caps[prof::F_LIVE_NATIVE].allowed);
+  CHECK(p.caps[prof::F_LIVE_NATIVE].allowed);
+  CHECK(!p.vdoPlanFirst);
+  CHECK(p.caps[prof::F_DTC_CLEAR].allowed);
   o.experimentalReads = true;
   prof::resolve(id, o, p);
   CHECK(p.caps[prof::F_LIVE_NATIVE].allowed);
+  CHECK(p.vdoPlanFirst);
   CHECK_EQ(p.variant.manufacturer, 0);
 }
 

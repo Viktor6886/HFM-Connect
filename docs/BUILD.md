@@ -83,7 +83,7 @@ arduino-cli core install esp32:esp32
 arduino-cli lib install U8g2
 # с дисплеем (по умолчанию)
 arduino-cli compile --fqbn esp32:esp32:esp32s3:PartitionScheme=huge_app,CDCOnBoot=default firmware/HFMConnect
-# без дисплея
+# без дисплея (с 0.9.0 занимает 99 % раздела Default 4MB — лучше тоже Huge APP)
 arduino-cli compile --fqbn esp32:esp32:esp32s3:PartitionScheme=default,CDCOnBoot=default \
   --build-property "compiler.cpp.extra_flags=-DHFM_OLED_ENABLE=0" firmware/HFMConnect
 arduino-cli upload  --fqbn esp32:esp32:esp32s3:PartitionScheme=huge_app -p COM5 firmware/HFMConnect

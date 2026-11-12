@@ -11,7 +11,8 @@ struct Settings {
   uint8_t ftdiModem = 0;            // DTR (bit0) / RTS (bit1) asserted on the FTDI adapter
   bool wakeAuto = true;             // try other BREAK / DTR / RTS profiles while the ECU is silent
   bool experimentalReads = false;   // unknown-ECU reads, extended recipes, VIN, ext DTC
-  bool engineerMode = false;        // REK-quarantined service ops (reference ECU only)
+  bool engineerMode = false;        // shows technical details (codes, commands) in the WebUI
+  bool requireWriteKey = false;     // service ops also need the WRITE-EN key closed (D-035)
   bool keepAlive = true;            // idle F0:00 read while connected
   bool autoConnect = true;          // connect automatically when the adapter is present
   bool impulseEnabled = false;      // pulse-counter mode (grounds the line!)
@@ -28,6 +29,7 @@ struct Settings {
   // impulse thresholds
   uint16_t impPressMs = 3000;
   uint16_t impEndGapMs = 2500;
+  uint16_t impClearMs = 7000;       // OEM 11/5: hold 6-8 s after the code (Bosch up to 08/93: 5-6 s)
   // Indication and behaviour
   uint8_t soundLevel = 2;           // piezo: 0 off, 1 low, 2 medium, 3 high
   uint8_t lightLevel = 2;           // RGB LED: 0 off, 1 low, 2 medium, 3 high

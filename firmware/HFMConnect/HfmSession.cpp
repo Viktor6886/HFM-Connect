@@ -9,9 +9,11 @@ PrefixClass classifyPrefix(uint8_t op) {
     case 0x27:  // coding byte 02
     case 0xF0:  // identification 00..1B
     case 0xF1:  // fault memory 00..1F
+    // VIN bytes 00..0D: a read of the PC tester and factory tester (HHT AT99);
+    // ECUs without the service answer the prefix with another byte - the
+    // engine reports "not supported" and resumes the session (D-034).
+    case 0xF9:
       return PrefixClass::Read;
-    // Gated reads (REV 1.4 s.7: VIN F9 feature-gated):
-    case 0xF9:  // VIN bytes 00..0D
     // VDO variant live-data pages (factory tester templates for vendor V;
     // never field-tested): only with the experimental opt-in.
     case 0x12:
@@ -127,6 +129,8 @@ LinkStatus HfmSession::xchg(uint8_t tx, Parity par, TracePhase ph, CommandRisk r
   uint8_t echo = 0;
   resp = 0;
   LinkStatus st = link_.exchange(tx, par, timing_.byteDeadlineMs, echo, resp);
+  lastTx_ = tx;
+  lastReply_ = resp;
   txCount_++;
   lastActivityMs_ = link_.nowMs();
   lineUsed_ = true;

@@ -67,7 +67,7 @@ class SimEcu : public ByteLink {
   bool pageSet_ = false;
   uint8_t ident_[28];
   uint8_t dtc_[64];
-  uint8_t ovPage_[8] = {0}, ovSel_[8] = {0}, ovVal_[8] = {0};
+  uint8_t ovPage_[32] = {0}, ovSel_[32] = {0}, ovVal_[32] = {0};
   uint8_t ovN_ = 0;
   uint32_t count_ = 0;
   uint32_t lastByteMs_ = 0;

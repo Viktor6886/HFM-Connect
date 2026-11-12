@@ -38,6 +38,7 @@ const char* normGroupCode(NormGroup g) {
     case NormGroup::M104_CODED: return "M104_HFM34_CODED";
     case NormGroup::M111_961: return "M111_961";
     case NormGroup::M104_995: return "M104_995_HFM41";
+    case NormGroup::HFM_GENERIC: return "HFM_GENERIC";
     default: return "NONE";
   }
 }
@@ -166,24 +167,41 @@ static const char* const kFeatureCodes[F_COUNT] = {
     "purge_test",   "version_coding_write",         "throttle_learn",
     "impulse_read", "impulse_clear"};
 static const char* const kFeatureNames[F_COUNT] = {
-    "Идентификация ЭБУ (F0 00–1B)",
-    "Чтение памяти неисправностей (F1 00–1F)",
-    "Расширенные биты DTC 129–152 (F1 30–32/40–42)",
-    "Live Data — нативные группы (full8)",
-    "Live Data — расширенные рецепты",
-    "Чтение самоадаптаций смеси (24* 90/92/93)",
-    "Чтение кодировки комплектации (27* 02 24* F0)",
-    "Чтение VIN (F9 00–0D)",
+    "Идентификация ЭБУ",
+    "Чтение памяти неисправностей",
+    "Дополнительные коды неисправностей 129–152",
+    "Текущие параметры двигателя (Live Data)",
+    "Дополнительные параметры (скорость, нижний лямбда-зонд, заданные обороты ХХ, контакты, корректирующий штекер)",
+    "Чтение самоадаптаций смеси",
+    "Чтение кодировки комплектации",
+    "Чтение VIN",
     "Стирание памяти неисправностей",
     "Сброс самоадаптаций смеси",
-    "Тест клапана продувки адсорбера Y58/1",
+    "Проверка клапана продувки адсорбера Y58/1",
     "Запись 9-значного кода комплектации",
-    "Обучение упоров дросселя / ETA",
-    "Импульсное чтение кодов (blink-code)",
-    "Импульсное стирание кода"};
+    "Обучение упора дроссельной заслонки",
+    "Импульсное чтение кодов (счётчик импульсов)",
+    "Импульсное стирание кодов"};
+static const char* const kFeatureTech[F_COUNT] = {
+    "F0 00–1B (+ 26/27); ответ — 28 байт идентификации",
+    "F1 00–1F: две битовые карты по 16 байт",
+    "F1 30–32 / 40–42 — по REV 1.1 и шаблонам заводского тестера; не все ЭБУ отвечают",
+    "Bosch: страницы 20/21 (план full8, 28 транзакций); VDO: шаблоны 12/22/23 заводского тестера",
+    "20:47, 20:25, 20:67, 20:98, 20:39, 24:7C",
+    "24:90 (ХХ), 24:92 / 24:93 (частичная нагрузка)",
+    "27:02 (байт кодировки) + 24:F0 (маска)",
+    "F9 00–0D, 14 символов ASCII",
+    "10 00 · F3 FF (×2) — шаблон заводского тестера AT6, ПК-тестер «Erase»; контроль повторным чтением F1",
+    "CF FF · C1 FC (вход, ответы 00/03) → E0 00 · CF 00 · C0 FC — шаблон заводского тестера AT87",
+    "CF FF · C1 FC → 96 → D0 0F → D4 1A/00, восстановление D0 0B D1 00 D2 00 D3 40 D4 00 — шаблоны AT66/AT78/AT77/AT90",
+    "Экран «Variantencodierung» заводского тестера; байты команды не восстановлены",
+    "Входит в «Variantencodierung» заводского тестера (удаление исполнения и повторное обучение упора)",
+    "Контакт диагностики на массу 2–4 с, затем счёт вспышек (Engine 104/111, 11/5)",
+    "После показа кода удерживать контакт на массе 6–8 с (Bosch до 08/93 — 5–6 с), Engine 104/111, 11/5"};
 
 const char* featureCode(uint8_t f) { return f < F_COUNT ? kFeatureCodes[f] : "?"; }
 const char* featureName(uint8_t f) { return f < F_COUNT ? kFeatureNames[f] : "?"; }
+const char* featureTech(uint8_t f) { return f < F_COUNT ? kFeatureTech[f] : ""; }
 bool featureIsWrite(uint8_t f) {
   return f == F_DTC_CLEAR || f == F_ADAPT_RESET || f == F_PURGE_TEST || f == F_VERSION_CODING_WRITE ||
          f == F_THROTTLE_LEARN || f == F_IMPULSE_CLEAR;
@@ -203,14 +221,19 @@ void resolve(const EcuIdent& id, const ResolveOptions& opt, EcuProfile& p) {
 
   // Commands for which no transaction is known at all: always blocked.
   setCap(p, F_VERSION_CODING_WRITE, false, Confidence::BLOCK,
-         "Команда «Version coding» заводского тестера не восстановлена; только ручной ввод/архив кода");
+         "Недоступно: в заводском тестере это экран «Variantencodierung», но последовательность байтов "
+         "его команды не восстановлена ни из одного источника. Код можно сохранить в устройстве для архива "
+         "(«Ввод в эксплуатацию»).");
   setCap(p, F_THROTTLE_LEARN, false, Confidence::BLOCK,
-         "Команда обучения не известна; доступна только визуальная проверка CTP/WOT/угла");
+         "Недоступно: отдельной команды нет — заводской тестер обучает упор заслонки в составе "
+         "«Variantencodierung», байты которой не восстановлены. Датчик заслонки и контакты ХХ / полной "
+         "нагрузки проверяются по Live Data («Исполнительные тесты»).");
   setCap(p, F_IDENT, true, Confidence::REK, "");
   setCap(p, F_IMPULSE_READ, true, Confidence::ZAV,
-         "Заводская процедура для diagnosis version ≤46; не для W210; требует аппаратного ключа");
-  setCap(p, F_IMPULSE_CLEAR, false, Confidence::BLOCK,
-         "Импульсное стирание отключено по умолчанию (REV 1.4 M14-07)");
+         "Заводская процедура: ЭБУ до конца 1995 модельного года (diagnosis version ≤ 46), кроме W210");
+  setCap(p, F_IMPULSE_CLEAR, true, Confidence::ZAV,
+         "Заводская процедура: после показа кода контакт удерживается на массе 6–8 с; пароль и "
+         "подтверждение обязательны");
 
   const bool bosch = id.present && id.vendorId == 1;
   const bool vdo = id.present && id.vendorId == 2;
@@ -229,24 +252,25 @@ void resolve(const EcuIdent& id, const ResolveOptions& opt, EcuProfile& p) {
     p.resolved = true;
     p.referenceEcu = true;
     snprintf(p.id, sizeof p.id, "BOSCH_0135451332_41");
-    snprintf(p.name, sizeof p.name, "Bosch HFM-SFI 013 545 13 32, diag 41/00 (эталонный ЭБУ)");
+    snprintf(p.name, sizeof p.name, "Bosch HFM-SFI 013 545 13 32, diag 41/00 (эталонный ЭБУ спецификации)");
     p.bankMapping = dtc::BankMapping::AStoredBCurrent;
     p.bankMappingConf = Confidence::REK;
   } else if (bosch && hfmRange) {
     p.resolved = true;
     snprintf(p.id, sizeof p.id, "GENERIC_BOSCH_HFM_%d", di);
     snprintf(p.name, sizeof p.name, "Bosch HFM-SFI %s, diag %s", id.partDisplay, id.diagDisplay);
-    // Probable orientation (reference profile + factory tester order: it reads
-    // 10..1F, erases, then verifies 00..0F). Confirmed per readout by the
-    // intermittent-fault rule (dtc::inferBankMapping).
+    // Orientation of the banks is decided per readout by the factory
+    // intermittent-fault rule (dtc::inferBankMapping); here only an assumption.
     p.bankMapping = dtc::BankMapping::AStoredBCurrent;
     p.bankMappingConf = Confidence::GIP;
   } else if (vdo && hfmRange) {
-    // Vendor letter 'V' (PC tester decoding). The factory tester has VDO
-    // variant maps and live-data templates; the VDO live addresses are GIP,
-    // so Live Data needs the experimental opt-in, the HFM read pages do not.
+    // Vendor letter V (PC tester decoding). The fault memory, adaptations and
+    // coding use the HFM read pages; Live Data is read with the Bosch plan and
+    // checked (D-034); the VDO plan of the factory tester templates is tried
+    // first only with the experimental opt-in.
     p.resolved = true;
     p.vdoUnits = true;
+    p.vdoPlanFirst = opt.experimentalReads;
     snprintf(p.id, sizeof p.id, "VDO_HFM_%d", di);
     snprintf(p.name, sizeof p.name, "VDO HFM %s, diag %s", id.partDisplay, id.diagDisplay);
     p.bankMapping = dtc::BankMapping::AStoredBCurrent;
@@ -269,41 +293,43 @@ void resolve(const EcuIdent& id, const ResolveOptions& opt, EcuProfile& p) {
     snprintf(p.name, sizeof p.name, "Неизвестный ЭБУ (%s, diag %s)", id.vendor, id.diagDisplay);
   }
   if (id.present) p.variant.diagRaw = id.diagIndexRaw;
-  p.variant.manufacturer = bosch ? 1 : 0;  // DTC maps: 'B' Bosch, otherwise vendor V
+  p.variant.manufacturer = bosch ? 1 : 0;  // DTC maps: B = Bosch, otherwise vendor V
   p.variant.cylinders = opt.cylinders;
 
   bool readOk = p.resolved || (id.present && !pmsRange && opt.experimentalReads);
-  Confidence readConf = p.referenceEcu ? Confidence::REK : (p.resolved ? Confidence::REK : Confidence::GIP);
+  Confidence readConf = p.resolved ? Confidence::REK : Confidence::GIP;
   const char* readReason = readOk ? "" :
-      (pmsRange ? "PMS не поддерживается" :
-       (id.present ? "ЭБУ не распознан: включите «Экспериментальное чтение» в настройках" : "Сначала выполните идентификацию"));
+      (pmsRange ? "Недоступно: это система PMS (diag 60–79), а не HFM-SFI — протокол другой" :
+       (id.present ? "ЭБУ не распознан как HFM-SFI: чтение возможно только с «Экспериментальным чтением» в настройках"
+                   : "Сначала подключитесь к ЭБУ — функции определяются по его идентификации"));
   setCap(p, F_DTC_READ, readOk, readConf, readReason);
-  // VDO live addresses (prefixes 12/22/23) are GIP: experimental opt-in.
-  bool liveOk = readOk && (!p.vdoUnits || opt.experimentalReads);
-  setCap(p, F_LIVE_NATIVE, liveOk, p.vdoUnits ? Confidence::GIP : readConf,
-         liveOk ? "" : (readOk ? "Адреса Live Data VDO не подтверждены: включите «Экспериментальное чтение»" : readReason));
+  // Live Data: the Bosch read pages for every HFM-SFI ECU; replies are checked
+  // (address repeated, impossible values) before a value is shown (D-034).
+  setCap(p, F_LIVE_NATIVE, readOk, p.vdoUnits ? Confidence::GIP : readConf, readReason);
   setCap(p, F_ADAPT_READ, readOk, Confidence::REK, readReason);
   setCap(p, F_CODING_READ, readOk, Confidence::REK, readReason);
   bool expOk = readOk && opt.experimentalReads;
-  const char* expReason = readOk ? "Включите «Экспериментальное чтение» (статус AC)" : readReason;
+  const char* expReason = readOk ? "Включается в настройках: «Экспериментальное чтение» (адреса и формулы — кандидаты)"
+                                 : readReason;
   setCap(p, F_LIVE_EXTENDED, expOk, Confidence::GIP, expOk ? "" : expReason);
   setCap(p, F_DTC_EXTENDED, expOk, Confidence::GIP, expOk ? "" : expReason);
-  setCap(p, F_VIN_READ, expOk, Confidence::GIP, expOk ? "" : expReason);
+  // VIN is a read; ECUs without the service do not acknowledge F9 - the engine
+  // then marks it as not supported and resumes the session (D-034).
+  setCap(p, F_VIN_READ, readOk, Confidence::GIP, readReason);
 
-  // Write services: REK-quarantined recipes only for the reference ECU,
-  // only in engineer mode; runtime guards (interlock, preconditions,
-  // confirmation) are enforced additionally by ServiceGuard.
+  // Write services (D-035): the byte sequences are the common templates of the
+  // factory tester (no V/B variant split) and of the PC tester; they are run
+  // for an identified HFM-SFI ECU only through ServiceGuard - password of the
+  // access point, warning, preconditions, no automatic retry, FAULT_STOP. The
+  // ECU itself confirms each step (ACK and complement replies); a refusal
+  // stops the sequence.
   const char* wrReason;
-  bool wr = false;
-  if (!p.referenceEcu) {
-    wrReason = "Заблокировано: нет проверенной трассы для этого ЭБУ (REV 1.4 s.2 БЛОК)";
-  } else if (!opt.engineerMode) {
-    wrReason = "Рецепт РЕК для эталонного ЭБУ: требуется «Режим инженера»";
-  } else {
-    wr = true;
-    wrReason = "РЕК: только при ключе WRITE-EN, выполненных условиях и подтверждении";
-  }
-  Confidence wc = p.referenceEcu ? Confidence::REK : Confidence::BLOCK;
+  bool wr = p.resolved;
+  if (!id.present) wrReason = "Сначала подключитесь к ЭБУ";
+  else if (!p.resolved) wrReason = "Недоступно: ЭБУ не распознан как HFM-SFI (Bosch/VDO, diag 40–59) — команды записи "
+                                   "разрешены только для идентифицированного блока";
+  else wrReason = "Доступно: пароль точки доступа, предупреждение и проверка условий перед выполнением";
+  Confidence wc = p.resolved ? Confidence::REK : Confidence::BLOCK;
   setCap(p, F_DTC_CLEAR, wr, wc, wrReason);
   setCap(p, F_ADAPT_RESET, wr, wc, wrReason);
   setCap(p, F_PURGE_TEST, wr, wc, wrReason);
@@ -361,6 +387,18 @@ static const Norm kNorms[] = {
     {"adapt_upper", NormGroup::M104_CODED, 0.85f, 1.15f, NormCond::Always, "1.00 — базовое", "I07 p.10"},
     {"adapt_upper", NormGroup::M111_961, 0.85f, 1.15f, NormCond::Always, "1.00 — базовое", "I07 p.20"},
     {"adapt_upper", NormGroup::M104_995, 0.85f, 1.15f, NormCond::Always, "1.00 — базовое", "I07 p.32"},
+    // Automobile not selected: union of the ranges above (all HFM-SFI engines).
+    {"rpm", NormGroup::HFM_GENERIC, 600, 850, NormCond::WarmIdle, "Общий диапазон HFM-SFI; выберите автомобиль для точной нормы", "I07"},
+    {"inj_ms", NormGroup::HFM_GENERIC, 2.5f, 5.0f, NormCond::WarmIdle, "Общий диапазон HFM-SFI; выберите автомобиль для точной нормы", "I07"},
+    {"maf", NormGroup::HFM_GENERIC, 9, 18, NormCond::WarmIdle, "Общий диапазон HFM-SFI; выберите автомобиль для точной нормы", "I07"},
+    {"o2_mv", NormGroup::HFM_GENERIC, -200, 1000, NormCond::WarmRunning, "Колебания ~300 мВ после ~2 мин ХХ", "I07"},
+    {"lambda", NormGroup::HFM_GENERIC, -10, 10, NormCond::WarmIdle, "On-off ratio 0±10 %", "I07"},
+    {"ign_deg", NormGroup::HFM_GENERIC, 5, 13, NormCond::WarmIdle, "Общий диапазон HFM-SFI; выберите автомобиль для точной нормы", "I07"},
+    {"throttle", NormGroup::HFM_GENERIC, 0.3f, 1.8f, NormCond::WarmIdle, "Общий диапазон HFM-SFI; выберите автомобиль для точной нормы", "I07"},
+    {"adapt_idle", NormGroup::HFM_GENERIC, -2, 2, NormCond::Always, "Bosch, кг/ч; 0 — базовое", "I07"},
+    {"adapt_idle_vdo", NormGroup::HFM_GENERIC, -15, 15, NormCond::Always, "VDO, %; 0 — базовое", "I07"},
+    {"adapt_lower", NormGroup::HFM_GENERIC, 0.85f, 1.15f, NormCond::Always, "1.00 — базовое", "I07"},
+    {"adapt_upper", NormGroup::HFM_GENERIC, 0.85f, 1.15f, NormCond::Always, "1.00 — базовое", "I07"},
 };
 
 const Norm* norms(uint16_t* count) {

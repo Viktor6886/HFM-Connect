@@ -22,7 +22,9 @@ const char* generationCode(Generation g);
 const char* generationName(Generation g);
 
 // Norm group (REV 1.4 s.10, Test and Adjustment Data [И07]).
-enum class NormGroup : uint8_t { None, M104_EARLY, M104_CODED, M111_961, M104_995 };
+// HFM_GENERIC: no vehicle selected - the widest factory range over all HFM-SFI
+// engines of I07 (a value outside it is outside the norm of every engine).
+enum class NormGroup : uint8_t { None, M104_EARLY, M104_CODED, M111_961, M104_995, HFM_GENERIC };
 const char* normGroupCode(NormGroup g);
 
 struct ConnectorPin {
@@ -85,7 +87,8 @@ enum Feature : uint8_t {
   F_COUNT
 };
 const char* featureCode(uint8_t f);
-const char* featureName(uint8_t f);
+const char* featureName(uint8_t f);   // plain name for the user
+const char* featureTech(uint8_t f);   // commands / technical detail (shown on demand)
 bool featureIsWrite(uint8_t f);
 
 struct Capability {
@@ -99,6 +102,7 @@ struct EcuProfile {
   char name[112];
   bool resolved;          // identified as HFM-SFI
   bool referenceEcu;      // reference ECU 013 545 13 32 / 41-00
+  bool vdoPlanFirst;      // VDO: try the VDO live-data plan first (experimental opt-in)
   dtc::Variant variant;
   dtc::BankMapping bankMapping;
   Confidence bankMappingConf;
@@ -109,7 +113,7 @@ struct EcuProfile {
 
 struct ResolveOptions {
   bool experimentalReads = false; // user opt-in for unknown ECU reads
-  bool engineerMode = false;      // user opt-in for REK-quarantined service ops
+  bool engineerMode = false;      // kept for compatibility; service ops no longer need it (D-035)
   uint8_t cylinders = 0;          // from the selected vehicle (M104 = 6, M111 = 4), 0 = unknown
 };
 

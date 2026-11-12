@@ -732,6 +732,66 @@ kwake::Profile FtdiLink::wakeProfile() const {
   return p;
 }
 
+bool FtdiLink::impulseHold(uint32_t ms) {
+  if (!ioMtx_) return false;
+  IoGuard guard(ioMtx_);
+  if (!isOpen()) return false;
+  if (!setLine(Parity::None, true)) return false;  // line low = button pressed
+  delay(ms);
+  bool ok = setLine(Parity::None, false);
+  delay(50);
+  xStreamBufferReset(rx_);  // our own BREAK came back as received bytes
+  lineKnown_ = false;
+  return ok;
+}
+
+uint16_t FtdiLink::impulseCapture(const ImpulseConfig& cfg, ImpulseEdge* edges, uint16_t maxEdges,
+                                  ImpulseResult& res) {
+  res = ImpulseResult();
+  if (!ioMtx_) return 0;
+  IoGuard guard(ioMtx_);
+  if (!isOpen()) return 0;
+  if (!setLine(Parity::None, true)) return 0;
+  delay(cfg.pressMs);
+  setLine(Parity::None, false);
+  delay(50);
+  xStreamBufferReset(rx_);
+  lineKnown_ = false;
+  // Falls closer than minPulseMs belong to the same pulse (bytes of one long
+  // low phase, contact bounce).
+  uint16_t n = 0;
+  uint32_t t0 = millis(), last = 0, brk = breakSeen_;
+  bool any = false;
+  while (millis() - t0 < cfg.listenMs) {
+    uint8_t b;
+    bool fall = readBytes(&b, 1, 5) == 1;
+    if (breakSeen_ != brk) {
+      brk = breakSeen_;
+      fall = true;
+    }
+    uint32_t now = millis();
+    if (fall) {
+      if (!any || now - last >= cfg.minPulseMs) {
+        if (any && n < maxEdges) edges[n++] = ImpulseEdge{1, (uint16_t)(now - last > 65535 ? 65535 : now - last)};
+        if (n < maxEdges) edges[n++] = ImpulseEdge{0, 0};
+        res.pulses++;
+        any = true;
+      } else {
+        res.glitches++;
+      }
+      last = now;
+    } else if (any && now - last >= cfg.endGapMs) {
+      if (n < maxEdges) edges[n++] = ImpulseEdge{1, (uint16_t)(now - last)};
+      res.complete = true;
+      break;
+    }
+    if (!attached_) break;
+  }
+  res.edgeCount = n;
+  xStreamBufferReset(rx_);
+  return n;
+}
+
 LinkStatus FtdiLink::wakeup(const LinkTiming& t, uint8_t& echo, uint8_t& sync) {
   if (!ioMtx_) return LinkStatus::LinkDown;
   IoGuard guard(ioMtx_);
