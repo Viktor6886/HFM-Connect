@@ -411,10 +411,13 @@ function page(title, body) {
 // changes, slower while the browser tab is hidden.
 function loop(fn, ms) {
   const token = S.token;
+  // Keep one timer per polling loop until the user leaves this page.
+  const slot = S.timers.length;
+  S.timers.push(null);
   const tick = async () => {
     if (token !== S.token) return;
     try { await fn(); } catch (e) {}
-    if (token === S.token) S.timers.push(setTimeout(tick, document.hidden ? Math.max(ms, 3000) : ms));
+    if (token === S.token) S.timers[slot] = setTimeout(tick, document.hidden ? Math.max(ms, 3000) : ms);
   };
   tick();
 }

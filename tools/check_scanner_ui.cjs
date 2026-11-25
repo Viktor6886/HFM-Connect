@@ -103,6 +103,7 @@ async function main(){
       await p.click('[data-scan="scan"]');await p.waitForSelector('a[download]');
       assert.match(await p.locator('#scanSummary').innerText(),/Неисправностей нет/);
       assert.equal(await p.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1),true);
+      assert.equal(await p.evaluate(()=>S.timers.length),1,'scanner keeps one timer across polls');
       await p.selectOption('#scanModule','2');await p.waitForSelector('#scanRoute .note');
       assert.equal(await p.locator('[data-scan="attach"]').count(),0);
       await p.goto('http://127.0.0.1:'+server.address().port+'/#reports');
