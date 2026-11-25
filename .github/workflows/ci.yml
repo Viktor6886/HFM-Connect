@@ -10,8 +10,8 @@ jobs:
     name: Host tests + data checks
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
       - name: Firmware tables vs analysis data
@@ -35,7 +35,7 @@ jobs:
     name: Compile ESP32-S3 (Arduino core)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: arduino/setup-arduino-cli@v2
         with:
           version: 1.5.1
@@ -57,7 +57,7 @@ jobs:
           test "$(stat -c %s build/fw/HFMConnect.ino.merged.bin)" -eq 4194304
           cp build/fw/HFMConnect.ino.merged.bin build/HFM-Connect-ESP32S3-full.bin
       - name: Upload firmware binary
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: HFMConnect-esp32s3
           path: build/HFM-Connect-ESP32S3-full.bin
