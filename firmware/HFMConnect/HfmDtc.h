@@ -62,7 +62,7 @@ struct Decoded {
 
 // Decodes one 16-byte bank. index0 is the first F1 index of the bank (0x00 or 0x10).
 // Returns the number of set bits written to out (max outMax).
-uint16_t decodeBank(const uint8_t* bytes16, uint8_t index0, const Variant& v, Decoded* out, uint16_t outMax);
+uint16_t decodeBank(const uint8_t* bytes16, uint8_t index0, const Variant& v, Decoded* out, uint16_t outMax, uint8_t byteCount=16, uint8_t positionStart=0, bool mappedOnly=false);
 
 // Status label for a raw bank under a mapping: "stored", "current" or "bank_a"/"bank_b".
 const char* bankLabel(uint8_t bank, BankMapping m);

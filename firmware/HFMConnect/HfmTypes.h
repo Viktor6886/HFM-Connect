@@ -44,7 +44,8 @@ inline const char* fnStatusCode(FnStatus s) {
 // UART framing of a single byte on the HFM K-Line.
 //  None  - 8N1: prefix/opcode bytes (stop bit is read by the ECU as 9th bit = 1)
 //  Space - 8S1: selector/argument bytes (9th bit = 0)
-enum class Parity : uint8_t { None, Space };
+enum class Parity : uint8_t { None, Space, Mark };
+inline const char* parityCode(Parity p) { return p==Parity::Mark ? "M" : p==Parity::Space ? "S" : "N"; }
 
 // Result of one link-level operation.
 enum class LinkStatus : uint8_t {
@@ -74,7 +75,7 @@ inline const char* linkStatusCode(LinkStatus s) {
 }
 
 // Phase of a traced byte (REV 1.4 section 20, JSONL field "phase").
-enum class TracePhase : uint8_t { Break, Sync, Prefix, Selector, Argument, Info };
+enum class TracePhase : uint8_t { Break, Sync, Prefix, Selector, Argument, Info, FrameTx, FrameRx };
 
 inline const char* tracePhaseCode(TracePhase p) {
   switch (p) {
@@ -83,6 +84,8 @@ inline const char* tracePhaseCode(TracePhase p) {
     case TracePhase::Prefix: return "PREFIX";
     case TracePhase::Selector: return "SELECTOR";
     case TracePhase::Argument: return "ARG";
+    case TracePhase::FrameTx: return "FRAME_TX";
+    case TracePhase::FrameRx: return "FRAME_RX";
     default: return "INFO";
   }
 }

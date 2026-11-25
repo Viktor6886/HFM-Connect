@@ -1,5 +1,7 @@
 #ifdef ARDUINO
 #include "WebApi.h"
+#include <memory>
+#include <new>
 
 #include <LittleFS.h>
 #include <WebServer.h>
@@ -60,7 +62,7 @@ struct BankEff {
 };
 static BankEff effectiveBanks(const EngineState& s) {
   const DtcView& d = s.dtc;
-  bool byRule = d.valid && d.inferred != dtc::BankMapping::Unknown;
+  bool byRule = !s.ident.hhtCylinders && d.valid && d.inferred != dtc::BankMapping::Unknown;
   bool proven = byRule || s.profile.bankMappingConf == Confidence::REK;
   BankEff e;
   e.map = byRule ? d.inferred : (proven ? s.profile.bankMapping : dtc::BankMapping::Unknown);
@@ -137,13 +139,20 @@ static void writeAdaptCoding(JsonWriter& w, const EngineState& s) {
   if (s.adapt.valid) {
     w.kv("age_ms", (uint32_t)(millis() - s.adapt.tMs));
     w.key("raw").beginObject().key("idle").hex(s.adapt.rawIdle).key("lower").hex(s.adapt.rawLower).key("upper").hex(s.adapt.rawUpper).endObject();
-    w.kv("vdo", s.profile.vdoUnits);
+    w.kv("vdo", s.profile.vdoUnits && !s.adapt.fromHht).kv("from_hht",s.adapt.fromHht);
     w.kv("idle_kg_h", (double)s.adapt.idleKgH, 1).kv("lower", (double)s.adapt.lower, 2).kv("upper", (double)s.adapt.upper, 2);
   }
   w.endObject();
   w.key("coding").beginObject();
   w.kv("valid", s.coding.valid).kv("unsupported", s.coding.echo);
-  if (s.coding.valid) {
+  if (s.coding.valid && s.coding.factory) {
+    w.kv("factory",true).kv("flags",unsigned(s.coding.flags)).kv("ack",unsigned(s.coding.ack));
+    if (s.coding.threeBytes) {
+      char text[12]; snprintf(text,sizeof text,"%03u%03u%03u",s.coding.bytes[0],s.coding.bytes[1],s.coding.bytes[2]);
+      w.kv("decimal_code",text);
+    }
+  }
+  if (s.coding.valid && (!s.coding.factory || (!s.coding.threeBytes && s.ident.vendorId==1))) {
     const hfm::CodingInfo& c = s.coding.info;
     w.key("coding_byte").hex(c.coding).key("mask_byte").hex(c.mask);
     writeTri(w, "automatic", c.automatic);
@@ -156,7 +165,7 @@ static void writeAdaptCoding(JsonWriter& w, const EngineState& s) {
     w.kv("screen", (int)c.screen);
   }
   w.endObject();
-  w.key("vin").beginObject().kv("valid", s.vin.valid).kv("unsupported", s.vin.unsupported).kv("not_stored", s.vin.notStored);
+  w.key("vin").beginObject().kv("valid", s.vin.valid).kv("unsupported", s.vin.unsupported).kv("not_stored", s.vin.notStored).kv("invalid",s.vin.invalidCharacters).kv("length",unsigned(s.vin.len));
   if (s.vin.valid) w.kv("text", AppSettings.maskVin ? "*** (скрыт настройкой)" : s.vin.text);
   w.endObject();
 }
@@ -317,9 +326,16 @@ static void writeServices(JsonWriter& w, const EngineState& s) {
   w.kv("last_result", s.lastServiceResult);
   w.kv("purge_on", s.purgeOn);
   w.key("ops").beginArray();
+  const auto* route=scanner::route(s.module.route);
+  const bool other=route && strcmp(route->module,"HFM");
+  const auto* driver=other ? scanner::profile(*route) : nullptr;
   for (uint8_t o = 0; o < (uint8_t)guard::Op::Count; o++) {
     guard::Op op = (guard::Op)o;
-    const prof::Capability& c = s.profile.caps[guard::opFeature(op)];
+    auto c=s.profile.caps[guard::opFeature(op)];
+    if(other) {
+      bool allowed=driver && driver->clearFaultMemory && op==guard::Op::DtcClear && s.module.confirmed && s.module.readout.identityValid;
+      c={allowed,allowed ? Confidence::REK : Confidence::BLOCK,allowed ? "" : "Недоступно для выбранного блока"};
+    }
     w.beginObject().kv("id", guard::opCode(op)).kv("name", guard::opName(op));
     w.kv("allowed", c.allowed).kv("conf", conf(c.conf)).kv("reason", c.reason ? c.reason : "").endObject();
   }
@@ -456,7 +472,7 @@ static void hUsb() {
 
 static void hUsbReset() {
   FtdiLink* f = Engine.usbLink();
-  if (!f) return sendError(409, "USB host not used");
+  if (!f) return sendError(409, "USB-адаптер в этой сборке отключён");
   f->requestReenumerate();
   JsonWriter w(64);
   w.beginObject().kv("ok", true).endObject();
@@ -581,8 +597,10 @@ static void hTraceJsonl() {
   TraceEvent buf[32];
   uint32_t after = 0;
   std::string out;
-  for (;;) {
+  const uint32_t last=Engine.trace().lastSeq();
+  while (after<last) {
     uint16_t n = Engine.trace().copySince(after, buf, 32);
+    while(n && buf[n-1].seq>last) --n;
     if (!n) break;
     out.clear();
     for (uint16_t i = 0; i < n; i++) TraceLog::writeJsonl(out, buf[i], Engine.sessionId(), Engine.transportName(), profile);
@@ -592,13 +610,18 @@ static void hTraceJsonl() {
   server.sendContent("");
 }
 
+static void writeModule(JsonWriter& w,const ModuleState& m);
+static void writeScanRecord(JsonWriter& w,const ScanRecord& s);
+static void writeHhtReading(JsonWriter& w,const hht::Reading& reading,uint32_t epoch);
 static void hReport() {
   server.sendHeader("Content-Disposition", server.hasArg("dl") ? "attachment; filename=\"hfm_report.json\"" : "inline");
+  std::unique_ptr<EngineState> snapshot(new(std::nothrow) EngineState);
+  if (!snapshot) return sendError(503,"Недостаточно памяти для отчёта");
+  Engine.lock(); *snapshot=Engine.state(); Engine.unlock();
   beginChunked();
   JsonWriter w(4096);
   w.setSink(chunkSink, nullptr);
-  Engine.lock();
-  const EngineState& s = Engine.state();
+  const EngineState& s=*snapshot;
   w.beginObject();
   w.kv("schema", "hfm.report.v1").kv("generator", HFM_FW_NAME " " HFM_FW_VERSION);
   w.kv("disclaimer", "Программные испытания и реконструированный протокол (РЕК). Значения не являются заводской "
@@ -606,15 +629,115 @@ static void hReport() {
   w.key("status").beginObject();
   writeStatus(w, s);
   w.endObject();
-  writeIdent(w, s);
-  writeAdaptCoding(w, s);
-  writeDtc(w, s);
-  writeLive(w, s, true);
-  writeServices(w, s);
-  writeImpulse(w, s);
+  const auto* route=scanner::route(s.module.route);
+  if(!route || !strcmp(route->module,"HFM")) {
+    writeIdent(w,s); writeAdaptCoding(w,s); writeDtc(w,s);
+    writeLive(w,s,true); writeImpulse(w,s);
+    w.key("hht_screen");writeHhtReading(w,s.hhtScreen,s.module.epoch);
+  }
+  writeServices(w,s);
+  w.key("selected_module");writeModule(w,s.module);
+  if(s.beforeModuleClear.route>=0) {w.key("before_module_clear");writeScanRecord(w,s.beforeModuleClear);}
+  w.key("scan").beginArray();for(unsigned i=0;i<s.scanCount;++i) writeScanRecord(w,s.scans[i]);w.endArray();
   w.endObject();
-  Engine.unlock();
   endChunked(w);
+}
+
+static bool numberArg(const char* key, unsigned maximum,unsigned& value) {
+  String text=server.arg(key);
+  if (!text.length() || text.length()>10) return false;
+  uint64_t parsed=0;
+  for(unsigned i=0;i<text.length();++i) {
+    if(text[i]<'0' || text[i]>'9') return false;
+    parsed=parsed*10+(text[i]-'0');
+  }
+  if(parsed>maximum) return false;
+  value=unsigned(parsed);
+  return value<=maximum;
+}
+static void writeModule(JsonWriter& w,const ModuleState& m) {
+  const auto* r=scanner::route(m.route);
+  w.beginObject().kv("id",int(m.route)).kv("epoch",m.epoch).kv("confirmed",m.confirmed)
+    .kv("contact",unsigned(m.contact)).kv("baud",m.baud).kv("module",r ? r->module : "HFM")
+    .kv("series",r ? r->series : "").kv("error",scanner::message(m.error))
+    .kv("identified",m.readout.identityValid).kv("faults_valid",m.readout.faultsValid);
+  w.key("ident").beginArray();for(unsigned i=0;i<m.readout.identLen;++i) w.hex(m.readout.ident[i]);w.endArray();
+  w.key("faults").beginArray();if(m.readout.faultsValid) for(unsigned i=0;i<m.readout.codeCount;++i)
+    w.beginObject().kv("code",unsigned(m.readout.codes[i])).kv("status",unsigned(m.readout.details[i])).endObject();
+  w.endArray().kv("at",unsigned(m.readout.at)).key("raw").beginArray();
+  for(unsigned i=0;i<m.readout.rawLen;++i)w.hex(m.readout.raw[i]);w.endArray();w.endObject();
+}
+static void writeScanRecord(JsonWriter& w,const ScanRecord& s) {
+  const auto* r=scanner::route(s.route);
+  w.beginObject().kv("id",int(s.route)).kv("module",r ? r->module : "").kv("series",r ? r->series : "")
+    .kv("contact",unsigned(s.contact)).kv("identified",s.identified).kv("complete",s.complete)
+    .kv("message",scanner::message(s.error)).kv("time",s.time).key("codes").beginArray();
+  for(unsigned k=0;k<s.count;++k)w.value(unsigned(s.codes[k]));
+  w.endArray().endObject();
+}
+static void hScannerCatalog() {
+  String series=server.arg("series");
+  beginChunked();JsonWriter w(1400);w.setSink(chunkSink,nullptr);
+  w.beginArray();const char* previous="";
+  for(size_t i=0;i<scanner::routeCount();++i) {
+    const auto& r=*scanner::route(i);
+    if(!series.length()) {if(strcmp(previous,r.series)) w.value(r.series); previous=r.series;continue;}
+    if(series!=r.series) continue;
+    const auto* p=scanner::profile(r);bool hfm=!strcmp(r.module,"HFM");
+    w.beginObject().kv("id",unsigned(i)).kv("module",r.module).kv("variant",r.variant)
+      .kv("protocol",p && p->iso ? "GL_ISO2" : scanner::protocolName(r.protocol))
+      .kv("contact",unsigned(r.contact)).kv("mux",unsigned(r.mux)).kv("available",hfm || p)
+      .kv("dtc",hfm || (p && !p->classicIdBytes)).kv("clear",p && p->clearFaultMemory).kv("fixed_baud",p && p->fastKs).key("measures").beginArray();
+    if(p)for(unsigned k=0;k<p->measureCount;++k)w.value(unsigned(p->measures[k].at));
+    w.endArray().endObject();
+  }
+  w.endArray();endChunked(w);
+}
+static void hScannerStatus() {
+  Engine.lock();ModuleState module=Engine.state().module;unsigned count=Engine.state().scanCount;Engine.unlock();
+  beginChunked();JsonWriter w(1600);w.setSink(chunkSink,nullptr);w.beginObject().key("selection");
+  writeModule(w,module);w.key("scan").beginArray();
+  for(unsigned i=0;i<count;++i) {
+    Engine.lock();bool valid=Engine.state().module.epoch==module.epoch && i<Engine.state().scanCount;
+    ScanRecord record; if(valid) record=Engine.state().scans[i];Engine.unlock();
+    if(!valid) break;writeScanRecord(w,record);
+  }
+  w.endArray().endObject();endChunked(w);
+}
+static void hScannerAction() {
+  String action=server.arg("action"); Job job=Job::None;unsigned id=0,arg=0,pin=0,speed=0;
+  if(!numberArg("id",scanner::routeCount()-1,id)) return sendError(400,"Выберите блок по каталогу");
+  if(action=="select") {job=Job::SelectRoute;arg=id;}
+  else {
+    Engine.lock();int selected=Engine.state().module.route;Engine.unlock();
+    if(int(id)!=selected) return sendError(409,"Выбран другой блок. Обновите страницу");
+    if(action=="attach") {
+      if(server.arg("confirmed")!="1" || !numberArg("contact",38,pin) || !pin || !numberArg("speed",3,speed))
+        return sendError(400,"Требуется подтверждение контакта на разъёме автомобиля");
+      job=Job::AttachRoute;arg=(id<<16)|(speed<<6)|pin;
+    } else if(action=="scan")job=Job::ScanContact;
+    else if(action=="measure" && numberArg("index",255,arg))job=Job::ModuleMeasure;
+    else if(action=="faults")job=Job::ReadDtc;
+    else if(action=="pause")job=Job::Disconnect;
+    else return sendError(400,"Неизвестная операция");
+  }
+  Engine.lock();
+  if(job!=Job::SelectRoute && int(id)!=Engine.state().module.route) {
+    Engine.unlock();return sendError(409,"Выбранный блок изменился");
+  }
+  auto queued=Engine.submit(job,arg);Engine.unlock();
+  JsonWriter w;w.beginObject().kv("ok",queued!=0).kv("id",queued).endObject();sendSmall(w,queued ? 200 : 409);
+}
+static void writeHhtReading(JsonWriter& w,const hht::Reading& reading,uint32_t epoch) {
+  w.beginObject().kv("epoch",epoch).kv("screen",unsigned(reading.screen)).key("words").beginArray();
+  for (unsigned i=0;i<8;++i) {
+    if (reading.words.valid & (1u<<i)) w.value(int(reading.words.values[i])); else w.null();
+  }
+  w.endArray().endObject();
+}
+static void hHhtScreen() {
+  Engine.lock(); auto reading=Engine.state().hhtScreen;auto epoch=Engine.state().module.epoch;Engine.unlock();
+  JsonWriter w;writeHhtReading(w,reading,epoch);sendSmall(w);
 }
 
 static void hJobGet() {
@@ -623,7 +746,7 @@ static void hJobGet() {
   Engine.lock();
   bool have = Engine.jobInfo(id, j);
   Engine.unlock();
-  if (!have) return sendError(404, "unknown job");
+  if (!have) return sendError(404, "Операция не найдена");
   JsonWriter w(512);
   w.beginObject().kv("id", j.id).kv("job", jobCode(j.job)).kv("state", jobStateCode(j.state));
   w.kv("message", j.message).endObject();
@@ -638,23 +761,31 @@ static void hJob() {
       {"read_vin", Job::ReadVin},      {"live_start", Job::LiveStart},  {"live_stop", Job::LiveStop},
       {"svc_prepare", Job::SvcPrepare},{"svc_execute", Job::SvcExecute},{"purge_on", Job::PurgeOn},
       {"purge_off", Job::PurgeOff},    {"stop", Job::Stop},             {"impulse_read", Job::ImpulseRead},
-      {"ack_fault", Job::AckFault},
+      {"ack_fault", Job::AckFault}, {"hht_screen", Job::HhtScreen},
   };
   Job job = Job::None;
   for (auto& m : map)
     if (j == m.name) job = m.job;
-  if (job == Job::None) return sendError(400, "unknown job");
+  if (job == Job::None) return sendError(400, "Операция не найдена");
   uint32_t arg = 0;
-  if (server.hasArg("op")) {
-    String op = server.arg("op");
-    for (uint8_t o = 0; o < (uint8_t)guard::Op::Count; o++)
-      if (op == guard::opCode((guard::Op)o)) arg = o;
+  if (job==Job::SvcPrepare || job==Job::SvcExecute) {
+    String op=server.arg("op");unsigned o=0;
+    while(o<unsigned(guard::Op::Count) && op!=guard::opCode(guard::Op(o))) ++o;
+    if(o==unsigned(guard::Op::Count)) return sendError(400,"Неизвестная сервисная операция");
+    arg=o;
   }
   // Switches of the service dialog, sent with the job: "ignition ON, engine
   // stopped" (0x100) and "battery >= 11 V" (0x200, 0x400 = switch shown).
   if (server.arg("confirm") == "1") arg |= 0x100;
   if (server.hasArg("battery")) arg |= 0x400 | (server.arg("battery") == "1" ? 0x200u : 0u);
   if (job == Job::ImpulseRead && server.arg("fresh") == "1") arg = 1;
+  if (job == Job::HhtScreen) {
+    String id = server.arg("screen"); char* end = nullptr;
+    unsigned long number = strtoul(id.c_str(), &end, 10);
+    if (!id.length() || *end || number > 172 || !hht::Reader::exists(number))
+      return sendError(400,"Неизвестный экран ЭБУ");
+    arg = number;
+  }
   String text;
   if (server.hasArg("token")) {
     // TOKEN|password - the password is checked by the engine against the
@@ -663,7 +794,19 @@ static void hJob() {
     text += "|";
     text += server.arg("password");
   }
+  Engine.lock();
+  const auto* selectedRoute=scanner::route(Engine.state().module.route);
+  const bool moduleService=(job==Job::SvcPrepare || job==Job::SvcExecute) &&
+       (server.hasArg("route") || (selectedRoute && strcmp(selectedRoute->module,"HFM")));
+  if (job==Job::HhtScreen || moduleService) {
+    unsigned route=0,epoch=0;
+    if (!numberArg("route",scanner::routeCount()-1,route) || !numberArg("epoch",0xffffffffu,epoch) ||
+        int(route)!=Engine.state().module.route || epoch!=Engine.state().module.epoch) {
+      Engine.unlock();return sendError(409,"Блок изменился. Выберите его повторно");
+    }
+  }
   uint32_t id = Engine.submit(job, arg, text.c_str());
+  Engine.unlock();
   JsonWriter w;
   w.beginObject().kv("ok", id != 0).kv("id", id);
   if (!id) w.kv("error", "Очередь операций заполнена — повторите через несколько секунд");
@@ -715,6 +858,12 @@ static bool argBool(const char* k, bool cur) {
 
 static void hSettingsPost() {
   Settings& s = AppSettings;
+  if(server.hasArg("ap_pass")) {
+    if(server.arg("current_password")!=String(s.apPass[0] ? s.apPass : HFM_AP_DEFAULT_PASS))
+      return sendError(403,"Введите действующий пароль точки доступа");
+    size_t size=server.arg("ap_pass").length();
+    if(size<8 || size>=sizeof s.apPass) return sendError(400,"Проверьте длину нового пароля");
+  }
   const uint16_t oldBrk = s.breakMs;
   const uint8_t oldModem = s.ftdiModem;
   const bool oldAuto = s.wakeAuto;
@@ -818,7 +967,7 @@ static bool safePath(const String& p) {
 
 static void hFile() {
   String p = server.arg("path");
-  if (!safePath(p) || !LittleFS.exists(p)) return sendError(404, "not found");
+  if (!safePath(p) || !LittleFS.exists(p)) return sendError(404, "Не найдено");
   File f = LittleFS.open(p, "r");
   String name = p.substring(p.lastIndexOf('/') + 1);
   server.sendHeader("Content-Disposition", "attachment; filename=\"" + name + "\"");
@@ -837,7 +986,7 @@ static void hFileDelete() {
 static void hReportSave() {
   // Saves the client-provided report JSON (body) to /reports.
   String body = server.arg("plain");
-  if (body.length() < 2 || body.length() > 60000) return sendError(400, "bad body");
+  if (body.length() < 2 || body.length() > 60000) return sendError(400, "Неверный размер отчёта");
   LittleFS.mkdir("/reports");
   String name = server.hasArg("name") ? server.arg("name") : String("report");
   name.replace("/", "_");
@@ -865,8 +1014,8 @@ static void hIndex() {
 }
 
 static void hNotFound() {
-  if (server.uri().startsWith("/api/")) return sendError(404, "not found");
-  if (!AppSettings.captivePortal) return sendError(404, "not found");
+  if (server.uri().startsWith("/api/")) return sendError(404, "Не найдено");
+  if (!AppSettings.captivePortal) return sendError(404, "Не найдено");
   // Captive portal: redirect everything else to the app.
   server.sendHeader("Location", String("http://") + WiFi.softAPIP().toString() + "/", true);
   server.send(302, "text/plain", "");
@@ -901,6 +1050,10 @@ void webBegin() {
   server.on("/api/ecu", HTTP_GET, hEcu);
   server.on("/api/dtc", HTTP_GET, hDtc);
   server.on("/api/live", HTTP_GET, hLive);
+  server.on("/api/hht/screen", HTTP_GET, hHhtScreen);
+  server.on("/api/scanner/catalog", HTTP_GET, hScannerCatalog);
+  server.on("/api/scanner", HTTP_GET, hScannerStatus);
+  server.on("/api/scanner", HTTP_POST, hScannerAction);
   server.on("/api/services", HTTP_GET, hServices);
   server.on("/api/vehicles", HTTP_GET, hVehicles);
   server.on("/api/trace", HTTP_GET, hTrace);

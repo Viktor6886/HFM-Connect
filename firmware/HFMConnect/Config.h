@@ -3,7 +3,7 @@
 // See docs/HARDWARE.md for the reference schematic.
 #pragma once
 
-#define HFM_FW_VERSION "0.9.1"
+#define HFM_FW_VERSION "0.10.0"
 #define HFM_FW_NAME "HFM Connect"
 
 // ---- K-Line transport ----------------------------------------------------------
@@ -12,7 +12,9 @@
 //     and Serial log via the UART ("COM") connector, adapter on the "USB" one.
 //     The OTG port must supply 5 V VBUS to the adapter (see docs/HARDWARE.md).
 // 0 = external K-Line transceiver on UART1 (pins below).
+#ifndef HFM_TRANSPORT_FTDI
 #define HFM_TRANSPORT_FTDI 1
+#endif
 #define HFM_FTDI_LATENCY_MS 1   // FTDI latency timer: fast echo/response delivery
 // DTR/RTS default (bit0 DTR, bit1 RTS asserted): 0 = both deasserted, as the PC
 // tools that work with FT232RL KKL cables leave them (D2XX: not touched;

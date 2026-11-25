@@ -69,9 +69,27 @@ void KLineUart::drainEvents() {
   }
 }
 
+bool KLineUart::frameBaud(uint32_t baud) {
+  if (!open_) return false;
+  setParity(UART_PARITY_DISABLE);
+  return uart_set_baudrate(port_, baud) == ESP_OK;
+}
+bool KLineUart::frameBreak(bool low) {
+  if (!open_) return false;
+  lineLow(low);
+  return true;
+}
+bool KLineUart::frameWrite(uint8_t b) {
+  return open_ && uart_write_bytes(port_, &b, 1) == 1;
+}
+bool KLineUart::frameRead(uint8_t& b, uint16_t timeout) {
+  return open_ && uart_read_bytes(port_, &b, 1, pdMS_TO_TICKS(timeout)) == 1;
+}
+void KLineUart::frameDrain() { if (open_) uart_flush_input(port_); }
+
 LinkStatus KLineUart::wakeup(const LinkTiming& t, uint8_t& echo, uint8_t& sync) {
   echo = sync = 0;
-  if (!open_) return LinkStatus::LinkDown;
+  if (!open_ || !frameBaud(9600)) return LinkStatus::LinkDown;
   setParity(UART_PARITY_DISABLE);
   uart_flush_input(port_);
   lineLow(true);
@@ -112,10 +130,14 @@ LinkStatus KLineUart::wakeup(const LinkTiming& t, uint8_t& echo, uint8_t& sync) 
 }
 
 LinkStatus KLineUart::exchange(uint8_t tx, Parity p, uint16_t deadlineMs, uint8_t& echo, uint8_t& resp) {
+  receiveCount_ = 0;
   echo = resp = 0;
   if (!open_) return LinkStatus::LinkDown;
   uart_parity_t txPar = UART_PARITY_DISABLE;
-  if (p == Parity::Space) txPar = (__builtin_popcount(tx) & 1) ? UART_PARITY_ODD : UART_PARITY_EVEN;
+  if (p != Parity::None) {
+    bool odd = bool(__builtin_parity(unsigned(tx))) != (p==Parity::Mark);
+    txPar = odd ? UART_PARITY_ODD : UART_PARITY_EVEN;
+  }
   uart_flush_input(port_);
   setParity(txPar);
   uart_write_bytes(port_, (const char*)&tx, 1);
@@ -126,6 +148,7 @@ LinkStatus KLineUart::exchange(uint8_t tx, Parity p, uint16_t deadlineMs, uint8_
   uint8_t buf[2] = {0, 0};
   int n = uart_read_bytes(port_, buf, 2, pdMS_TO_TICKS(deadlineMs));
   drainEvents();
+  receiveCount_ = n>0 ? n : 0;
   if (n >= 1) echo = buf[0];
   if (n >= 2) resp = buf[1];
   if (n < 2) return LinkStatus::Timeout;

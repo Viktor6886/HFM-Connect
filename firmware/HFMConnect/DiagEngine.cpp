@@ -14,7 +14,7 @@ const char* jobCode(Job j) {
   static const char* const names[] = {"none", "connect", "disconnect", "identify", "read_dtc", "read_adapt",
                                       "read_coding", "read_vin", "live_start", "live_stop", "svc_prepare",
                                       "svc_execute", "purge_on", "purge_off", "stop", "impulse_read",
-                                      "ack_fault"};
+                                      "ack_fault", "hht_screen", "select_route", "attach_route", "module_measure", "scan_contact"};
   return names[(uint8_t)j < sizeof(names) / sizeof(names[0]) ? (uint8_t)j : 0];
 }
 
@@ -67,6 +67,7 @@ void DiagEngine::begin(Settings* s) {
   snprintf(sessionId_, sizeof sessionId_, "S%08lX", (unsigned long)esp_random());
   pinMode(HFM_WRITE_EN_PIN, INPUT_PULLUP);
   session_ = new HfmSession(*link_, trace_);
+  moduleDriver_ = new scanner::ModuleDriver(*link_,trace_);
   applySettings();
   EcuIdent none;
   prof::ResolveOptions o;
@@ -81,6 +82,7 @@ void DiagEngine::applySettings() {
   t.byteDeadlineMs = settings_->byteTimeoutMs;
   t.resyncSilenceMs = HFM_RESYNC_SILENCE_MS;
   session_->setTiming(t);
+  moduleDriver_->setTiming(t);
   session_->setExperimentalReads(settings_->experimentalReads);
   session_->setVdoReads(st_.profile.vdoUnits);
   if (ftdi_)
@@ -112,7 +114,7 @@ uint32_t DiagEngine::submit(Job j, uint32_t arg, const char* text) {
   const bool hasText = text && text[0];
   // Merge with an identical waiting job; a Connect also with the running one.
   for (uint8_t i = 0; i < qCount_ && !hasText; i++)
-    if (q_[i].job == j && q_[i].arg == arg) {
+    if (q_[i].job == j && q_[i].arg == arg && q_[i].epoch == st_.module.epoch) {
       uint32_t id = q_[i].id;
       unlock();
       return id;
@@ -139,6 +141,7 @@ uint32_t DiagEngine::submit(Job j, uint32_t arg, const char* text) {
   qj.job = j;
   qj.arg = arg;
   qj.id = id;
+  qj.epoch = st_.module.epoch;
   strlcpy(qj.text, text ? text : "", sizeof qj.text);
   if (urgent) {
     memmove(&q_[1], &q_[0], qCount_ * sizeof(QJob));
@@ -166,10 +169,13 @@ void DiagEngine::finishJob(bool ok, const char* msg) {
   st_.job.finishedMs = millis();
   JobInfo* r = ringFind(st_.job.id);
   if (r) *r = st_.job;
-  st_.session = session_->state();
-  st_.lastError = session_->lastError();
-  st_.txCount = session_->txCount();
-  st_.errCount = session_->errorCount();
+  const auto* route=scanner::route(st_.module.route);
+  if(!route || !strcmp(route->module,"HFM")) {
+    st_.session = session_->state();
+    st_.lastError = session_->lastError();
+    st_.txCount = session_->txCount();
+    st_.errCount = session_->errorCount();
+  }
   unlock();
 }
 
@@ -207,6 +213,9 @@ void DiagEngine::readHardware() {
       // Adapter re-attached / removed: the session is gone. Live Data stays
       // wanted and resumes after the automatic reconnection.
       session_->disconnect();
+      moduleDriver_->close(); hhtReader_.reset();
+      ++st_.module.epoch; st_.module.readout={}; st_.hhtScreen={};
+      st_.dtc.invalidate(); st_.vin={}; st_.adapt={}; st_.coding={}; st_.ident={};
       guard_.cancel();
       if (guard_.state() == guard::State::Active) guard_.finish(false);
       st_.plan = guard_.plan();
@@ -256,7 +265,13 @@ uint8_t DiagEngine::vehicleCylinders() {
 }
 
 void DiagEngine::reresolveProfile() {
+  lock(); settingsDirty_=true; unlock();
+}
+
+void DiagEngine::applyPendingSettings() {
   lock();
+  if (!settingsDirty_ || (guard_.state()!=guard::State::Idle && guard_.state()!=guard::State::FaultStop)) {unlock();return;}
+  settingsDirty_=false;
   prof::ResolveOptions o;
   o.experimentalReads = settings_->experimentalReads;
   o.engineerMode = settings_->engineerMode;
@@ -321,6 +336,7 @@ static void rememberEcu(Settings* st, const char* fp, uint8_t set, uint8_t clear
 }
 
 void DiagEngine::doIdentify(char* msg, size_t n, bool& ok) {
+  hhtReader_.reset();
   uint8_t raw[28];
   LinkStatus s = session_->readIdent(raw, 28);
   ok = s == LinkStatus::Ok;
@@ -352,10 +368,11 @@ void DiagEngine::doIdentify(char* msg, size_t n, bool& ok) {
     }
   }
   lock();
-  if (ok) {
-    if (strcmp(st_.ident.fingerprint, id.fingerprint) != 0) {
+  st_.hhtScreen = {};
+  {
+    if (!ok || strcmp(st_.ident.fingerprint, id.fingerprint) != 0) {
       // Another ECU: results of the previous one are not valid for it.
-      st_.dtc = DtcView();
+      st_.dtc.invalidate();
       st_.adapt = svc::Adaptations();
       st_.coding = svc::Coding();
       st_.vin = svc::Vin();
@@ -400,18 +417,19 @@ bool DiagEngine::readDtc(char* msg, size_t n, bool automatic) {
   bool ext = st_.profile.caps[prof::F_DTC_EXTENDED].allowed;
   // The experimental extended bytes are optional: the engine's own reads leave
   // them out once they were not answered by this ECU.
-  if (automatic && st_.feat[prof::F_DTC_EXTENDED].state == 2) ext = false;
+
   unlock();
   svc::FaultMemory fm;
   LinkStatus s = svc::readFaultMemory(*session_, fm, ext);
-  bool ok = fm.valid;
+  bool ok = fm.valid && (!ext || fm.extValid);
+  if(!ok) {lock();st_.dtc.invalidate();unlock();}
   if (ok) {
     lock();
     st_.dtc.fm = fm;
     st_.dtc.valid = true;
     st_.dtc.automatic = automatic;
     st_.dtc.tMs = millis();
-    st_.dtc.count = decodeAll(fm, st_.profile, st_.dtc.items, 48);
+    st_.dtc.count = decodeAll(fm, st_.profile, st_.dtc.items, DtcView::capacity);
     st_.dtc.inferred = dtc::inferBankMapping(st_.dtc.items, st_.dtc.count);
     if (st_.dtc.count) snprintf(msg, n, "Память неисправностей прочитана: записей %u", st_.dtc.count);
     else snprintf(msg, n, "Память неисправностей прочитана: записей нет");
@@ -501,6 +519,7 @@ void DiagEngine::fillFacts(guard::Facts& f) {
     f.faultMemNonZero = false;
     for (int i = 0; i < 16; i++)
       if (st_.dtc.fm.bankA[i] || st_.dtc.fm.bankB[i]) f.faultMemNonZero = true;
+    if(st_.dtc.fm.extValid) for(auto b:st_.dtc.fm.ext) if(b) f.faultMemNonZero=true;
   }
   if (st_.adapt.valid) f.adaptAgeMs = now - st_.adapt.tMs;
 }
@@ -535,8 +554,19 @@ void DiagEngine::refreshEngineState() {
 }
 
 static uint16_t decodeAll(const svc::FaultMemory& fm, const prof::EcuProfile& p, dtc::Decoded* out, uint16_t max) {
-  uint16_t n = dtc::decodeBank(fm.bankA, 0x00, p.variant, out, max);
-  n += dtc::decodeBank(fm.bankB, 0x10, p.variant, out + n, (uint16_t)(max - n));
+  const bool factory=p.bankMappingConf==Confidence::REK && p.variant.cylinders;
+  uint8_t stored[16], current[16];
+  memcpy(stored,fm.bankA,16); memcpy(current,fm.bankB,16);
+  if (factory) {
+    if (!fm.extValid) current[15]&=0x80;
+    if (p.variant.manufacturer==1 && p.variant.cylinders==6 && p.variant.diagRaw<0x42) {
+      stored[2]&=0xef; current[2]&=0xef;
+    }
+  }
+  uint16_t n=dtc::decodeBank(stored,0,p.variant,out,max,16,0,factory);
+  if (fm.extValid) n+=dtc::decodeBank(fm.ext,0x30,p.variant,out+n,max-n,3,16,factory);
+  n+=dtc::decodeBank(current,0x10,p.variant,out+n,max-n,16,0,factory);
+  if (fm.extValid) n+=dtc::decodeBank(fm.ext+3,0x40,p.variant,out+n,max-n,3,16,factory);
   return n;
 }
 
@@ -550,6 +580,7 @@ void DiagEngine::execute(Job j, uint32_t arg, const char* text) {
   if (rj) *rj = st_.job;
   unlock();
 
+  if (scannerJob(j,arg,text,msg,sizeof msg,ok)) {finishJob(ok,msg); return;}
   switch (j) {
     case Job::Connect:
       userDisconnected_ = false;
@@ -593,6 +624,14 @@ void DiagEngine::execute(Job j, uint32_t arg, const char* text) {
       session_->disconnect();
       snprintf(msg, sizeof msg, "Отключено (автоподключение приостановлено до нажатия «Подключить»)");
       break;
+    case Job::HhtScreen: {
+      hht::Reading sample;
+      const auto status = hhtReader_.read(*session_, st_.ident, arg, sample);
+      lock(); st_.hhtScreen = sample; unlock();
+      ok = status == LinkStatus::Ok;
+      snprintf(msg,sizeof msg,"%s",ok ? "Параметры прочитаны" : "Экран недоступен для этого ЭБУ или обмен прерван");
+      break;
+    }
     case Job::Identify:
       if (!ensureConnected(msg, sizeof msg)) { ok = false; break; }
       doIdentify(msg, sizeof msg, ok);
@@ -607,10 +646,19 @@ void DiagEngine::execute(Job j, uint32_t arg, const char* text) {
     case Job::ReadAdapt: {
       if (!ensureConnected(msg, sizeof msg) || !can(prof::F_ADAPT_READ, msg, sizeof msg)) { ok = false; break; }
       svc::Adaptations a;
-      LinkStatus s = svc::readAdaptations(*session_, a);
+      LinkStatus s;
+      if (st_.ident.hhtCylinders) {
+        hht::Reading idle, lower, upper;
+        s = hhtReader_.read(*session_,st_.ident,50,idle);
+        if (s==LinkStatus::Ok) s=hhtReader_.read(*session_,st_.ident,51,lower);
+        if (s==LinkStatus::Ok) s=hhtReader_.read(*session_,st_.ident,52,upper);
+        a.valid = s==LinkStatus::Ok && (idle.words.valid & lower.words.valid & upper.words.valid & 1);
+        a.fromHht=true; a.tMs=millis();
+        if (a.valid) { a.idleKgH=idle.words.values[0]/10.f; a.lower=lower.words.values[0]/100.f; a.upper=upper.words.values[0]/100.f; }
+      } else s=svc::readAdaptations(*session_,a);
       ok = a.valid;
       lock();
-      if (ok || a.echo) st_.adapt = a;
+      st_.adapt = a;
       unlock();
       if (a.echo) {
         snprintf(msg, sizeof msg, "Этот ЭБУ не выдаёт самоадаптации: на запрос 24:90/92/93 он вернул сами адреса "
@@ -630,10 +678,16 @@ void DiagEngine::execute(Job j, uint32_t arg, const char* text) {
     case Job::ReadCoding: {
       if (!ensureConnected(msg, sizeof msg) || !can(prof::F_CODING_READ, msg, sizeof msg)) { ok = false; break; }
       svc::Coding c;
-      LinkStatus s = svc::readCoding(*session_, c);
+      LinkStatus s;
+      if (st_.ident.hhtCylinders) {
+        c.factory=true; c.threeBytes=st_.ident.diagIndexRaw>=0x45;
+        s=hhtReader_.coding(*session_,st_.ident,c.bytes,c.flags,c.ack);
+        c.valid=s==LinkStatus::Ok; c.tMs=millis();
+        if (!c.threeBytes && st_.ident.vendorId==1 && c.valid) c.info=hfm::decodeCoding(c.flags,c.ack);
+      } else s=svc::readCoding(*session_,c);
       ok = c.valid;
       lock();
-      if (ok || c.echo) st_.coding = c;
+      st_.coding = c;
       unlock();
       if (c.echo) {
         snprintf(msg, sizeof msg, "Этот ЭБУ не выдаёт байт кодировки: на запрос 27:02 / 24:F0 он вернул сами адреса "
@@ -672,8 +726,12 @@ void DiagEngine::execute(Job j, uint32_t arg, const char* text) {
         ok = false;
         break;
       }
+      if (v.invalidCharacters) {
+        snprintf(msg,sizeof msg,"Суффикс VIN содержит недопустимые символы");
+        featMark(prof::F_VIN_READ,false); ok=false; break;
+      }
       if (!ok) recoverRead();
-      snprintf(msg, sizeof msg, ok ? (v.valid ? "VIN прочитан" : "VIN в ЭБУ не записан (00/FF)")
+      snprintf(msg, sizeof msg, ok ? (v.valid ? "Прочитаны 14 символов VIN" : "VIN в ЭБУ не записан (00/FF)")
                                    : "Ошибка чтения VIN (%s)", linkStatusCode(s));
       featMark(prof::F_VIN_READ, ok);
       break;
@@ -858,7 +916,7 @@ void DiagEngine::execute(Job j, uint32_t arg, const char* text) {
           st_.dtc.valid = true;
           st_.dtc.automatic = false;
           st_.dtc.tMs = millis();
-          st_.dtc.count = decodeAll(after, st_.profile, st_.dtc.items, 48);
+          st_.dtc.count = decodeAll(after, st_.profile, st_.dtc.items, DtcView::capacity);
           st_.dtc.inferred = dtc::inferBankMapping(st_.dtc.items, st_.dtc.count);
           left = st_.dtc.count;
         }
@@ -1186,6 +1244,11 @@ void DiagEngine::purgeWatchdog() {
 
 bool DiagEngine::startRecording() {
   lock();
+  const auto* route=scanner::route(st_.module.route);
+  bool other=route && strcmp(route->module,"HFM");
+  unlock();
+  if (other) return false;
+  lock();
   if (st_.recording) { unlock(); return true; }
   LittleFS.mkdir("/rec");
   snprintf(st_.recordFile, sizeof st_.recordFile, "/rec/%s_%lu.csv", sessionId_, (unsigned long)(millis() / 1000));
@@ -1375,6 +1438,7 @@ void DiagEngine::persistLearned() {
 void DiagEngine::run() {
   for (;;) {
     readHardware();
+    applyPendingSettings();
     QJob qj;
     bool have = false;
     lock();
@@ -1392,10 +1456,14 @@ void DiagEngine::run() {
     bool liveOn = st_.liveActive;
     unlock();
     if (have) {
-      execute(qj.job, qj.arg, qj.text);
+      if (qj.epoch!=st_.module.epoch && qj.job!=Job::Stop && qj.job!=Job::Disconnect)
+        finishJob(false,"Отменено после смены диагностического блока");
+      else execute(qj.job, qj.arg, qj.text);
       // The text of a service job carries the password: not kept anywhere.
       volatile char* t = qj.text;
       for (size_t i = 0; i < sizeof qj.text; i++) t[i] = 0;
+    } else if (const auto* route=scanner::route(st_.module.route); route && strcmp(route->module,"HFM")) {
+      scannerTick();
     } else if (session_->ready()) {
       // A re-read of the fault memory that is still due (recovery inside a
       // job, repeated attempt) comes first; otherwise polling / keep-alive.
@@ -1408,7 +1476,8 @@ void DiagEngine::run() {
     }
     purgeWatchdog();
     persistLearned();
-    updateLink();
+    const auto* route=scanner::route(st_.module.route);
+    if (!route || !strcmp(route->module,"HFM")) updateLink();
     uint32_t now = millis();
     if (st_.recording && now - lastFlushMs_ > HFM_RECORD_FLUSH_MS) {
       lastFlushMs_ = now;

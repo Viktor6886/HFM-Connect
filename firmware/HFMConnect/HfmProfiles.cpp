@@ -221,13 +221,9 @@ void resolve(const EcuIdent& id, const ResolveOptions& opt, EcuProfile& p) {
 
   // Commands for which no transaction is known at all: always blocked.
   setCap(p, F_VERSION_CODING_WRITE, false, Confidence::BLOCK,
-         "Недоступно: в заводском тестере это экран «Variantencodierung», но последовательность байтов "
-         "его команды не восстановлена ни из одного источника. Код можно сохранить в устройстве для архива "
-         "(«Ввод в эксплуатацию»).");
+         "Запись кодировки требует ответа авторизованного адаптера на запрос текущего ЭБУ. Для данного кабеля источник ответа отсутствует.");
   setCap(p, F_THROTTLE_LEARN, false, Confidence::BLOCK,
-         "Недоступно: отдельной команды нет — заводской тестер обучает упор заслонки в составе "
-         "«Variantencodierung», байты которой не восстановлены. Датчик заслонки и контакты ХХ / полной "
-         "нагрузки проверяются по Live Data («Исполнительные тесты»).");
+         "Для обучения упора требуется процедура ввода в эксплуатацию с авторизованным адаптером. Положение и признак обучения доступны на экранах диагностики.");
   setCap(p, F_IDENT, true, Confidence::REK, "");
   setCap(p, F_IMPULSE_READ, true, Confidence::ZAV,
          "Заводская процедура: ЭБУ до конца 1995 модельного года (diagnosis version ≤ 46), кроме W210");
@@ -238,7 +234,7 @@ void resolve(const EcuIdent& id, const ResolveOptions& opt, EcuProfile& p) {
   const bool bosch = id.present && id.vendorId == 1;
   const bool vdo = id.present && id.vendorId == 2;
   int16_t di = id.diagIndexBcd;
-  bool hfmRange = di >= 40 && di <= 59;
+  bool hfmRange = (di >= 40 && di <= 59) || id.hhtCylinders;
   bool pmsRange = di >= 60 && di <= 79;
 
   if (!id.present) {
@@ -294,7 +290,11 @@ void resolve(const EcuIdent& id, const ResolveOptions& opt, EcuProfile& p) {
   }
   if (id.present) p.variant.diagRaw = id.diagIndexRaw;
   p.variant.manufacturer = bosch ? 1 : 0;  // DTC maps: B = Bosch, otherwise vendor V
-  p.variant.cylinders = opt.cylinders;
+  p.variant.cylinders = id.hhtCylinders ? id.hhtCylinders : opt.cylinders;
+  if (id.hhtCylinders) {
+    p.bankMapping = dtc::BankMapping::AStoredBCurrent;
+    p.bankMappingConf = Confidence::REK;
+  }
 
   bool readOk = p.resolved || (id.present && !pmsRange && opt.experimentalReads);
   Confidence readConf = p.resolved ? Confidence::REK : Confidence::GIP;
@@ -312,7 +312,8 @@ void resolve(const EcuIdent& id, const ResolveOptions& opt, EcuProfile& p) {
   const char* expReason = readOk ? "Включается в настройках: «Экспериментальное чтение» (адреса и формулы — кандидаты)"
                                  : readReason;
   setCap(p, F_LIVE_EXTENDED, expOk, Confidence::GIP, expOk ? "" : expReason);
-  setCap(p, F_DTC_EXTENDED, expOk, Confidence::GIP, expOk ? "" : expReason);
+  setCap(p, F_DTC_EXTENDED, vdo && id.hhtCylinders && id.diagIndexRaw >= 0x49, Confidence::REK,
+         "Расширенная карта неисправностей применяется для VDO с индексом 49h и выше");
   // VIN is a read; ECUs without the service do not acknowledge F9 - the engine
   // then marks it as not supported and resumes the session (D-034).
   setCap(p, F_VIN_READ, readOk, Confidence::GIP, readReason);
@@ -324,7 +325,7 @@ void resolve(const EcuIdent& id, const ResolveOptions& opt, EcuProfile& p) {
   // ECU itself confirms each step (ACK and complement replies); a refusal
   // stops the sequence.
   const char* wrReason;
-  bool wr = p.resolved;
+  bool wr = p.resolved && id.hhtCylinders;
   if (!id.present) wrReason = "Сначала подключитесь к ЭБУ";
   else if (!p.resolved) wrReason = "Недоступно: ЭБУ не распознан как HFM-SFI (Bosch/VDO, diag 40–59) — команды записи "
                                    "разрешены только для идентифицированного блока";

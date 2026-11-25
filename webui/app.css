@@ -228,3 +228,12 @@ body.sheet-on .toast{top:calc(10px + env(safe-area-inset-top));bottom:auto;anima
   .card,.list{box-shadow:none;border:1px solid #ccc}
 }
 @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+
+.scan-flow{display:grid;gap:14px}
+.scan-flow label{display:grid;gap:6px;color:var(--text2);font-size:.94rem}
+.scan-flow select,.scan-flow input[type=number]{display:block;box-sizing:border-box;width:100%;min-width:0;max-width:100%;padding:10px;border:1px solid var(--sep);background:var(--card2);color:var(--text);border-radius:9px;font:inherit}
+#scanRoute{display:grid;gap:12px;min-width:0}
+.scan-flow .scan-confirm{display:flex;align-items:flex-start;gap:8px;line-height:1.45}
+#scanResults .card,#scanSummary{margin-top:12px;min-width:0;overflow-wrap:anywhere}
+.scan-bytes{line-height:1.65;overflow-wrap:anywhere}
+.scan-chart{display:block;width:100%;height:48px;margin-top:8px}

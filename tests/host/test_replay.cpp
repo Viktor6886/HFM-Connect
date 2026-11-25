@@ -120,10 +120,11 @@ static const char* kGolden = HFM_TRACE_DIR "/sim_connect_ident_dtc_live.jsonl";
 
 TEST(golden_trace_is_reproducible) {
   std::string rec = recordSimSession();
+  const char* current=HFM_TRACE_DIR "/sim_connect_ident_dtc_live_v2.jsonl";
   if (getenv("HFM_REGEN_TRACES")) {
-    std::ofstream(kGolden, std::ios::binary) << rec;
+    std::ofstream(current, std::ios::binary) << rec;
   }
-  std::ifstream f(kGolden, std::ios::binary);
+  std::ifstream f(current, std::ios::binary);
   std::stringstream ss;
   ss << f.rdbuf();
   CHECK(!ss.str().empty());

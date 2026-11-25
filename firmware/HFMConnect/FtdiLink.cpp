@@ -582,7 +582,7 @@ bool FtdiLink::ctrl(uint8_t request, uint16_t value, uint16_t index) {
 bool FtdiLink::setLine(Parity p, bool brk) {
   if (lineKnown_ && p == curParity_ && brk == curBreak_) return true;
   // 8 data bits, 1 stop bit; parity NONE (0) or SPACE (4); bit 14 = BREAK.
-  uint16_t v = (uint16_t)(8 | ((p == Parity::Space ? 4 : 0) << 8) | (brk ? (1u << 14) : 0));
+  uint16_t v = (uint16_t)(8 | ((p == Parity::Mark ? 3 : p == Parity::Space ? 4 : 0) << 8) | (brk ? (1u << 14) : 0));
   if (!ctrl(SIO_SET_DATA, v, port_)) return false;
   curParity_ = p;
   curBreak_ = brk;
@@ -590,8 +590,8 @@ bool FtdiLink::setLine(Parity p, bool brk) {
   return true;
 }
 
-bool FtdiLink::setBaud9600() {
-  uint32_t enc = ftdiDivisor(9600);
+bool FtdiLink::setBaud(uint32_t baud) {
+  uint32_t enc = ftdiDivisor(baud);
   uint16_t bValue = (uint16_t)(enc & 0xFFFF);
   uint16_t bIndex = isMultiPort(bcd_) ? (uint16_t)(((enc >> 8) & 0xFF00) | port_) : (uint16_t)(enc >> 16);
   return ctrl(SIO_SET_BAUDRATE, bValue, bIndex);
@@ -615,7 +615,7 @@ bool FtdiLink::configure() {
   portENTER_CRITICAL(&wakeMux_);
   uint8_t modem = planner_.count() ? planner_.current().modem : wakeUser_.modem;
   portEXIT_CRITICAL(&wakeMux_);
-  bool ok = ctrl(SIO_RESET, SIO_RESET_SIO, port_) && ctrl(SIO_SET_FLOW_CTRL, 0, port_) && setBaud9600() &&
+  bool ok = ctrl(SIO_RESET, SIO_RESET_SIO, port_) && ctrl(SIO_SET_FLOW_CTRL, 0, port_) && setBaud(9600) &&
             ctrl(SIO_SET_LATENCY_TIMER, HFM_FTDI_LATENCY_MS, port_) && setModemLines(modem) &&
             ctrl(SIO_RESET, SIO_RESET_PURGE_RX, port_) && ctrl(SIO_RESET, SIO_RESET_PURGE_TX, port_);
   lineKnown_ = false;
@@ -642,6 +642,26 @@ void FtdiLink::close() {
   open_ = false;
 }
 
+bool FtdiLink::frameBaud(uint32_t baud) {
+  IoGuard guard(ioMtx_);
+  return open_ && attached_ && setBaud(baud) && setLine(Parity::None, false);
+}
+bool FtdiLink::frameBreak(bool low) {
+  IoGuard guard(ioMtx_);
+  return open_ && attached_ && setLine(Parity::None, low);
+}
+bool FtdiLink::frameWrite(uint8_t b) {
+  IoGuard guard(ioMtx_);
+  return open_ && attached_ && writeByte(b);
+}
+bool FtdiLink::frameRead(uint8_t& b, uint16_t timeout) {
+  IoGuard guard(ioMtx_);
+  return open_ && attached_ && readBytes(&b, 1, timeout) == 1;
+}
+void FtdiLink::frameDrain() {
+  IoGuard guard(ioMtx_);
+  if (open_ && attached_) purgeRx();
+}
 void FtdiLink::purgeRx() {
   uint8_t tmp[64];
   while (xStreamBufferReceive(rx_, tmp, sizeof tmp, 0) > 0) {
@@ -688,7 +708,7 @@ bool FtdiLink::Line::setBreak(bool on) { return f_.setLine(Parity::None, on); }
 bool FtdiLink::Line::setSpace9600() {
   // The tester applies baud rate and data format again after the BREAK.
   f_.lineKnown_ = false;
-  return f_.setBaud9600() && f_.setLine(Parity::Space, false);
+  return f_.setBaud(9600) && f_.setLine(Parity::Space, false);
 }
 bool FtdiLink::Line::write(uint8_t b) { return f_.writeByte(b); }
 int FtdiLink::Line::read(uint8_t& b, uint32_t timeoutMs) {
@@ -831,6 +851,7 @@ LinkStatus FtdiLink::wakeup(const LinkTiming& t, uint8_t& echo, uint8_t& sync) {
 }
 
 LinkStatus FtdiLink::exchange(uint8_t tx, Parity p, uint16_t deadlineMs, uint8_t& echo, uint8_t& resp) {
+  receiveCount_ = 0;
   if (!ioMtx_) return LinkStatus::LinkDown;
   IoGuard guard(ioMtx_);
   echo = resp = 0;
@@ -841,6 +862,7 @@ LinkStatus FtdiLink::exchange(uint8_t tx, Parity p, uint16_t deadlineMs, uint8_t
   if (!setLine(p, false) || !writeByte(tx)) return attached_ ? LinkStatus::Timeout : LinkStatus::LinkDown;
   uint8_t buf[2] = {0, 0};
   int n = readBytes(buf, 2, deadlineMs);
+  receiveCount_ = n>0 ? n : 0;
   if (n >= 1) echo = buf[0];
   if (n >= 2) resp = buf[1];
   if (!attached_) return LinkStatus::LinkDown;

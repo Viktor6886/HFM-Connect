@@ -53,7 +53,9 @@ inline bool repliesEchoRequest(const uint8_t* req, const uint8_t* reply, uint8_t
   return true;
 }
 
+namespace hht { class Reader; }
 class HfmSession {
+  friend class hht::Reader;
  public:
   HfmSession(ByteLink& link, TraceLog& trace) : link_(link), trace_(trace) {}
 

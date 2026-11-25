@@ -42,6 +42,15 @@ class ByteLink {
   virtual LinkStatus exchange(uint8_t tx, Parity p, uint16_t deadlineMs, uint8_t& echo,
                               uint8_t& resp) = 0;
 
+  // Raw 8N1 transport for framed protocols; independent of the KS-3 echo/reply pair.
+  virtual bool frameBaud(uint32_t) { return false; }
+  virtual bool frameBreak(bool) { return false; }
+  virtual bool frameWrite(uint8_t) { return false; }
+  virtual bool frameRead(uint8_t&, uint16_t) { return false; }
+  virtual void frameDrain() {}
+
+  // Number of actual echo/reply bytes from the last exchange; -1 for old replay adapters.
+  virtual int receiveCount() const { return -1; }
   virtual void sleepMs(uint32_t ms) = 0;
   virtual uint32_t nowMs() = 0;
   // Monotonic microseconds for trace timestamps.

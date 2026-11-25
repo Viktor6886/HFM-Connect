@@ -190,7 +190,8 @@ TEST(profile_generic_bosch_services_follow_identification) {
   parseIdent(raw, 28, id);
   prof::resolve(id, o, p);
   CHECK(p.bankMapping == dtc::BankMapping::AStoredBCurrent);
-  CHECK(p.bankMappingConf == Confidence::GIP);
+  CHECK(p.bankMappingConf == Confidence::REK);
+  CHECK_EQ(p.variant.cylinders, 6);
   CHECK_EQ(p.variant.diagRaw, 0x45);
   CHECK(!p.vdoCandidate);
 }

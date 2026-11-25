@@ -1,5 +1,9 @@
 # Сборка и загрузка прошивки
 
+## Готовая прошивка 0.10.0
+
+Файл [HFM-Connect-ESP32S3-full.bin](https://github.com/Viktor6886/HFM-Connect/releases/download/v0.10.0/HFM-Connect-ESP32S3-full.bin) — полный образ на 4 МиБ для ESP32‑S3 с USB‑адаптером FTDI и поддержкой OLED. В инструменте записи укажите ESP32‑S3, один файл и начальный адрес **0x0**. В образ входят загрузчик, таблица разделов и приложение со встроенным WebUI. Перед записью скачайте нужные журналы и отчёты. Полный образ заменяет первые 4 МиБ, включая NVS и LittleFS.
+
 ## Arduino IDE (основной способ)
 
 1. Установите **Arduino IDE 2.x**.
@@ -8,8 +12,7 @@
 3. *Инструменты → Плата → Менеджер плат* → установите **esp32 by Espressif Systems**
    версии **3.x** (проверено на 3.3.8).
 4. Откройте `firmware/HFMConnect/HFMConnect.ino`. Все модули `.h/.cpp` лежат в той же
-   папке и откроются как вкладки. **Внешние библиотеки не нужны** (используются только
-   WebServer, WiFi, DNSServer, ESPmDNS, LittleFS, Preferences из состава ядра).
+   папке и откроются как вкладки. Для штатной сборки с OLED установите **U8g2** через менеджер библиотек. Драйверы Wi-Fi, USB Host и LittleFS поставляются с ядром ESP32.
 5. Настройки платы (*Инструменты*):
 
 | Параметр | Значение |
@@ -81,14 +84,9 @@ python tools/build_webui.py
 ## arduino-cli (CI и командная строка)
 
 ```bash
-arduino-cli core install esp32:esp32
-arduino-cli lib install U8g2
-# с дисплеем (по умолчанию)
-arduino-cli compile --fqbn esp32:esp32:esp32s3:PartitionScheme=huge_app,CDCOnBoot=default firmware/HFMConnect
-# без дисплея (с 0.9.1 тоже только Huge APP: в Default 4MB не помещается)
-arduino-cli compile --fqbn esp32:esp32:esp32s3:PartitionScheme=huge_app,CDCOnBoot=default \
-  --build-property "compiler.cpp.extra_flags=-DHFM_OLED_ENABLE=0" firmware/HFMConnect
-arduino-cli upload  --fqbn esp32:esp32:esp32s3:PartitionScheme=huge_app -p COM5 firmware/HFMConnect
+arduino-cli core install esp32:esp32@3.3.8
+arduino-cli lib install U8g2@2.35.30
+arduino-cli compile --fqbn esp32:esp32:esp32s3:PartitionScheme=huge_app,CDCOnBoot=default --build-path build/fw firmware/HFMConnect
 ```
 
 ## Host-тесты (без ESP32)
@@ -103,16 +101,13 @@ python tools/run_host_tests.py
 
 ## Сохранение настроек при обновлении прошивки
 
-Все настройки (тайминги, Wi-Fi, автомобиль и дата выпуска, тема, параметры графика Live
+При обычной загрузке приложения из Arduino IDE настройки (тайминги, Wi-Fi, автомобиль и дата выпуска, тема, параметры графика Live
 Data, 9-значный код, рабочий профиль пробуждения, сведения о ЭБУ) хранятся в NVS ESP32-S3 и
-переживают перепрошивку. Не включайте в Arduino IDE «Erase All Flash Before Sketch Upload»:
+сохраняются при той же схеме разделов. Не включайте в Arduino IDE «Erase All Flash Before Sketch Upload»:
 этот пункт стирает NVS.
 
 ## Запас памяти программы
 
-С 0.8.0 сборка с OLED-дисплеем идёт со схемой Huge APP (43 % из 3 МБ). Без дисплея
-с 0.9.1 прошивка в раздел схемы «Default 4MB with spiffs» не помещается (1 311 016 Б при
-пределе 1 310 720 Б) — обе сборки только со схемой Huge APP. При переходе на
-*Tools → Partition Scheme → Huge APP (3MB No OTA/1MB SPIFFS)*:
-раздел NVS остаётся на месте (настройки сохраняются), LittleFS форматируется заново
-(записи и отчёты на устройстве будут удалены — скачайте их заранее).
+Для выпуска 0.10.0 используется схема **Huge APP**. Раздел приложения занимает 3 145 728 байт. Точный размер прошивки и объём статической памяти приведены в [отчёте выпуска](SCANNER_RU.md).
+
+Arduino CLI помещает полный образ в файл `build/fw/HFMConnect.ino.merged.bin`. Это файл для записи с адреса 0x0.

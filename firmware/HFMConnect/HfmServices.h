@@ -28,6 +28,7 @@ LinkStatus readFaultMemory(HfmSession& s, FaultMemory& fm, bool extended);
 
 struct Adaptations {
   bool valid = false;
+  bool fromHht = false;
   uint8_t rawIdle = 0, rawLower = 0, rawUpper = 0;
   float idleKgH = 0;      // Bosch formula; VDO units unknown -> show RAW
   float lower = 1.0f, upper = 1.0f;
@@ -39,6 +40,8 @@ LinkStatus readAdaptations(HfmSession& s, Adaptations& a);
 struct Coding {
   bool valid = false;
   hfm::CodingInfo info;
+  bool factory=false, threeBytes=false;
+  uint8_t bytes[3]{}, flags=0, ack=0;
   bool echo = false;      // ECU repeated the addresses 02/F0: not supported (D-034)
   uint32_t tMs = 0;
 };
@@ -51,6 +54,7 @@ struct Vin {
   uint8_t len = 0;
   bool notStored = false;   // first byte 00/FF: no VIN in this ECU
   bool unsupported = false; // F9 not accepted (wrong ACK / no answer to the prefix)
+  bool invalidCharacters = false;
   uint8_t ackSeen = 0;      // what the ECU answered instead of the ACK 06
 };
 LinkStatus readVin(HfmSession& s, Vin& v);

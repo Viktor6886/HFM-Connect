@@ -5,6 +5,8 @@
 #ifdef ARDUINO
 #include <Arduino.h>
 
+#include "HhtReader.h"
+#include "ModuleDriver.h"
 #include "DtcRefresh.h"
 #include "HfmLive.h"
 #include "HfmServices.h"
@@ -18,7 +20,7 @@ class FtdiLink;
 
 enum class Job : uint8_t {
   None, Connect, Disconnect, Identify, ReadDtc, ReadAdapt, ReadCoding, ReadVin,
-  LiveStart, LiveStop, SvcPrepare, SvcExecute, PurgeOn, PurgeOff, Stop, ImpulseRead, AckFault
+  LiveStart, LiveStop, SvcPrepare, SvcExecute, PurgeOn, PurgeOff, Stop, ImpulseRead, AckFault, HhtScreen, SelectRoute, AttachRoute, ModuleMeasure, ScanContact
 };
 const char* jobCode(Job j);
 
@@ -46,7 +48,11 @@ struct FeatRun {
 struct DtcView {
   bool valid = false;
   svc::FaultMemory fm;
-  dtc::Decoded items[48];
+  static constexpr unsigned capacity=304; // 19 bytes x 8 bits x two banks
+  dtc::Decoded items[capacity];
+  void invalidate() {
+    valid=false;count=0;tMs=0;automatic=false;inferred=dtc::BankMapping::Unknown;fm={};
+  }
   uint16_t count = 0;
   dtc::BankMapping inferred = dtc::BankMapping::Unknown;  // OEM intermittent rule
   uint32_t tMs = 0;
@@ -85,7 +91,27 @@ struct AdapterInfo {
   uint32_t wakeAttempts = 0;
 };
 
+struct ModuleState {
+  int16_t route=-1;
+  uint32_t epoch=1, baud=9600;
+  uint8_t contact=0;
+  bool confirmed=false;
+  scanner::FrameError error=scanner::FrameError::Ok;
+  scanner::Readout readout;
+};
+struct ScanRecord {
+  int16_t route=-1;
+  uint8_t contact=0,count=0;
+  bool identified=false,complete=false;
+  scanner::FrameError error=scanner::FrameError::Ok;
+  uint16_t codes[64]{};
+  uint32_t time=0;
+};
 struct EngineState {
+  ModuleState module;
+  ScanRecord beforeModuleClear;
+  ScanRecord scans[64];
+  uint8_t scanCount=0;
   // link/session
   LinkPhase link = LinkPhase::Idle;
   char linkMsg[200] = {0};
@@ -106,6 +132,7 @@ struct EngineState {
   svc::Adaptations adapt;
   svc::Coding coding;
   svc::Vin vin;
+  hht::Reading hhtScreen;
   bool liveActive = false;      // polling wanted by the user (kept while the link recovers)
   live::Snapshot snap;          // last poll cycle (may be partial)
   live::Decoded live;           // last COMPLETE cycle (kept when a cycle fails)
@@ -164,6 +191,12 @@ class DiagEngine {
 
  private:
   void run();
+  void selectRoute(int id,char* msg,size_t n,bool& ok);
+  bool scannerJob(Job j,uint32_t arg,const char* text,char* msg,size_t n,bool& ok);
+  void scannerTick();
+  void moduleClear(Job job,uint32_t arg,const char* text,const scanner::Profile& profile,char* msg,size_t size,bool& ok);
+  void storeScan(int id,const scanner::Readout& read,scanner::FrameError error);
+  void scanContact(char* msg,size_t n,bool& ok);
   void execute(Job j, uint32_t arg, const char* text);
   bool ensureConnected(char* msg, size_t n);
   void doConnect(char* msg, size_t n, bool& ok, uint8_t attempts = 0);
@@ -195,6 +228,7 @@ class DiagEngine {
   void readHardware();
   void recordRow();
   void applySettings();
+  void applyPendingSettings();
   bool can(uint8_t feature, char* msg, size_t n);
 
   Settings* settings_ = nullptr;
@@ -203,17 +237,21 @@ class DiagEngine {
   ByteLink* link_ = nullptr;
   KLineUart* kline_ = nullptr;
   FtdiLink* ftdi_ = nullptr;
+  bool settingsDirty_ = false;
   bool userDisconnected_ = false;
   bool everConnected_ = false;   // a session existed since boot / adapter attach
   bool connecting_ = false;      // wake-up in progress
   uint32_t lastAutoMs_ = 0;
   uint32_t autoBackoffMs_ = 2000;
   HfmSession* session_ = nullptr;
+  scanner::ModuleDriver* moduleDriver_=nullptr;
+  uint32_t nextModuleMs_=0,moduleFaultMs_=0;
+  hht::Reader hhtReader_;
   guard::ServiceGuard guard_;
   EngineState st_;
   struct QJob {
     Job job;
-    uint32_t arg, id;
+    uint32_t arg, id, epoch;
     char text[64];
   };
   static const uint8_t kQueue = 6, kRing = 10;

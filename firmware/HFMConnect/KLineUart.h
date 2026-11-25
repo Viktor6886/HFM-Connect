@@ -27,6 +27,12 @@ class KLineUart : public ByteLink {
   bool isOpen() const override { return open_; }
   LinkStatus wakeup(const LinkTiming& t, uint8_t& echo, uint8_t& sync) override;
   LinkStatus exchange(uint8_t tx, Parity p, uint16_t deadlineMs, uint8_t& echo, uint8_t& resp) override;
+  int receiveCount() const override { return receiveCount_; }
+  bool frameBaud(uint32_t baud) override;
+  bool frameBreak(bool low) override;
+  bool frameWrite(uint8_t byte) override;
+  bool frameRead(uint8_t& byte, uint16_t timeout) override;
+  void frameDrain() override;
   void sleepMs(uint32_t ms) override { delay(ms); }
   uint32_t nowMs() override { return millis(); }
   uint32_t nowUs() override { return micros(); }
@@ -56,5 +62,6 @@ class KLineUart : public ByteLink {
   QueueHandle_t evq_ = nullptr;
   uart_parity_t parity_ = UART_PARITY_DISABLE;
   uint32_t parityErr_ = 0, frameErr_ = 0, breaks_ = 0;
+  int receiveCount_=0;
 };
 #endif

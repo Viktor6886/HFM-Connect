@@ -31,8 +31,8 @@ function weekDate(t) {
 function diagText(di) {
   const m = /^([0-9A-F]{2})\/([0-9A-F]{2})$/.exec(di || '');
   if (!m) return di || '—';
-  const v = parseInt(m[1], 10);
-  const range = v >= 40 && v <= 59 ? 'HFM-SFI (диапазон 40–59)' : v >= 60 && v <= 79 ? 'PMS (60–79) — другая система' : 'вне известных диапазонов';
+  const v = parseInt(m[1], 16);
+  const range = v >= 0x40 && v <= 0x5a ? 'HFM-SFI (40–5A)' : v >= 0x60 && v <= 0x79 ? 'диапазон PMS (60–79)' : 'вне известных диапазонов';
   return `${m[1]}/${m[2]} — версия диагностики ЭБУ ${m[1]}: ${range}; ${m[2]} — подверсия`;
 }
 const DTC_MAP_TEXT = {
@@ -155,12 +155,13 @@ const I = {
 const svg = n => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${I[n]}</svg>`;
 
 const PAGES = [
+  {id: 'scanner', title: 'Сканер блоков', icon: 'chip', color: '#007aff'},
   {id: 'home', title: 'Главная', icon: 'home', color: '#007aff'},
   {id: 'vehicles', title: 'Автомобили', icon: 'car', color: '#5856d6'},
   {id: 'connect', title: 'Подключение', icon: 'plug', color: '#34c759'},
   {id: 'ecu', title: 'Идентификация ЭБУ', icon: 'chip', color: '#30b0c7'},
   {id: 'dtc', title: 'Ошибки', icon: 'warn', color: '#ff3b30'},
-  {id: 'live', title: 'Live Data', icon: 'wave', color: '#ff9500'},
+  {id: 'live', title: 'Текущие параметры', icon: 'wave', color: '#ff9500'},
   {id: 'adapt', title: 'Адаптации', icon: 'sliders', color: '#af52de'},
   {id: 'actuators', title: 'Исполнительные тесты', icon: 'bolt', color: '#ff2d55'},
   {id: 'guide', title: 'Диагностика по симптомам', icon: 'pulse', color: '#ff2d55'},
@@ -169,7 +170,7 @@ const PAGES = [
   {id: 'reports', title: 'Отчёты', icon: 'doc', color: '#8e8e93'},
   {id: 'settings', title: 'Настройки', icon: 'gear', color: '#8e8e93'}
 ];
-const TABS = ['home', 'connect', 'dtc', 'live', 'more'];
+const TABS = ['home', 'scanner', 'dtc', 'live', 'more'];
 
 // ---------------------------------------------------------------- state
 const S = {status: null, ecu: null, dtc: null, live: null, defs: null, vehicles: null, services: null, settings: null,
@@ -259,14 +260,14 @@ function dtcCard(x, d) {
     ${r.w ? `<div class="note warn small mt">${esc(r.w)}</div>` : ''}
     ${xsec('Возможные причины', xtext(r.c))}
     ${xsec('Порядок проверки', xtext(r.k))}
-    ${xsec('Проявления: что наблюдать в Live Data', r.o ? xtext(r.o) + `<button class="btn sm sec mt" onclick="go('live')">Открыть Live Data</button>` : '')}
+    ${xsec('Проявления: что наблюдать в Текущие параметры', r.o ? xtext(r.o) + `<button class="btn sm sec mt" onclick="go('live')">Открыть Текущие параметры</button>` : '')}
     ${xsec('Применимость к вашему ЭБУ', xtext(applic) + (r.maps.length ? `<p class="small muted">Код есть в картах: ${r.maps.map(m => esc(mapText(ref, m))).join(', ')}.</p>` : '<p class="small muted">Код не входит ни в одну заводскую карту вариантов.</p>'))}
     ${xsec('Цепочка декодирования', chain ? `<p class="mono">${chain}</p>` : '')}
     ${xsec('Контекстные правила HHT (исходный текст)', rules ? rules + '<p class="small muted">Символы «-//-», «⌐¬» — артефакты источника, не указание полярности.</p>' : '')}
     ${xsec('Источник и достоверность', `<p class="small">${esc(DEF_STATUS[r.st] || r.st)}. ${esc(r.ev)}</p><p class="small muted">${esc(r.app)}</p>`)}`;
 }
 
-// ---- Live Data parameter card
+// ---- Текущие параметры parameter card
 const ROUTE = {native_group: 'нативная группа full8', hht_control_recipe: 'рецепт заводского тестера', hht_experimental_recipe: 'расширенный рецепт заводского тестера'};
 function paramCard(k) {
   const ref = S.ref;
@@ -507,9 +508,9 @@ R.home = () => {
         <div class="card pad stat tap" onclick="go('vehicles')"><div class="k">Автомобиль</div><div style="font-weight:600;margin-top:4px">${v ? esc(`${v.chassis} ${v.name}`) : 'не выбран'}</div>
           ${v ? `<div class="small muted">M${esc(v.engine)}</div>` : ''}</div>
       </div>`);
-    setHTML('#homeActions', `${connectButtons(s)}
+    setHTML('#homeActions', `<button class="btn" onclick="go('scanner')">Выбрать блок автомобиля</button> ${connectButtons(s)}
       <button class="btn sec" onclick="go('dtc')">Ошибки</button>
-      <button class="btn sec" onclick="go('live')">Live Data</button>
+      <button class="btn sec" onclick="go('live')">Текущие параметры</button>
       <button class="btn sec" onclick="go('reports')">Отчёт</button>`);
     setHTML('#homeFoot', `Прошивка ${esc(s.fw)} · работает ${esc(dur(s.uptime_s))}`);
   }, 2000);
@@ -533,7 +534,7 @@ R.vehicles = async () => {
       ${kvTable([['Поколение', sel.gen_name], ['Период (по источнику)', (sel.from || '?') + ' — ' + (sel.to || 'не указано')],
         ['Нормативы', sel.norms], ['Модуль DM (отдельный N59/1)', sel.dm || 'нет/не указано'], ['Источник', sel.source]])}
       </div>
-      ${conn ? connectorCard(conn) : ''}` : '<div class="note info">Выберите автомобиль: это задаёт нормативы Live Data, ожидаемый разъём и подсказки. Команды ЭБУ разрешаются только по идентификации самого блока.</div>'}
+      ${conn ? connectorCard(conn) : ''}` : '<div class="note info">Выберите автомобиль: это задаёт нормативы Текущие параметры, ожидаемый разъём и подсказки. Команды ЭБУ разрешаются только по идентификации самого блока.</div>'}
     <h2 class="section">Дата выпуска автомобиля</h2>
     <div class="card pad"><div class="flex"><input class="field" id="ymIn" type="month" value="${ym ? ym.slice(0, 4) + '-' + ym.slice(4) : ''}">
       <button class="btn sm" id="ymSave">Сохранить</button></div>
@@ -589,7 +590,7 @@ R.connect = () => {
       <div class="step"><div class="num"></div><div><b>Зажигание выключено.</b> Подключите кабель к разъёму X11/4 (W124: 16-конт., контакт 8 — HFM; 38-конт.: контакт 4 — HFM). <span class="muted">Контакт 16 на W124 X11/4 — цепь 15 (зажигание), не OBD-II.</span></div></div>
       <div class="step"><div class="num"></div><div><b>Адаптер.</b> USB K-Line адаптер (FTDI) — в разъём USB (OTG) ESP32-S3 напрямую или через USB-хаб с внешним питанием. Масса — контакт 1, питание адаптера +12 В — по схеме кузова.</div></div>
       <div class="step"><div class="num"></div><div><b>Зажигание ВКЛ, двигатель не запущен.</b> Лампа CHECK ENGINE может гореть во время сеанса — это штатная индикация связи (MBUSA P-SI-14.00/14).</div></div>
-      <div class="step"><div class="num"></div><div><b>Подключение автоматическое.</b> При обрыве связь восстанавливается сама, опрос Live Data продолжается. Кнопка «Отключить» приостанавливает автоподключение до нажатия «Подключить».</div></div>
+      <div class="step"><div class="num"></div><div><b>Подключение автоматическое.</b> При обрыве связь восстанавливается сама, опрос Текущие параметры продолжается. Кнопка «Отключить» приостанавливает автоподключение до нажатия «Подключить».</div></div>
     </div>
     <h2 class="section">RAW TX/RX журнал</h2>
     <div class="card"><div class="flex between wrap trbar"><span class="small muted" id="trCount"></span>
@@ -665,6 +666,8 @@ R.ecu = async () => {
     const map = p.variant.dtc_map;
     let coding;
     if (c.unsupported) coding = `<div class="note">Этот ЭБУ не выдаёт байт кодировки: на запрос он вернул сами адреса (27:02 / 24:F0), а не данные. У ранних блоков HFM 3.4 (до 02/1994) комплектация — тип КПП, катализатор — распознаётся автоматически по заводской документации, отдельной кодировки может не быть.</div>`;
+    else if(c.valid && c.decimal_code) coding=kvTable([['Код комплектации из ЭБУ',c.decimal_code]]);
+    else if(c.valid && c.factory && c.coding_byte==null) coding=kvTable([['Признаки комплектации',c.flags],['Ответ ЭБУ',c.ack]]);
     else if (c.valid) coding = kvTable([
       ['Коробка передач', c.automatic == null ? '<span class="muted">не применимо</span>' : c.automatic ? 'автоматическая' + (c.gears > 0 ? `, ${c.gears} ступеней` : '') : 'механическая', true],
       ['Каталитический нейтрализатор', tri(c.catalyst), true], ['Исполнение для США', tri(c.usa), true],
@@ -676,7 +679,8 @@ R.ecu = async () => {
     let vin;
     if (e.vin.unsupported) vin = '<p class="muted" style="margin-top:0">Этот ЭБУ не поддерживает чтение VIN (запрос F9 не принят). Связь при этом не прерывается.</p>';
     else if (e.vin.not_stored) vin = '<p class="muted" style="margin-top:0">VIN в ЭБУ не записан.</p>';
-    else if (e.vin.valid) vin = `<p class="mono" style="margin-top:0">${esc(e.vin.text)}</p>`;
+    else if (e.vin.invalid) vin = '<p>Ответ содержит недопустимые символы VIN.</p>';
+    else if (e.vin.valid) vin = `<p class="mono" style="margin-top:0">${esc(e.vin.text)}</p><p class="small muted">14 символов, сохранённых в ЭБУ.</p>`;
     else vin = '<p class="muted" style="margin-top:0">Не прочитан.</p>';
     setHTML('#ecuBox', `
       <div class="card pad">
@@ -688,7 +692,7 @@ R.ecu = async () => {
           ['Профиль диагностики', esc(p.name) + '<div class="small muted">набор команд и таблиц, по которому устройство работает с этим блоком</div>', true],
           ['Память неисправностей', esc(p.bank_text) + `<div class="small muted">${esc(p.bank_basis)}</div>`, true],
           ['Таблица кодов неисправностей', esc(DTC_MAP_TEXT[map] || map), true],
-          ['Параметры Live Data', p.live_plan === 'vdo' ? 'шаблоны VDO заводского тестера (экспериментально)' : 'страницы Bosch 20/21 с проверкой ответов']])}
+          ['Параметры Текущие параметры', p.live_plan === 'vdo' ? 'шаблоны VDO заводского тестера (экспериментально)' : 'страницы Bosch 20/21 с проверкой ответов']])}
         ${details('Технические данные', kvTable([['Код производителя', esc(id.vendor_code)], ['Карта кодов', esc(map)], ['Байт диагностики F0:26', esc(p.variant.diag_raw)],
           ['Страница ПЗУ / адрес таблицы', id.ext_present ? `${esc(id.rom_page)} / ${esc(id.desc_addr)}` : 'не читались'], ['Профиль', esc(p.id)], ['RAW F0 00–1B', `<span class="hex">${esc(id.raw)}</span>`]].map(r => [r[0], r[1], true])))}
       </div>
@@ -735,7 +739,7 @@ R.dtc = async () => {
       ${groups.current ? '<div class="note mt small">Текущие неисправности имеют смысл только при включённом зажигании и <b>работающем</b> двигателе; при неработающем двигателе часть из них появляется закономерно.</div>' : ''}
       ${d.dtc_map === 'GENERIC' ? '<div class="note mt small warn">Выберите автомобиль в разделе «Автомобили», чтобы применить заводскую карту кодов для 4/6 цилиндров.</div>' : ''}
       ${d.m111_texts ? '<div class="note mt small">Тексты кодов 045–069/093–096 показаны по заводской таблице Engine 111 (4 цилиндра).</div>' : ''}
-      ${d.items.length === 0 ? '<div class="card pad mt"><b style="color:var(--green)">Неисправностей нет.</b><p class="small muted" style="margin:6px 0 0">Отсутствие записей не доказывает исправность системы — проверьте также Live Data и модуль DM (отдельно).</p></div>' : ''}
+      ${d.items.length === 0 ? '<div class="card pad mt"><b style="color:var(--green)">Неисправностей нет.</b><p class="small muted" style="margin:6px 0 0">Отсутствие записей не доказывает исправность системы — проверьте также Текущие параметры и модуль DM (отдельно).</p></div>' : ''}
       ${order.map(k => `<h2 class="section">${names[k]} · ${groups[k].length}</h2><div class="list">${groups[k].map(x => dtcRow(x, d)).join('')}</div>`).join('')}
       ${ints.length ? `<p class="foot">Периодические (перемежающийся контакт) отмечены оранжевым: ${ints.length}. По OEM они фиксируются при 5 появлениях за поездку.</p>` : ''}
       ${details('Технические данные (битовые карты)', `<div class="card pad">${grid('F1 00–0F (банк A)', esc(d.bank_a))}${grid('F1 10–1F (банк B)', esc(d.bank_b))}${d.ext_valid ? grid('F1 30–32 / 40–42 (эксп.)', esc(d.ext)) : ''}
@@ -781,7 +785,7 @@ function dtcRow(x, d, withCard = true) {
     ${withCard && x.code ? xcard('d-' + x.code + '-' + x.pos, 'карточка ошибки', () => dtcCard(x, d)) : ''}</div></div>`;
 }
 
-// ---- Live Data
+// ---- Текущие параметры
 // Expected state of discrete signals where the factory documents it (hint only, no alarm).
 const EXPECT = {
   idle_contact: 'ожидается ВКЛ на ХХ (педаль отпущена)',
@@ -796,7 +800,7 @@ R.live = async () => {
   try { S.ref = await getRef(); } catch (e) {}
   try { await loadSettings(); } catch (e) {}
   const cats = [['all', 'Все'], ['0', 'Базовые'], ['1', 'Смесь'], ['2', 'Зажигание'], ['3', 'Дроссель'], ['4', 'Статусы'], ['5', 'Расширенные']];
-  page('Live Data', `
+  page('Текущие параметры', `
     <div class="btns eq3"><button class="btn" id="lvStart">Старт</button><button class="btn sec" id="lvRec">● Запись</button><button class="btn sec" id="lvFreeze">Стоп-кадр</button></div>
     <div class="flex wrap mt" id="condBox"></div>
     <div class="card pad mt"><canvas class="chart" id="chart"></canvas><div class="small muted" id="chartLegend"></div></div>
@@ -1013,7 +1017,7 @@ R.adapt = () => {
     const a = e.adapt;
     if (a.unsupported) { setHTML('#adBox', '<div class="note">Этот ЭБУ не выдаёт самоадаптации по адресам 24:90/92/93: на запрос он вернул сами адреса (90, 92, 93), а не значения. Прежде показанные «RAW 90» и «1,07» были именно этими адресами. Сброс самоадаптаций для такого блока тоже недоступен — нет значений «до сброса» для сравнения.</div>'); return; }
     if (!a.valid) { setHTML('#adBox', '<div class="note">Самоадаптации не прочитаны.</div>' + (e.ident.present ? '' : needEcu())); return; }
-    // Colour as on Live Data tiles: green / blue near a limit / red outside.
+    // Colour as on Текущие параметры tiles: green / blue near a limit / red outside.
     const cls = (v, lo, hi) => v < lo || v > hi ? 'BELOW' : (v < lo + (hi - lo) * .1 || v > hi - (hi - lo) * .1 ? 'NEAR' : 'IN_SPEC');
     const card = (key, title, val, unit, lo, hi, base, raw, explain) => {
       const c = cls(val, lo, hi);
@@ -1060,7 +1064,7 @@ const SVC_WARN = {
   impulse_clear: 'Контакт диагностики будет удерживаться на массе несколько секунд — по заводской процедуре так стирается код, показанный последним. Остальные коды остаются.'
 };
 const SVC_STOPPED = {dtc_clear: 1, adapt_reset: 1, impulse_clear: 1};
-async function serviceFlow(op) {
+async function serviceFlow(op,routeContext={}) {
   const sv = (await api('services')).services;
   const o = sv.ops.find(x => x.id === op);
   const needBat = !(S.status && S.status.battery_v != null);
@@ -1081,7 +1085,7 @@ async function serviceFlow(op) {
     say('');
     const sc = $('#stopCf'), bc = $('#batCf');
     // The switches go with the job: the device plans with exactly what is set here.
-    const params = {op, confirm: sc && sc.checked ? 1 : 0};
+    const params = {op,...routeContext, confirm: sc && sc.checked ? 1 : 0};
     if (bc) params.battery = bc.checked ? 1 : 0;
     const okPrep = await job('svc_prepare', params, e.target, 'silent');
     const s2 = (await api('services')).services, p = s2.plan;
@@ -1104,7 +1108,7 @@ async function serviceFlow(op) {
       if (!pw) return say('Введите пароль точки доступа');
       if (!confirm('Выполнить «' + o.name + '»? Действие изменит данные ЭБУ.')) return;
       say('');
-      const ok = await job('svc_execute', {op, token: p.token, password: pw}, ev.target, 'silent');
+      const ok = await job('svc_execute', {op, token: p.token, password: pw,...routeContext}, ev.target, 'silent');
       $('#svcPw') && ($('#svcPw').value = '');
       const r = (await api('services')).services;
       if (!ok && r.plan && r.plan.ok) return say(job.msg || 'Неверный пароль');  // the same plan stays, try again
@@ -1120,16 +1124,16 @@ async function serviceFlow(op) {
 // Only actuations whose byte sequence is known are offered; for the others the
 // factory tester has screens, but which control telegram drives which part is
 // not restored - sending one at random is not allowed (D-035).
-const NOT_RESTORED = 'В заводском тестере есть экран этой проверки и общие телеграммы управления D0–D3, но какая из них каким механизмом управляет, по источникам не восстановлено. Отправлять их наугад нельзя: команда управления меняет режим работы двигателя.';
+const ACTUATOR_UNAVAILABLE = 'Для этого теста требуется отдельная процедура управления. В этой версии прошивки доступны наблюдение параметров и перечисленные проверки.';
 const ACTUATORS = [
   {id: 'purge_test', name: 'Клапан продувки адсорбера Y58/1', desc: 'Включение/выключение клапана командой ЭБУ, до 30 с, затем восстановление. Условия: 400–1500 об/мин, ОЖ 80–110 °C. Последовательность — общий шаблон заводского тестера.'},
-  {name: 'Насос вторичного воздуха', block: NOT_RESTORED, live: 'Состояние видно в Live Data: «Вторичный воздух (AIR)».'},
-  {name: 'Рециркуляция ОГ (EGR)', block: NOT_RESTORED, live: 'Неисправности EGR (P0400/P1400) фиксирует отдельный модуль DM, не HFM.'},
-  {name: 'Регулирование распредвала Y49', block: NOT_RESTORED, live: 'Состояние — в Live Data: «Регулирование распредвала» (M104.995: < 2000 выкл, > 2000 вкл, > 4000 выкл).'},
-  {name: 'Резонансная заслонка Y22/6', block: NOT_RESTORED, live: 'Состояние — в Live Data: «Резонансная заслонка» (ХХ выкл / > 4000 об/мин вкл).'},
-  {name: 'Подогрев впускного коллектора', block: NOT_RESTORED, live: 'Состояние — в Live Data: «Впускной коллектор (частичная нагрузка)».'},
-  {name: 'Форсунки (отключение по цилиндрам)', block: NOT_RESTORED, live: 'Проверка по цилиндрам — по изменению оборотов на ХХ при снятии разъёма форсунки (заводская методика).'},
-  {name: 'Катушки зажигания', block: 'Отдельной проверки катушек у HFM-SFI в заводском тестере нет — только счётчики пропусков у поздних ЭБУ, их адреса не восстановлены.'},
+  {name: 'Насос вторичного воздуха', block: ACTUATOR_UNAVAILABLE, live: 'Состояние видно в Текущие параметры: «Вторичный воздух (AIR)».'},
+  {name: 'Рециркуляция ОГ (EGR)', block: ACTUATOR_UNAVAILABLE, live: 'Неисправности EGR (P0400/P1400) фиксирует отдельный модуль DM, не HFM.'},
+  {name: 'Регулирование распредвала Y49', block: ACTUATOR_UNAVAILABLE, live: 'Состояние — в Текущие параметры: «Регулирование распредвала» (M104.995: < 2000 выкл, > 2000 вкл, > 4000 выкл).'},
+  {name: 'Резонансная заслонка Y22/6', block: ACTUATOR_UNAVAILABLE, live: 'Состояние — в Текущие параметры: «Резонансная заслонка» (ХХ выкл / > 4000 об/мин вкл).'},
+  {name: 'Подогрев впускного коллектора', block: ACTUATOR_UNAVAILABLE, live: 'Состояние — в Текущие параметры: «Впускной коллектор (частичная нагрузка)».'},
+  {name: 'Форсунки (отключение по цилиндрам)', block: ACTUATOR_UNAVAILABLE, live: 'Проверка по цилиндрам — по изменению оборотов на ХХ при снятии разъёма форсунки (заводская методика).'},
+  {name: 'Катушки зажигания', block: 'Отдельной проверки катушек у HFM-SFI в заводском тестере нет — на поддерживаемых ЭБУ доступны счётчики в сканере параметров HHT.'},
   {name: 'Реле топливного насоса', block: 'Для HFM-SFI в источниках нет команды управления реле насоса. Проверка — по заводской методике (перемычка в реле, давление топлива).'}
 ];
 
@@ -1157,11 +1161,11 @@ R.actuators = () => {
     const val = k => L && L.values.find(v => v.k === k);
     const t = val('throttle'), ctp = val('idle_contact'), wot = val('full_load');
     const fresh = L && L.age_ms < STALE_MS;
-    setHTML('#thrBox', `<p class="small" style="margin-top:0">Проверка по Live Data, без управления приводом: 1) педаль отпущена — контакт ХХ ВКЛ, угол в норме ХХ; 2) плавно нажмите — угол растёт без скачков; 3) педаль до упора — контакт полной нагрузки ВКЛ.</p>
-      ${fresh ? '' : '<div class="note small">Запустите Live Data — значения ниже обновляются только во время опроса.</div>'}
+    setHTML('#thrBox', `<p class="small" style="margin-top:0">Проверка по Текущие параметры, без управления приводом: 1) педаль отпущена — контакт ХХ ВКЛ, угол в норме ХХ; 2) плавно нажмите — угол растёт без скачков; 3) педаль до упора — контакт полной нагрузки ВКЛ.</p>
+      ${fresh ? '' : '<div class="note small">Запустите Текущие параметры — значения ниже обновляются только во время опроса.</div>'}
       ${kvTable([['Угол заслонки', t && t.v != null ? t.v.toFixed(2) + ' °' : '—'], ['Контакт ХХ', ctp && ctp.v != null ? (ctp.v ? 'ВКЛ' : 'выкл') : 'не опрашивается (включите «Экспериментальное чтение»)'],
         ['Контакт полной нагрузки', wot && wot.v != null ? (wot.v ? 'ВКЛ' : 'выкл') : '—']])}
-      <div class="note mt small"><b>Обучение упора заслонки</b> — недоступно: отдельной команды нет, заводской тестер обучает упор в составе процедуры «Variantencodierung» (удаление исполнения и повторное обучение), байты которой не восстановлены. По заводской документации (M111 11/2) упор определяется ЭБУ автоматически и распознаётся заново после замены ЭБУ или привода; неисправности 133/138 сообщают о необученном упоре.</div>`);
+      <div class="note mt small"><b>Обучение упора заслонки.</b> В этой версии можно проверить контакт холостого хода, полную нагрузку и угол. Процедура заводского обучения остаётся доступной через штатный тестер.</div>`);
   }, 1500);
 };
 
@@ -1188,7 +1192,7 @@ R.commission = async () => {
       EARLY_AUTO: 'Ранний HFM 3.4 (до 02/1994, diagnosis version ≤ 42): комплектация, катализатор и тип КПП распознаются автоматически. Условия начального распознавания: U ≥ 11 В, скорость 0, двигатель остановлен, P/N, контакт ХХ замкнут; распознавание КПП требует поездки > 5 км/ч (OEM M111 11/2). На стенде процедура не может быть завершена.',
       TRANSITION: 'Переходный период 01–02/1994: поколение определяется только по идентификации ЭБУ, не по дате.',
       CODED: 'Кодируемый HFM 3.4 (с 03/1994, diagnosis ≥ 45): требуется 9-значный код комплектации, который вводится заводским тестером (меню 6 «Version coding»). Некодированный ЭБУ ограничивает обороты 3200 об/мин (MBNA 07.5/1). Перед заменой считайте код старого блока заводским тестером; без него — код по каталогу Gr. 54 и комплектации.',
-      HFM41: 'HFM-SFI 4.1 (M104.995): отдельный состав Live Data и счётчиков; DAS-привязка возможна с MY1996.',
+      HFM41: 'HFM-SFI 4.1 (M104.995): отдельный состав Текущие параметры и счётчиков; DAS-привязка возможна с MY1996.',
       UNKNOWN: 'Выберите автомобиль в разделе «Автомобили», чтобы получить порядок для поколения.'
     }[gen];
     const pre = [
@@ -1206,12 +1210,12 @@ R.commission = async () => {
       <div class="list steps">
         ${step(veh ? 'done' : 'cur', 'Автомобиль и поколение', veh ? `${esc(veh.chassis)} ${esc(veh.name)} · M${esc(veh.engine)} · ${esc(veh.gen_name)}` : '<a href="#vehicles" onclick="go(\'vehicles\')">Выбрать автомобиль</a>')}
         ${step(ecu.ident.present ? 'done' : 'cur', 'Подключение и идентификация', ecu.ident.present ? `${esc(ecu.ident.part)} · diag ${esc(ecu.ident.diag_index)} · ${esc(ecu.profile.name)}` : '<button class="btn sm" onclick="job(\'connect\',{},this)">Подключить</button>')}
-        ${step(pre.every(p => p[1]) ? 'done' : '', 'Предварительные условия', pre.map(p => `<div class="check"><i class="${p[1] == null ? 'unk' : p[1] ? 'ok' : 'no'}">${p[1] == null ? '?' : p[1] ? '✓' : '✕'}</i><div>${p[0]}</div></div>`).join('') + '<div class="muted">P/N и контакт ХХ проверьте визуально или в Live Data (запустите опрос).</div>')}
+        ${step(pre.every(p => p[1]) ? 'done' : '', 'Предварительные условия', pre.map(p => `<div class="check"><i class="${p[1] == null ? 'unk' : p[1] ? 'ok' : 'no'}">${p[1] == null ? '?' : p[1] ? '✓' : '✕'}</i><div>${p[0]}</div></div>`).join('') + '<div class="muted">P/N и контакт ХХ проверьте визуально или в Текущие параметры (запустите опрос).</div>')}
         ${step(snapDone ? 'done' : '', 'Снимок «до»', `${snap.map(x => `<div class="check"><i class="${x[1] ? 'ok' : 'unk'}">${x[1] ? '✓' : '?'}</i><div>${x[0]}: ${x[1] ? 'прочитано' : 'не прочитано'}</div></div>`).join('')}
           <div class="btns mt"><button class="btn sm" id="cmBefore">Прочитать всё и сохранить снимок</button></div>`)}
-        ${step(gen === 'CODED' ? 'blocked' : '', '9-значный код комплектации', `Чтение/запись кода командой заводского тестера не восстановлены ${badge('BLOCK')}. Запишите код из заводского тестера или каталога для архива (сохраняется в устройстве и попадает в отчёт):
+        ${step(ecu.coding.decimal_code ? 'done' : '', '9-значный код комплектации', `Прочитано из ЭБУ: <b>${esc(ecu.coding.decimal_code || 'нет результата')}</b>. Заводская запись требует совместимого адаптера. Поле ниже сохраняет вручную введённый код в отчёте.
           <input class="field mt" id="code9" maxlength="9" inputmode="numeric" placeholder="9 цифр" value="${esc(code9)}">`)}
-        ${step('', 'Дроссель и упоры', 'Проверка CTP/WOT/угла по Live Data — раздел «Исполнительные тесты». Автоматическое обучение не выполняется.')}
+        ${step('', 'Дроссель и упоры', 'Проверка CTP/WOT/угла по Текущие параметры — раздел «Исполнительные тесты». Автоматическое обучение не выполняется.')}
         ${step('', 'DAS / разрешение запуска', 'С MY1996 возможна постоянная привязка N3/4 к DAS: новый тестовый ЭБУ — не более 40 запусков до необратимой привязки (OEM M111 11/3). Обход и перепривязка не выполняются.')}
         ${step('', 'Контроль и отчёт', '<button class="btn sm" onclick="go(\'reports\')">Сформировать отчёт</button>')}
       </div>`);
@@ -1306,13 +1310,13 @@ R.codes = async () => {
 
 // ---- guided diagnostics by symptom
 const SC_LINKS = {
-  'S-01': ['connect', 'Подключение'], 'S-02': ['connect', 'Подключение'], 'S-03': ['live', 'Live Data'], 'S-04': ['live', 'Live Data'],
-  'S-05': ['adapt', 'Адаптации'], 'S-06': ['adapt', 'Адаптации'], 'S-07': ['live', 'Live Data'], 'S-08': ['dtc', 'Ошибки'],
-  'S-09': ['live', 'Live Data'], 'S-13': ['ecu', 'Идентификация'], 'S-14': ['ecu', 'Идентификация'], 'S-16': ['live', 'Live Data'],
-  'S-17': ['live', 'Live Data'], 'S-18': ['dtc', 'Ошибки'], 'S-19': ['dtc', 'Ошибки'], 'S-20': ['connect', 'Подключение']
+  'S-01': ['connect', 'Подключение'], 'S-02': ['connect', 'Подключение'], 'S-03': ['live', 'Текущие параметры'], 'S-04': ['live', 'Текущие параметры'],
+  'S-05': ['adapt', 'Адаптации'], 'S-06': ['adapt', 'Адаптации'], 'S-07': ['live', 'Текущие параметры'], 'S-08': ['dtc', 'Ошибки'],
+  'S-09': ['live', 'Текущие параметры'], 'S-13': ['ecu', 'Идентификация'], 'S-14': ['ecu', 'Идентификация'], 'S-16': ['live', 'Текущие параметры'],
+  'S-17': ['live', 'Текущие параметры'], 'S-18': ['dtc', 'Ошибки'], 'S-19': ['dtc', 'Ошибки'], 'S-20': ['connect', 'Подключение']
 };
 R.guide = async () => {
-  page('Диагностика по симптомам', `<div class="note small">Подсказки по сочетанию кодов и Live Data из справочника — не автоматический диагноз и не замена заводского порядка проверки. Если нужного значения нет, вывод не делается.</div>
+  page('Диагностика по симптомам', `<div class="note small">Подсказки по сочетанию кодов и Текущие параметры из справочника — не автоматический диагноз и не замена заводского порядка проверки. Если нужного значения нет, вывод не делается.</div>
     <div class="list mt" id="scList"><div class="row muted">Загрузка…</div></div>
     <h2 class="section">Правила качества данных</h2><div class="list" id="qList"></div>`);
   let ref;
@@ -1338,7 +1342,7 @@ async function loadFiles() {
   const f = await api('files');
   if (!$('#fileBox')) return;
   $('#fileBox').innerHTML = `<div class="list">${f.files.length ? f.files.map(x => `<div class="row"><div class="grow"><div class="t mono">${esc(x.path)}</div><div class="s">${(x.size / 1024).toFixed(1)} КБ</div></div>
-    <a class="btn sm sec" href="/api/file?path=${encodeURIComponent(x.path)}">⇩</a><button class="btn sm sec" data-del="${esc(x.path)}">✕</button></div>`).join('') : '<div class="row muted">Нет файлов. Запись Live Data — в разделе Live Data.</div>'}</div>
+    <a class="btn sm sec" href="/api/file?path=${encodeURIComponent(x.path)}">⇩</a><button class="btn sm sec" data-del="${esc(x.path)}">✕</button></div>`).join('') : '<div class="row muted">Нет файлов. Запись Текущие параметры — в разделе Текущие параметры.</div>'}</div>
     <p class="foot">Занято ${(f.used / 1024).toFixed(0)} из ${(f.total / 1024).toFixed(0)} КБ (LittleFS).</p>`;
   document.querySelectorAll('[data-del]').forEach(b => b.addEventListener('click', async () => {
     if (!confirm('Удалить ' + b.dataset.del + '?')) return;
@@ -1359,11 +1363,12 @@ async function buildReport(btn) {
   } finally {
     if (btn) { btn.disabled = false; btn.innerHTML = label; }
   }
-  const st = r.status, id = r.ident, d = r.dtc, L = r.live;
+  const other=r.selected_module && r.selected_module.module!=="HFM";
+  const st = r.status, id = r.ident || {}, d = r.dtc, L = r.live || {values:[]};
   const code9 = set.code9 || '';
   const live = L.values.filter(v => v.v != null);
   const liveAge = L.age_ms < 4e9 ? `снимок ${ago(L.age_ms)}` : '';
-  const html = `<div class="card pad" id="repCard">
+  const body = other ? scannerReport(r,true) : `<div class="card pad" id="repCard">
     <div><div style="font-size:22px;font-weight:700">Отчёт диагностики HFM-SFI</div><div class="muted small">${new Date().toLocaleString('ru-RU')} · ${esc(r.generator)}</div></div>
     <div class="note warn mt small">${esc(r.disclaimer)}</div>
     <h2 class="section" style="margin-left:0">Автомобиль и ЭБУ</h2>
@@ -1375,16 +1380,17 @@ async function buildReport(btn) {
     ${d.valid ? `<p class="small muted">Прочитано ${esc(ago(d.age_ms))}</p>` + (d.items.length ? `<div class="list">${d.items.map(x => dtcRow(x, d, false)).join('')}</div>` : '<p>Неисправностей нет.</p>') + `<p class="small muted">${esc(d.bank_text || '')} · A: <span class="hex">${esc(d.bank_a)}</span> · B: <span class="hex">${esc(d.bank_b)}</span></p>` : '<p class="muted">Не прочитана.</p>'}
     <h2 class="section" style="margin-left:0">Адаптации и кодировка</h2>
     ${r.adapt.unsupported ? '<p class="muted">Самоадаптации: этот ЭБУ их не выдаёт.</p>' : r.adapt.valid ? kvTable([['Холостой ход, добавочная', r.adapt.vdo || r.profile.vdo_candidate ? 'формула не подтверждена (байт ' + r.adapt.raw.idle + ')' : r.adapt.idle_kg_h + ' кг/ч'], ['Частичная нагрузка, нижняя', r.adapt.lower], ['Частичная нагрузка, верхняя', r.adapt.upper]]) : '<p class="muted">Адаптации не прочитаны.</p>'}
-    ${r.coding.unsupported ? '<p class="muted small">Кодировка: этот ЭБУ её не выдаёт.</p>' : r.coding.valid ? `<p class="small">Кодировка c=${esc(r.coding.coding_byte)} m=${esc(r.coding.mask_byte)}</p>` : '<p class="muted small">Кодировка не прочитана.</p>'}
-    <h2 class="section" style="margin-left:0">Live Data (последний снимок)</h2>
-    ${live.length ? `<p class="small muted">${esc(liveAge)}</p><table class="kv">${live.map(v => `<tr><td>${esc(v.name)}</td><td>${v.bool ? (v.v ? 'ВКЛ' : 'выкл') : v.v + ' ' + esc(v.unit)}${v.lo != null ? ` <span class="muted small">норма ${v.lo}…${v.hi}</span>` : ''}${v.norm === 'BELOW' ? ' <b style="color:var(--red)">↓</b>' : v.norm === 'ABOVE' ? ' <b style="color:var(--red)">↑</b>' : ''}</td></tr>`).join('')}</table>` : '<p class="muted">Live Data в этом сеансе не опрашивались.</p>'}
+    ${r.coding.unsupported ? '<p class="muted small">Кодировка: этот ЭБУ её не выдаёт.</p>' : r.coding.decimal_code ? '<p>Код комплектации <strong>'+esc(r.coding.decimal_code)+'</strong></p>' : r.coding.factory && r.coding.valid ? '<p>Признаки комплектации '+esc(r.coding.flags)+' · подтверждение '+esc(r.coding.ack)+'</p>' : r.coding.valid ? `<p class="small">Кодировка c=${esc(r.coding.coding_byte)} m=${esc(r.coding.mask_byte)}</p>` : '<p class="muted small">Кодировка не прочитана.</p>'}
+    <h2 class="section" style="margin-left:0">Текущие параметры (последний снимок)</h2>
+    ${live.length ? `<p class="small muted">${esc(liveAge)}</p><table class="kv">${live.map(v => `<tr><td>${esc(v.name)}</td><td>${v.bool ? (v.v ? 'ВКЛ' : 'выкл') : v.v + ' ' + esc(v.unit)}${v.lo != null ? ` <span class="muted small">норма ${v.lo}…${v.hi}</span>` : ''}${v.norm === 'BELOW' ? ' <b style="color:var(--red)">↓</b>' : v.norm === 'ABOVE' ? ' <b style="color:var(--red)">↑</b>' : ''}</td></tr>`).join('')}</table>` : '<p class="muted">Текущие параметры в этом сеансе не опрашивались.</p>'}
     ${r.impulse.codes.length ? `<p>Импульсные коды N: <b>${r.impulse.codes.map(c => c.n).join(', ')}</b></p>` : ''}
-    </div><div class="btns mt noprint"><button class="btn" onclick="window.print()">Печать / PDF</button><button class="btn sec" id="saveRep">Сохранить на устройстве</button></div>`;
+    ${scannerReport(r,false)}</div>`;
+  const html=body+`<div class="btns mt noprint"><button class="btn" onclick="window.print()">Печать / PDF</button><button class="btn sec" id="saveRep">Сохранить на устройстве</button></div>`;
   $('#repBox').innerHTML = html;
   $('#saveRep').addEventListener('click', async () => {
     r.manual = {code9, created: new Date().toISOString()};
     try {
-      await api('report/save?name=' + encodeURIComponent((id.part || 'ecu').replace(/\s/g, '')), {method: 'POST', body: JSON.stringify(r)}, 15000);
+      await api('report/save?name=' + encodeURIComponent((id.part || r.selected_module?.module || 'ecu').replace(/\s/g, '')), {method: 'POST', body: JSON.stringify(r)}, 15000);
       toast('Отчёт сохранён');
       loadFiles();
     } catch (e) { toast(e.message, true); }
@@ -1416,7 +1422,7 @@ R.settings = async () => {
       <div class="small muted mt2">Яркость светодиода${s.led_fitted ? '' : ' — внешний RGB не задан в Config.h'}</div>
       <div class="seg mt" id="ledSeg">${LEVELS.map((t, i) => `<button data-v="${i}" class="${s.light_level === i ? 'on' : ''}">${t}</button>`).join('')}</div>
       <div class="btns mt"><button class="btn sm sec" data-test="sound">Проверить звук</button><button class="btn sm sec" data-test="dtc">Звук «ошибки»</button><button class="btn sm sec" data-test="light">Проверить цвета</button></div>
-      <p class="small muted">Звуки: подключение — восходящий аккорд; восстановление — короткая трель вверх; отключение и обрыв — нисходящие; нет ошибок — арпеджио вверх; есть ошибки — двойное «динь-дон»; адаптер подключён/отключён — короткий щелчок. Цвета: синее дыхание — поиск ЭБУ, зелёный — на связи, бирюзовый со вспышками — опрос Live Data, двойная янтарная вспышка — в памяти есть ошибки, янтарное дыхание — восстановление, красное — нет адаптера / ошибка.</p></div>
+      <p class="small muted">Звуки: подключение — восходящий аккорд; восстановление — короткая трель вверх; отключение и обрыв — нисходящие; нет ошибок — арпеджио вверх; есть ошибки — двойное «динь-дон»; адаптер подключён/отключён — короткий щелчок. Цвета: синее дыхание — поиск ЭБУ, зелёный — на связи, бирюзовый со вспышками — опрос Текущие параметры, двойная янтарная вспышка — в памяти есть ошибки, янтарное дыхание — восстановление, красное — нет адаптера / ошибка.</p></div>
     ${s.oled && s.oled.built ? `<h2 class="section">Дисплей OLED</h2>
     <div class="list">
       ${swv('oled_on', s.oled.on, 'Дисплей включён', s.oled.present ? 'Найден на шине I²C по адресу ' + esc(s.oled.address) : 'Не обнаружен на шине I²C — сканер работает без него')}
@@ -1452,6 +1458,7 @@ R.settings = async () => {
     <h2 class="section">Wi-Fi</h2>
     <div class="card pad">
       <div class="small muted">Точка доступа: <b>${esc(s.ap_ssid)}</b>${s.ap_default_pass ? ' · используется пароль по умолчанию — смените его: этот же пароль подтверждает стирание ошибок и другие операции записи' : ''}</div>
+      <input class="field mt" id="apCurrent" type="password" autocomplete="current-password" placeholder="Действующий пароль для смены пароля">
       <input class="field mt" id="apPass" type="password" placeholder="Новый пароль точки доступа (≥ 8 символов)">
       <div class="small muted mt">Подключение к сети мастерской (необязательно)</div>
       <input class="field mt" id="staSsid" placeholder="SSID" value="${esc(s.sta_ssid)}">
@@ -1486,13 +1493,15 @@ R.settings = async () => {
     if ($('#apPass').value) {
       if ($('#apPass').value.length < 8) return toast('Пароль ≥ 8 символов', true);
       p.ap_pass = $('#apPass').value;
+      p.current_password = $('#apCurrent').value;
     }
     try { await post('settings', p); toast('Сеть перезапускается — переподключитесь к Wi-Fi «' + s.ap_ssid + '»', false, 6000); } catch (e) { toast(e.message, true); }
   });
 };
 
-// ---------------------------------------------------------------- boot
-buildNav();
-statusLoop();
-getRef().then(r => { S.ref = r; }).catch(() => {});
-loadSettings().catch(() => {}).finally(() => go(location.hash.slice(1) || 'home'));
+// Boot after the scanner and its offline catalogue have registered their views.
+window.addEventListener('DOMContentLoaded', () => {
+  buildNav();statusLoop();
+  getRef().then(r => { S.ref=r; }).catch(() => {});
+  loadSettings().catch(() => {}).finally(() => go(location.hash.slice(1) || 'home'));
+});

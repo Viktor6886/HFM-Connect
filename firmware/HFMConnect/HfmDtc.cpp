@@ -117,10 +117,11 @@ const DtcCatalogEntry* lookup(uint16_t code) {
   return nullptr;
 }
 
-uint16_t decodeBank(const uint8_t* bytes16, uint8_t index0, const Variant& v, Decoded* out, uint16_t outMax) {
+uint16_t decodeBank(const uint8_t* bytes16, uint8_t index0, const Variant& v, Decoded* out, uint16_t outMax, uint8_t byteCount, uint8_t positionStart, bool mappedOnly) {
+  if (unsigned(byteCount)+positionStart>19) return 0;
   uint16_t n = 0;
-  uint8_t bank = index0 >= 0x10 ? 1 : 0;
-  for (uint8_t i = 0; i < 16; i++) {
+  uint8_t bank = (index0 == 0x10 || index0 == 0x40) ? 1 : 0;
+  for (uint8_t i = 0; i < byteCount; i++) {
     uint8_t b = bytes16[i];
     if (!b) continue;
     for (uint8_t bit = 0; bit < 8; bit++) {
@@ -130,11 +131,12 @@ uint16_t decodeBank(const uint8_t* bytes16, uint8_t index0, const Variant& v, De
       d.bank = bank;
       d.index = (uint8_t)(index0 + i);
       d.bit = bit;
-      d.position = (uint16_t)(i * 8 + bit + 1);
+      d.position = (uint16_t)((positionStart+i) * 8 + bit + 1);
       d.baseCode = baseForPosition(d.position);
       const DtcVariantMap* m = selectMap(v);
       d.mapId = m ? m->id : "GENERIC";
       d.code = m ? m->pos[d.position - 1] : applyRemaps(d.position, d.baseCode, v);
+      if (mappedOnly && !d.code) { --n; continue; }
       d.remapped = d.code != d.baseCode;
       d.entry = d.code ? lookup(d.code) : nullptr;
     }

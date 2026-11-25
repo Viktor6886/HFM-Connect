@@ -19,11 +19,17 @@ jobs:
       - name: WebUI bundle is up to date
         run: python tools/build_webui.py --check
       - name: WebUI JavaScript syntax
-        run: node --check webui/app.js
+        run: |
+          node --check webui/app.js
+          node --check webui/scanner.js
       - name: Host tests (g++)
         env:
           CXX: g++
         run: python tools/run_host_tests.py
+      - name: Test the embedded WebUI in Chrome
+        run: |
+          npm install --prefix "$RUNNER_TEMP/hfm-ui" --no-save --package-lock=false playwright@1.62.1
+          NODE_PATH="$RUNNER_TEMP/hfm-ui/node_modules" HFM_CHROME="$(command -v google-chrome)" node tools/check_scanner_ui.cjs
 
   firmware:
     name: Compile ESP32-S3 (Arduino core)
@@ -31,32 +37,28 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: arduino/setup-arduino-cli@v2
+        with:
+          version: 1.5.1
       - name: Install ESP32 core
         run: |
           arduino-cli config init
           arduino-cli config set board_manager.additional_urls https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json
           arduino-cli core update-index
-          arduino-cli core install esp32:esp32
-          arduino-cli lib install U8g2
+          arduino-cli core install esp32:esp32@3.3.8
+          arduino-cli lib install U8g2@2.35.30
       - name: Compile HFMConnect.ino (with OLED, Huge APP)
         run: |
           set -o pipefail
           mkdir -p build
           arduino-cli compile --fqbn esp32:esp32:esp32s3:PartitionScheme=huge_app,CDCOnBoot=default \
             --warnings default --build-path build/fw firmware/HFMConnect 2>&1 | tee build/compile.log
-      - name: Compile without OLED (Huge APP, no U8g2 code)
+      - name: Verify and export the full 4 MiB image
         run: |
-          # Since 0.9.1 the build without OLED no longer fits the Default 4MB app
-          # partition (1.25 MB); both variants use Huge APP.
-          arduino-cli compile --fqbn esp32:esp32:esp32s3:PartitionScheme=huge_app,CDCOnBoot=default \
-            --build-property "compiler.cpp.extra_flags=-DHFM_OLED_ENABLE=0" \
-            --warnings default --build-path build/fw-nooled firmware/HFMConnect
+          test "$(stat -c %s build/fw/HFMConnect.ino.merged.bin)" -eq 4194304
+          cp build/fw/HFMConnect.ino.merged.bin build/HFM-Connect-ESP32S3-full.bin
       - name: Upload firmware binary
         uses: actions/upload-artifact@v4
         with:
           name: HFMConnect-esp32s3
-          path: |
-            build/fw/HFMConnect.ino.bin
-            build/fw/HFMConnect.ino.bootloader.bin
-            build/fw/HFMConnect.ino.partitions.bin
-            build/compile.log
+          path: build/HFM-Connect-ESP32S3-full.bin
+          if-no-files-found: error

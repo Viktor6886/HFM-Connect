@@ -57,6 +57,11 @@ bool parseIdent(const uint8_t* raw, uint8_t len, EcuIdent& o) {
   y = bcdToInt(raw[25]);
   if (w >= 1 && w <= 53 && y >= 0) { o.swWeek = (int8_t)w; o.swYear = (int8_t)y; }
 
+  unsigned pair = raw[4] * 256u + raw[5];
+  const unsigned pairs[] = {0x3138,0x3230,0x3232,0x3233,0x3238,0x3332,0x3336};
+  for (unsigned known : pairs)
+    if (pair == known && raw[2] == 'M' && (raw[1]=='B' || raw[1]=='V') && raw[26]>=0x40 && raw[26]<=0x5a)
+      o.hhtCylinders = pair <= 0x3233 ? 4 : 6;
   o.diagIndexRaw = raw[26];
   o.diagSubRaw = raw[27];
   o.diagIndexBcd = bcdToInt(raw[26]);

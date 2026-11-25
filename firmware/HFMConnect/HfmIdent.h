@@ -18,6 +18,7 @@ struct EcuIdent {
   bool present = false;      // 28 bytes were read without transport error
   uint8_t raw[28] = {0};
   uint8_t rawLen = 0;
+  uint8_t hhtCylinders = 0; // Validated HFMWIN start marker, engine pair and diagnostic range.
 
   bool vendorKnown = false;
   uint8_t vendorId = 0;      // 0 unknown, 1 BOSCH, 2 VDO, 3 SIEMENS (byte 1 letter)

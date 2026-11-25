@@ -136,8 +136,8 @@ LinkStatus HfmSession::xchg(uint8_t tx, Parity par, TracePhase ph, CommandRisk r
   lastActivityMs_ = link_.nowMs();
   lineUsed_ = true;
   lastLineMs_ = lastActivityMs_;
-  uint8_t n = 2;
-  if (st == LinkStatus::Timeout) n = (uint8_t)(echo == tx ? 1 : 0);
+  const int observed=link_.receiveCount();
+  uint8_t n=observed>=0 ? uint8_t(observed) : st==LinkStatus::Ok ? 2 : st==LinkStatus::Timeout && tx!=0 && echo==tx ? 1 : 0;
   if (st == LinkStatus::Ok && echo != tx) st = LinkStatus::EchoMismatch;
   if (st == LinkStatus::Ok && ph == TracePhase::Prefix && resp != (uint8_t)(tx ^ 0xFF)) st = LinkStatus::BadAck;
   trace_.append(link_.nowUs(), ph, par, tx, echo, resp, st, risk, n);

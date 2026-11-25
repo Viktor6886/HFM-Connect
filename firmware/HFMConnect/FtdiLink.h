@@ -34,6 +34,12 @@ class FtdiLink : public ByteLink {
   bool isOpen() const override { return open_ && attached_; }
   LinkStatus wakeup(const LinkTiming& t, uint8_t& echo, uint8_t& sync) override;
   LinkStatus exchange(uint8_t tx, Parity p, uint16_t deadlineMs, uint8_t& echo, uint8_t& resp) override;
+  int receiveCount() const override { return receiveCount_; }
+  bool frameBaud(uint32_t baud) override;
+  bool frameBreak(bool low) override;
+  bool frameWrite(uint8_t byte) override;
+  bool frameRead(uint8_t& byte, uint16_t timeout) override;
+  void frameDrain() override;
   void sleepMs(uint32_t ms) override { delay(ms); }
   uint32_t nowMs() override { return millis(); }
   uint32_t nowUs() override { return micros(); }
@@ -136,7 +142,7 @@ class FtdiLink : public ByteLink {
     FtdiLink& f_;
   };
   bool setModemLines(uint8_t modem);
-  bool setBaud9600();
+  bool setBaud(uint32_t baud);
 
   static void hostTask(void* arg);
   static void clientTask(void* arg);
@@ -219,5 +225,6 @@ class FtdiLink : public ByteLink {
   std::atomic<bool> wakeLocked_{false};
   std::atomic<uint32_t> wakeAttempts_{0};
   mutable portMUX_TYPE wakeMux_ = portMUX_INITIALIZER_UNLOCKED;
+  int receiveCount_=0;
 };
 #endif

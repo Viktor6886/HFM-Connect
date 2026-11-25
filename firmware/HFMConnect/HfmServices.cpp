@@ -106,10 +106,12 @@ LinkStatus readVin(HfmSession& s, Vin& v) {
       return LinkStatus::Ok;
     }
     v.raw[i] = b;
-    v.text[i] = (b >= 0x20 && b < 0x7F) ? (char)b : '?';
+    bool allowed=(b>='0' && b<='9') || (b>='A' && b<='Z');
+    v.text[i] = allowed ? (char)b : '?';
+    if (!allowed) v.invalidCharacters = true;
     v.len = (uint8_t)(i + 1);
   }
-  v.valid = true;
+  v.valid = !v.invalidCharacters;
   return LinkStatus::Ok;
 }
 

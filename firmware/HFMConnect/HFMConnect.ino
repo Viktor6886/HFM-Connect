@@ -1,15 +1,6 @@
-// HFM Connect - diagnostic tool for Mercedes-Benz Bosch HFM-SFI (M104/M111)
-// over K-Line: USB FTDI K-Line adapter (ESP32-S3 USB host) or UART transceiver, offline WebUI.
-//
-// Arduino IDE: Board "ESP32S3 Dev Module", Partition Scheme "Default 4MB with
-// spiffs" (or larger), USB CDC On Boot "Disabled", USB Mode "Hardware CDC and
-// JTAG". Upload/log via the UART connector; FTDI K-Line adapter on the USB one.
-// No external libraries are required. See docs/BUILD.md.
-//
-// Safety: all state-changing ECU operations are disabled by default and need
-// (1) a profile with an evidence level allowing them, (2) Engineer Mode,
-// (3) the WRITE-EN hardware key, (4) fresh preconditions and (5) a typed
-// confirmation phrase. Read docs/DIAGNOSTIC_FUNCTIONS.md before use.
+// HFM Connect for ESP32-S3, USB FTDI K-Line and the offline diagnostic WebUI.
+// Release build: ESP32S3 Dev Module, Huge APP (3 MB), USB CDC On Boot disabled,
+// Hardware CDC and JTAG, U8g2 for OLED. See docs/BUILD.md and docs/SCANNER_RU.md.
 
 #include <LittleFS.h>
 
