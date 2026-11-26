@@ -247,3 +247,16 @@ TEST(oled_wrap_cyrillic_words) {
   m.line(200, buf, sizeof buf);
   CHECK_EQ(strlen(buf), 0u);
 }
+
+TEST(oled_me_ke_signal_screen_requires_a_ready_link) {
+  Model model;
+  Input in=ready();in.engine.title="KE X11 PWM";
+  strcpy(in.engine.detail,"LOW 70.0 %");
+  model.update(in,0);model.update(in,kBootMs+1);
+  CHECK(model.view().screen==Screen::EngineStatus);
+  uint32_t key=model.view().key;
+  strcpy(in.engine.detail,"LOW 20.0 %");model.update(in,kBootMs+2);
+  CHECK(model.view().key!=key);
+  in.link=Link::NoAdapter;model.update(in,kBootMs+3);
+  CHECK(model.view().screen==Screen::NoAdapter);
+}

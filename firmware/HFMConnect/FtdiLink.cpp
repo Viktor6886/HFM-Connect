@@ -448,6 +448,7 @@ void FtdiLink::openDevice(uint8_t addr) {
   vid_ = dd->idVendor;
   pid_ = dd->idProduct;
   bcd_ = dd->bcdDevice;
+  needsReattach_ = false;
   if (!ctrlX_) usb_host_transfer_alloc(64, 0, &ctrlX_);
   if (!txX_) usb_host_transfer_alloc(64, 0, &txX_);
   if (!rxX_) usb_host_transfer_alloc(mpsIn_, 0, &rxX_);
@@ -524,7 +525,7 @@ void FtdiLink::rxCb(usb_transfer_t* x) {
       int end = off + self->mpsIn_;
       if (end > x->actual_num_bytes) end = x->actual_num_bytes;
       int n = end - (off + 2);
-      if (n > 0) xStreamBufferSend(self->rx_, x->data_buffer + off + 2, (size_t)n, 0);
+      if (n > 0 && xStreamBufferSend(self->rx_, x->data_buffer + off + 2, (size_t)n, 0) != (size_t)n) ++self->overrun_;
     }
   }
   if (self->gone_) {
@@ -627,7 +628,7 @@ bool FtdiLink::configure() {
 bool FtdiLink::open() {
   if (!ioMtx_) return false;
   IoGuard guard(ioMtx_);
-  if (!hostReady_ || !attached_) return false;
+  if (!hostReady_ || !attached_ || needsReattach_) return false;
   if (!configured_ && !configure()) return false;
   purgeRx();
   open_ = true;
@@ -642,6 +643,67 @@ void FtdiLink::close() {
   open_ = false;
 }
 
+bool FtdiLink::sampleDuty(scanner::DutySample& out) {
+  out={};uint8_t unused=0;
+  return captureEngineSignal(&out,unused);
+}
+uint8_t FtdiLink::readKeBlink() {
+  uint8_t blink=0;
+  return captureEngineSignal(nullptr,blink) ? blink : 0;
+}
+bool FtdiLink::captureEngineSignal(scanner::DutySample* duty,uint8_t& blink) {
+  if(!ioMtx_)return false;
+  IoGuard guard(ioMtx_);
+  if(!isOpen() || !supportsDuty())return false;
+  bool ok=true;
+  if(!duty) {
+    ok=setLine(Parity::None,true);
+    if(ok)delay(3000);
+    bool released=setLine(Parity::None,false);
+    ok=ok && released;
+  }
+  // FT232R AN_232R-01. Direction mask zero leaves all eight IO pins as inputs.
+  constexpr uint8_t setBitMode=0x0b;
+  ok=ok && setBaud(500) && ctrl(setBitMode,0x0100,port_) && ctrl(SIO_RESET,SIO_RESET_PURGE_RX,port_);
+  purgeRx();
+  const uint32_t errors=usbErr_, drops=overrun_, start=millis();
+  scanner::DutyCounter pwm;
+  scanner::BlinkCounter counter;
+  uint32_t received=0, clockStart=0;
+  uint8_t buf[64], initial[1024];
+  const uint32_t limit=duty ? 4000 : 105000;
+  while(ok && attached_ && millis()-start<limit) {
+    if(readBytes(buf,sizeof buf,150)!=sizeof buf) {ok=false;break;}
+    if(!received) {received=64;clockStart=micros();continue;}
+    if(!duty && received-64<sizeof initial) {
+      memcpy(initial+received-64,buf,sizeof buf);
+      received+=sizeof buf;
+      if(received-64==sizeof initial) {
+        // Measure the actual samplerate from USB delivery over many packets.
+        // Replay this first window so that an early pulse is still counted.
+        uint32_t elapsed=micros()-clockStart;
+        uint32_t hz=elapsed ? (sizeof initial*1000000u)/elapsed : 0;
+        if(hz<1000 || hz>24000){ok=false;break;}
+        counter=scanner::BlinkCounter(hz);
+        for(auto byte:initial)counter.sample(byte & 2);
+      }
+    } else {
+      for(auto byte:buf) { // FT232R D1 = RXD.
+        if(duty)pwm.sample(byte & 2);else counter.sample(byte & 2);
+      }
+      received+=sizeof buf;
+    }
+    if(duty ? received>=4160 : counter.done())break;
+  }
+  ok=ok && attached_ && usbErr_==errors && overrun_==drops;
+  bool uart=ctrl(setBitMode,0,port_) && configure();
+  purgeRx();
+  if(!uart) {configured_=false;open_=false;needsReattach_=true;return false;}
+  if(!ok)return false;
+  if(duty)return received==4160 && pwm.finish(*duty);
+  blink=counter.result();
+  return blink!=0;
+}
 bool FtdiLink::frameBaud(uint32_t baud) {
   IoGuard guard(ioMtx_);
   return open_ && attached_ && setBaud(baud) && setLine(Parity::None, false);

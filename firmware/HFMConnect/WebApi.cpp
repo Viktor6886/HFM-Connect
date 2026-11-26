@@ -659,11 +659,21 @@ static void writeModule(JsonWriter& w,const ModuleState& m) {
   const auto* r=scanner::route(m.route);
   w.beginObject().kv("id",int(m.route)).kv("epoch",m.epoch).kv("confirmed",m.confirmed)
     .kv("contact",unsigned(m.contact)).kv("baud",m.baud).kv("module",r ? r->module : "HFM")
-    .kv("series",r ? r->series : "").kv("error",scanner::message(m.error))
+    .kv("series",r ? r->series : "").kv("variant",r ? r->variant : "").kv("error",scanner::message(m.error))
+    .kv("obd_response",m.readout.obdResponding).kv("obd_kwp",m.readout.obdKwp)
+    .kv("obd_peer",unsigned(m.readout.obdPeer)).kv("pid_mask",m.readout.pidMask)
+    .kv("last_blink",unsigned(m.readout.lastBlink))
     .kv("identified",m.readout.identityValid).kv("faults_valid",m.readout.faultsValid);
   w.key("ident").beginArray();for(unsigned i=0;i<m.readout.identLen;++i) w.hex(m.readout.ident[i]);w.endArray();
-  w.key("faults").beginArray();if(m.readout.faultsValid) for(unsigned i=0;i<m.readout.codeCount;++i)
-    w.beginObject().kv("code",unsigned(m.readout.codes[i])).kv("status",unsigned(m.readout.details[i])).endObject();
+  const auto& duty=m.readout.duty;
+  if(duty.cycles)w.key("duty").beginObject().kv("low",unsigned(duty.lowPermille))
+    .kv("min",unsigned(duty.minimum)).kv("max",unsigned(duty.maximum)).kv("cycles",unsigned(duty.cycles)).endObject();
+  w.key("faults").beginArray();
+  if(m.readout.faultsValid || m.readout.lastBlink)for(unsigned i=0;i<m.readout.codeCount;++i) {
+    w.beginObject().kv("code",unsigned(m.readout.codes[i])).kv("status",unsigned(m.readout.details[i]));
+    if(m.readout.obdResponding)w.kv("hht_sources",unsigned(scanner::meFaultSources(m.readout.codes[i])));
+    w.endObject();
+  }
   w.endArray().kv("at",unsigned(m.readout.at)).key("raw").beginArray();
   for(unsigned i=0;i<m.readout.rawLen;++i)w.hex(m.readout.raw[i]);w.endArray();w.endObject();
 }
@@ -687,7 +697,7 @@ static void hScannerCatalog() {
     w.beginObject().kv("id",unsigned(i)).kv("module",r.module).kv("variant",r.variant)
       .kv("protocol",p && p->iso ? "GL_ISO2" : scanner::protocolName(r.protocol))
       .kv("contact",unsigned(r.contact)).kv("mux",unsigned(r.mux)).kv("available",hfm || p)
-      .kv("dtc",hfm || (p && !p->classicIdBytes)).kv("clear",p && p->clearFaultMemory).kv("fixed_baud",p && p->fastKs).key("measures").beginArray();
+      .kv("dtc",hfm || (p && p->canReadFaults())).kv("clear",p && p->clearFaultMemory).kv("fixed_baud",p && p->fastKs).key("measures").beginArray();
     if(p)for(unsigned k=0;k<p->measureCount;++k)w.value(unsigned(p->measures[k].at));
     w.endArray().endObject();
   }

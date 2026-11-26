@@ -18,7 +18,7 @@ TESTS = ROOT / "tests" / "host"
 BUILD = ROOT / "build" / "host"
 
 # Platform-independent modules only (no Arduino.h).
-CORE = ["ModuleDriver.cpp", "HhtReader.cpp", "HhtValues.cpp", "FrameSession.cpp", "ScannerCatalog.cpp", "HfmSession.cpp", "TraceLog.cpp", "HfmDecode.cpp", "HfmIdent.cpp", "HfmDtc.cpp",
+CORE = ["ModuleDriver.cpp", "HhtReader.cpp", "HhtValues.cpp", "ObdSession.cpp", "EngineSignals.cpp", "FrameSession.cpp", "ScannerCatalog.cpp", "HfmSession.cpp", "TraceLog.cpp", "HfmDecode.cpp", "HfmIdent.cpp", "HfmDtc.cpp",
         "HfmProfiles.cpp", "HfmLive.cpp", "HfmServices.cpp", "ServiceGuard.cpp", "ImpulseDecoder.cpp", "KLineWake.cpp", "OledModel.cpp"]
 
 

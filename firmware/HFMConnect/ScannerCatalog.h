@@ -3,7 +3,7 @@
 #include <stdint.h>
 
 namespace scanner {
-enum class Protocol : uint8_t { Unresolved, Ks1, Ks3, Ks6, Cdb };
+enum class Protocol : uint8_t { Unresolved, Ks1, Ks3, Ks6, Cdb, Obd, Duty, Blink };
 struct Route {
   const char* series;
   const char* module;

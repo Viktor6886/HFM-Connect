@@ -151,6 +151,7 @@ void render(u8g2_struct* u, const Model& m) {
   u8g2_SetBitmapMode(u, 1);
   u8g2_SetFontPosBaseline(u);
   switch (v.screen) {
+    case Screen::EngineStatus: status(u,&kOled_icon_ecu,v.engine.title,v.engine.detail); break;
     case Screen::Boot: drawBoot(u, v); break;
     case Screen::NoAdapter: status(u, &kOled_icon_plug, "Нет адаптера", "подключите K-Line"); break;
     case Screen::Waiting: status(u, &kOled_icon_ecu, "Ожидание", "подключения к ЭБУ"); break;

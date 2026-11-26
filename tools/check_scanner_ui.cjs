@@ -19,7 +19,10 @@ const defs = [
   {id:0,module:'HFM',variant:'c814',protocol:'KS-3',contact:8,mux:1,available:true,dtc:true,measures:[]},
   {id:1,module:'ABS',variant:'0aa2@30',protocol:'KS-1',contact:6,mux:3,available:true,dtc:true,measures:[]},
   {id:2,module:'ME2',variant:'GL_ISO2',protocol:'CDB',contact:4,mux:0,available:false,dtc:false,measures:[]},
-  {id:3,module:'KLA',variant:'GL_ISO2',protocol:'GL_ISO2',contact:7,mux:0,available:true,dtc:true,clear:true,measures:[]}
+  {id:3,module:'KLA',variant:'GL_ISO2',protocol:'GL_ISO2',contact:7,mux:0,available:true,dtc:true,clear:true,measures:[]},
+  {id:4,series:'ME-SFI · OBD-II',module:'ME-OBD',variant:'5 baud',protocol:'OBD-II K-Line',contact:7,available:true,dtc:true,measures:[4,5,11,12,13,15,16,17]},
+  {id:5,series:'KE-Jetronic',module:'KE',variant:'X11 PWM',protocol:'X11 PWM',contact:3,available:true,dtc:false,measures:[0]},
+  {id:6,series:'KE-Jetronic',module:'KE',variant:'N3 M104/M119',protocol:'CFI N3',contact:3,available:true,dtc:true,measures:[]}
 ];
 async function main(){
   let state, history, jobs, screen, requests, requestSequence, failRead, failJob, serviceParams, plan;
@@ -35,14 +38,20 @@ async function main(){
     function json(data){res.setHeader('content-type','application/json');res.end(JSON.stringify(data));}
     if(url.pathname==='/'){res.setHeader('content-type','text/html; charset=utf-8');return res.end(pageHtml);}
     if(url.pathname==='/ref.json'){res.setHeader('content-type','application/json');return res.end(reference);}
-    if(url.pathname==='/api/scanner/catalog')return json(url.searchParams.has('series')?defs:['124']);
+    if(url.pathname==='/api/scanner/catalog')return json(url.searchParams.has('series') ? defs.filter(r=>(r.series||'124')===url.searchParams.get('series')) : ['124','ME-SFI · OBD-II','KE-Jetronic']);
     if(url.pathname==='/api/scanner' && req.method==='GET')return json({selection:state,scan:history});
     if(url.pathname==='/api/scanner'){
       const action=body.get('action'),id=Number(body.get('id'));requests.push([action,id,body.get('contact')]);
-      if(action==='select')state={...state,id,epoch:state.epoch+1,confirmed:false,series:'124',module:defs[id].module};
+      if(action==='select')state={id,epoch:state.epoch+1,confirmed:false,series:defs[id].series||'124',
+        module:defs[id].module,variant:defs[id].variant,ident:[],raw:[],faults:[]};
       if(action==='attach')Object.assign(state,{confirmed:true,contact:Number(body.get('contact')),identified:true,ident:['41','42']});
+      if(action==='attach' && id>=4)Object.assign(state,{identified:false,ident:[],obd_response:id===4,obd_peer:16,pid_mask:id===4 ? 0x88100000 : 0});
+      if(action==='measure' && id===4 && body.get('index')==='3')Object.assign(state,{raw:['1A','F8'],at:12});
+      if(action==='measure' && id===5)state.duty={low:700,min:690,max:710,cycles:49};
       if(action==='scan'){history=[{id,module:defs[id].module,identified:true,complete:true,contact:state.contact,codes:[]}];state={...state,confirmed:false,epoch:state.epoch+1};}
       if(action==='faults')Object.assign(state,{faults_valid:true,faults:[{code:37,status:0}]});
+      if(action==='faults' && id===4)state.faults=[{code:0x0302,hht_sources:7}];
+      if(action==='faults' && id===6)Object.assign(state,{last_blink:3,faults_valid:false,faults:[{code:3}]});
       return json({id:++jobs,ok:true});
     }
     if(url.pathname==='/api/services')return json({services:{ops:[{id:'dtc_clear',allowed:true,name:'Стирание памяти неисправностей'}],plan,pw_lock_s:0}});
@@ -121,6 +130,28 @@ async function main(){
       await p.click('#prepBtn');await p.waitForSelector('#svcPw');
       assert.equal(serviceParams.length,1);assert.equal(serviceParams[0].route,'3');assert.equal(serviceParams[0].epoch,String(state.epoch));
       assert.equal(serviceParams[0].confirm,'1');assert.equal(serviceParams[0].battery,'1');
+      await p.reload();
+      await p.goto('http://127.0.0.1:'+server.address().port+'/#scanner');
+      await p.selectOption('#scanModule','2');await p.click('[data-scan="open-obd"]');
+      await p.waitForFunction(()=>document.querySelector('#scanModule')?.value==='4');
+      await p.click('[data-scan="select"]');await p.check('#scanConfirm');await p.click('[data-scan="attach"]');
+      await p.waitForSelector('#scanMeasure');
+      assert.deepEqual(await p.locator('#scanMeasure option').evaluateAll(opts=>opts.map(o=>o.value)),['1','3']);
+      await p.selectOption('#scanMeasure','3');await p.click('[data-scan="measure"]');
+      await p.waitForFunction(()=>document.querySelector('#scanResults').textContent.replace(/\s/g,'').includes('1726об/мин'));
+      await p.click('[data-scan="faults"]');await p.waitForFunction(()=>document.querySelector('#scanResults').textContent.includes('P0302'));
+      await p.goto('http://127.0.0.1:'+server.address().port+'/#reports');await p.click('#mkRep');
+      await p.waitForSelector('#repCard');assert.match(await p.locator('#repCard').innerText(),/ME2, M1L, M1R/);
+      await p.goto('http://127.0.0.1:'+server.address().port+'/#scanner');
+      await p.selectOption('#scanSeries','KE-Jetronic');await p.selectOption('#scanModule','5');
+      await p.click('[data-scan="select"]');await p.check('#scanConfirm');await p.click('[data-scan="attach"]');
+      await p.click('[data-scan="measure"]');await p.waitForFunction(()=>document.querySelector('#scanResults').textContent.includes('70 %'));
+      assert.equal(await p.locator('[data-scan="faults"],[data-scan="scan"]').count(),0);
+      await p.selectOption('#scanModule','6');await p.click('[data-scan="select"]');await p.check('#scanConfirm');
+      await p.click('[data-scan="attach"]');await p.click('[data-scan="faults"]');
+      await p.waitForFunction(()=>document.querySelector('#scanResults').textContent.includes('Температура охлаждающей жидкости'));
+      assert.match(await p.locator('#scanResults').innerText(),/до повтора первого/);
+      assert.equal(await p.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1),true);
       assert.deepEqual(errors,[]);
       await p.close();
       console.log('Browser passed:',width,theme);

@@ -21,6 +21,7 @@ namespace oled {
 enum class Link : uint8_t { NoAdapter, Idle, Connecting, Recovering, Ready, Error };
 
 enum class Screen : uint8_t {
+  EngineStatus,  // ME-SFI or KE measurement / readout
   Boot,        // logo + loading animation
   NoAdapter,   // USB K-Line adapter is not there
   Waiting,     // waiting for a connection to the ECU
@@ -42,7 +43,9 @@ struct Fault {
 static const uint8_t kMaxFaults = 32;
 
 // Snapshot of the diagnostic state (filled by the display task under the engine lock).
+struct EngineStatus {const char* title=nullptr;char detail[64]{};};
 struct Input {
+  EngineStatus engine{};
   Link link = Link::Idle;
   bool reading = false;    // a readout (fault memory / identification) is running right now
   bool dtcValid = false;   // a complete fault-memory readout exists
@@ -65,6 +68,7 @@ static const uint16_t kScrollHoldMs = 1800;  // pause before and after scrolling
 static const uint16_t kScrollLineMs = 900;   // time per scrolled line
 
 struct View {
+  EngineStatus engine{};
   Screen screen = Screen::Boot;
   uint32_t sinceMs = 0;   // time in this screen (animations)
   uint32_t key = 0;       // changes whenever the picture changes (redraw trigger)

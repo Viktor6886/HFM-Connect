@@ -1,7 +1,9 @@
 """Emit bounded read-only profile commands directly from recovered PKW descriptors."""
 from pathlib import Path
 import argparse
+import hashlib
 import json
+import re
 from build_scanner_catalog import OUTPUT, read, asr_addresses
 
 def generate(kit):
@@ -109,9 +111,46 @@ def generate(kit):
     tables.append('};')
     return '\n'.join(tables)+'\n'
 
+def me_fault_references(kit):
+    refs = {}
+    for bit, module in enumerate(('ME2', 'M1L', 'M1R')):
+        passport = read(kit/'02_DATA', 'cdb/pkw/'+module+'/passport')
+        for row in passport['functions']['2_read_faults']:
+            match = re.fullmatch(r'DP_P([0-3][0-9A-F]{3})(?:[A-Z])?', row['signal'])
+            if match:
+                code = int(match[1], 16)
+                refs[code] = refs.get(code, 0) | (1 << bit)
+    if not all(any(mask & (1 << bit) for mask in refs.values()) for bit in range(3)):
+        raise ValueError('Missing ME fault catalogue')
+    lines = ['// Recovered HHT fault labels. Bits 0/1/2 represent ME2/M1L/M1R.']
+    lines += [f'  {{0x{code:04x},{mask}}},' for code, mask in sorted(refs.items())]
+    return '\n'.join(lines)+'\n'
+
+def verify_me_binary(kit, path):
+    # File offsets cover complete DS blocks in this specific PKWWIN.CDB revision.
+    data = path.read_bytes()
+    digest = hashlib.sha256(data).hexdigest()
+    if digest != '936ff1a4f10a48b675e07e8ca0d653dcfa0f783343eadb2421fdda8ce6ece694':
+        raise ValueError('Unrecognized PKWWIN.CDB revision')
+    for name, (start, end) in {
+        'ME2': (0x96f0e, 0xa0d9c), 'M1L': (0x59196, 0x61ae2), 'M1R': (0x59196, 0x61ae2)
+    }.items():
+        raw = {m[1].decode() for m in re.finditer(rb'(?<=\x00)DP_P([0-3][0-9A-F]{3})(?:[A-Z])?\x00',data[start:end])}
+        rows = read(kit/'02_DATA', 'cdb/pkw/'+name+'/passport')['functions']['2_read_faults']
+        exported = {m[1] for row in rows if (m := re.fullmatch(r'DP_P([0-3][0-9A-F]{3})(?:[A-Z])?',row['signal']))}
+        if raw != exported:
+            raise ValueError(name+' fault labels differ from original CDB')
+        print(f'{name}: {len(raw)} matching P-codes, file offsets {start:#x}..{end:#x} (exclusive)')
+
 if __name__=='__main__':
     ap=argparse.ArgumentParser(description=__doc__);ap.add_argument('kit',type=Path);ap.add_argument('--check',action='store_true')
-    args=ap.parse_args();out=generate(args.kit);p=OUTPUT/'ModuleProfiles.inc'
-    if args.check:
-        if p.read_text(encoding='utf8')!=out:raise SystemExit('profiles differ from source')
-    else:p.write_text(out,encoding='utf8')
+    ap.add_argument("--cdb",type=Path,help="compare ME diagnostic labels with the original PKW database")
+    args=ap.parse_args()
+    if args.cdb:verify_me_binary(args.kit,args.cdb)
+    for name, out in [('ModuleProfiles.inc',generate(args.kit)), ('MeFaultRefs.inc',me_fault_references(args.kit))]:
+        path = OUTPUT/name
+        if args.check:
+            if path.read_text(encoding='utf8') != out:
+                raise SystemExit(name+' differs from source')
+        else:
+            path.write_text(out,encoding='utf8')

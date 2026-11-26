@@ -1,5 +1,6 @@
 'use strict';
 const MODULE_NAMES = {
+  'ME-OBD':'ME-SFI · диагностика OBD-II', KE:'KE-Jetronic',
   HFM:'Управление двигателем HFM', ABS:'Антиблокировочная система', ASR:'Устойчивость и тяга',
   BAS:'Усилитель экстренного торможения', ZAE:'Подушки безопасности', AB2:'Подушки безопасности',
   EGS:'Электронное управление коробкой', EAG:'Автоматическая коробка передач',
@@ -22,6 +23,61 @@ const MODULE_NAMES = {
 const scannerHistory = new Map();
 const moduleName = code => MODULE_NAMES[code] || 'Электронный блок ' + code;
 const diagCode = n => Number(n).toString(16).padStart(4,'0').toUpperCase();
+const OBD_PIDS={
+  4:['Нагрузка двигателя','%',a=>100*a/255],5:['Температура охлаждающей жидкости','°C',a=>a-40],
+  11:['Абсолютное давление во впуске','кПа',a=>a],12:['Частота вращения','об/мин',(a,b)=>(256*a+b)/4],
+  13:['Скорость автомобиля','км/ч',a=>a],15:['Температура воздуха на впуске','°C',a=>a-40],
+  16:['Массовый расход воздуха','г/с',(a,b)=>(256*a+b)/100],17:['Положение дросселя','%',a=>100*a/255]
+};
+const CFI_N3={
+  2:'Контакт полной нагрузки',3:'Температура охлаждающей жидкости',4:'Потенциометр расходомера',
+  5:'Сигнал лямбда-зонда',7:'Сигнал частоты вращения',8:'Высотная коррекция',9:'Ток электрогидравлического регулятора',
+  10:'Контакт закрытого дросселя',11:'Система вторичного воздуха',12:'Давление во впуске от блока зажигания',
+  13:'Температура воздуха на впуске',14:'Сигнал скорости',16:'Клапан рециркуляции',17:'Замыкание сигнального провода лямбда-зонда',
+  18:'Ток клапана холостого хода',22:'Напряжение подогрева лямбда-зонда',23:'Замыкание цепи клапана продувки на плюс',
+  25:'Замыкание цепи пусковой форсунки на плюс',26:'Замыкание цепи задержки переключения на плюс',
+  27:'Связь между впрыском и зажиганием',28:'Прерывистый контакт датчика температуры ОЖ',
+  29:'Расхождение температуры ОЖ в двух блоках',31:'Прерывистый контакт датчика температуры воздуха',
+  34:'Температура ОЖ от блока зажигания'
+};
+const isEngineMode=r=>r.module==='ME-OBD' || r.module==='KE';
+const isDuty=r=>r.module==='KE' && r.variant==='X11 PWM';
+const obdCode=code=>'PCBU'[code>>>14]+((code>>>12)&3)+diagCode(code).slice(1);
+const hasPid=(mask,pid)=>((Number(mask) >>> (32-pid)) & 1)!==0;
+function engineConnector(r) {
+  if(r.module==='ME-OBD')return 'OBD-II (J1962), контакт 7. Для автомобилей с диагностикой OBD-II по K-Line.';
+  if(isDuty(r))return 'X11, контакт 3. Измерительный вход с высоким сопротивлением, выход передатчика отключён. Сверьте вывод по схеме автомобиля.';
+  return 'X11/4, контакт 3 блока CFI N3 на соответствующих M104/M119. Включите зажигание. Одна команда считывает один импульсный код.';
+}
+function engineRows(s) {
+  const rows=[['Режим',s.variant],['Разъём',engineConnector(s)]];
+  if(s.module==='ME-OBD') {
+    if(!s.obd_response)return rows.concat([['Связь','Нет ответа OBD-II']]);
+    rows.push(['Ответ OBD-II',(s.obd_kwp ? 'ISO 14230-4' : 'ISO 9141-2')+' · адрес 0x'+diagCode(s.obd_peer).slice(-2)]);
+    const pid=OBD_PIDS[s.at];
+    if(pid && s.raw?.length) {
+      const bytes=s.raw.map(x=>parseInt(x,16));
+      rows.push([pid[0],pid[2](...bytes).toLocaleString('ru-RU',{maximumFractionDigits:2})+' '+pid[1]]);
+    }
+    if(s.faults_valid) {
+      rows.push(['Сохранённые коды OBD-II',s.faults.length ? String(s.faults.length) : 'Неисправностей нет']);
+      for(const f of s.faults){
+        const refs=['ME2','M1L','M1R'].filter((_,i)=>f.hht_sources & (1<<i));
+        rows.push([obdCode(f.code),refs.length ? 'Встречается в HHT · '+refs.join(', ') : 'Код OBD-II']);
+      }
+    }
+  } else if(isDuty(s)) {
+    const d=s.duty;
+    const percent=x=>(x/10).toLocaleString('ru-RU')+' %';
+    rows.push(['Доля низкого уровня',d ? percent(d.low) : 'Нет достоверного измерения']);
+    if(d)rows.push(['Минимум / максимум',percent(d.min)+' / '+percent(d.max)],['Полных периодов',String(d.cycles)]);
+  } else {
+    rows.push(['Память N3',s.faults_valid ? (s.faults.length ? 'Цикл завершён' : '1 импульс · неисправностей нет') :
+      (s.last_blink ? 'Считайте следующий код до повтора первого' : 'Нет завершённого чтения')]);
+    for(const f of s.faults || [])rows.push(['Импульсный код '+f.code,CFI_N3[f.code] || 'Нет расшифровки для N3']);
+  }
+  return rows;
+}
 function describeHht(field,raw) {
   if(raw==null)return 'Нет достоверного значения';
   const [, , unit, decimals, signed, choices]=field;
@@ -43,7 +99,7 @@ function scannerChart(canvas,values) {
 async function scannerCommand(action,id,extra={}) {
   const sent=await post('scanner',Object.assign({action,id},extra));
   if(!sent.ok)throw Error('Очередь диагностики занята');
-  const deadline=Date.now()+(action==='scan' ? 10*60000 : 90000);
+  const deadline=Date.now()+(action==='scan' ? 10*60000 : 130000);
   while(Date.now()<deadline) {
     await sleep(300);
     const reply=await api('job?id='+sent.id);
@@ -55,7 +111,7 @@ async function scannerCommand(action,id,extra={}) {
 function scannerReport(report,moduleOnly) {
   const m=report.selected_module;
   if(!m)return '';
-  let html=moduleOnly ? '<div class="card pad" id="repCard"><h2>Диагностический отчёт</h2><p>'+esc(report.generator)+'</p><h3>'+esc(moduleName(m.module))+'</h3>'+kvTable([
+  let html=moduleOnly ? '<div class="card pad" id="repCard"><h2>Диагностический отчёт</h2><p>'+esc(report.generator)+'</p><h3>'+esc(moduleName(m.module))+'</h3>'+kvTable(isEngineMode(m) ? engineRows(m) : [
     ['Серия',m.series],['Контакт',m.contact || 'не подтверждён'],['Идентификационный ответ',m.identified ? m.ident.join(' ') : 'нет данных'],
     ['Память неисправностей',m.faults_valid ? m.faults.map(f=>diagCode(f.code)).join(', ') || 'Неисправностей нет' : 'чтение не завершено']
   ]) : '';
@@ -64,7 +120,7 @@ function scannerReport(report,moduleOnly) {
     const [title,fields]=HHT_SCREENS[sample.screen];
     html+='<h3>'+esc(title)+'</h3>'+kvTable(fields.map(f=>[f[1] || title,describeHht(f,sample.words[f[0]])]));
   }
-  if(moduleOnly && m.raw?.length)html+='<h3>Запись '+esc(m.at)+'</h3><p class="mono">'+esc(m.raw.join(' '))+'</p>';
+  if(moduleOnly && !isEngineMode(m) && m.raw?.length)html+='<h3>Запись '+esc(m.at)+'</h3><p class="mono">'+esc(m.raw.join(' '))+'</p>';
   if(report.before_module_clear) {
     const previous=report.before_module_clear;
     html+='<h3>Перед стиранием</h3><p>'+esc(moduleName(previous.module))+' · '+esc(previous.codes.map(diagCode).join(', '))+'</p>';
@@ -99,23 +155,30 @@ R.scanner=async () => {
     const selected=latest.selection.id===r.id,confirmed=selected && latest.selection.confirmed;
     const desc=esc(r.protocol)+(r.variant ? ' · '+esc(r.variant) : '');
     let html='<p class="muted small">'+desc+'</p>';
+    if(isEngineMode(r))html+='<p>'+esc(engineConnector(r))+'</p>';
+    if(['ME2','M1L','M1R'].includes(r.module))html+='<button class="btn sec" data-scan="open-obd">Открыть диагностику ME-SFI по OBD-II</button>';
     if(!r.available)html+='<p class="note">В каталоге HHT есть этот вариант. Его сценарий связи на этом адаптере пока недоступен.</p>';
     else if(!selected)html+='<button class="btn" data-scan="select">Выбрать блок и приостановить обмен</button>';
     else if(!confirmed)html+='<label>Контакт диагностического разъёма<input id="scanPin" type="number" min="1" max="38" '+(r.contact ? 'value="'+r.contact+'" readonly' : 'placeholder="По схеме автомобиля"')+'></label>'+
       (['KS-1','KS-6'].includes(r.protocol) && !r.fixed_baud ? '<label>Скорость после синхронизации<select id="scanBaud"><option value="0">9600 бод</option><option value="1">10400 бод</option><option value="2">4800 бод</option><option value="3">19200 бод</option></select></label>' : '')+
-      '<label class="scan-confirm"><input type="checkbox" id="scanConfirm">Провод K-Line подключён к указанному контакту</label><button class="btn" data-scan="attach">Подключиться</button>';
+      '<label class="scan-confirm"><input type="checkbox" id="scanConfirm">Я проверил разъём и подключил указанный контакт</label><button class="btn" data-scan="attach">Подключиться</button>';
     else html+='<p>Подключение через контакт <strong>'+latest.selection.contact+'</strong></p><div class="btns">'+
-      (r.dtc ? '<button class="btn" data-scan="faults">Прочитать неисправности</button>' : '')+
-      '<button class="btn sec" data-scan="scan">Опросить блоки на этом контакте</button><button class="btn sec" data-scan="pause">Остановить связь</button></div>';
+      (r.dtc && (r.module!=='ME-OBD' || hasPid(latest.selection.pid_mask,1)) ? '<button class="btn" data-scan="faults">'+(r.module==='KE' ? 'Прочитать следующий импульсный код' : 'Прочитать неисправности')+'</button>' : '')+
+      (isEngineMode(r) ? '' : '<button class="btn sec" data-scan="scan">Опросить блоки на этом контакте</button>')+'<button class="btn sec" data-scan="pause">Остановить связь</button></div>';
     if(confirmed && r.clear && latest.selection.identified)html+='<button class="btn sec" data-scan="clear">Стереть память неисправностей</button>';
     if(confirmed && r.module==='HFM') html+='<label>Параметр двигателя<select id="scanScreen">'+Object.entries(HHT_SCREENS).map(([id,[title]])=>'<option value="'+id+'" '+(Number(id)===screen ? 'selected' : '')+'>'+esc(title)+' · '+id+'</option>').join('')+'</select></label><div class="btns"><button class="btn sec" data-scan="sample">Считать параметр</button><button class="btn sec" data-scan="monitor">'+(reading ? 'Остановить график' : 'Запустить график')+'</button></div>';
-    if(confirmed && r.measures.length)html+='<label>Блок данных ЭБУ<select id="scanMeasure">'+r.measures.map((at,i)=>'<option value="'+i+'">'+(r.module==='EGS' && (at===21 || at===23) ? (at===21 ? 'Счётчик масла' : 'Счётчик двигателя') : 'Запись '+at)+'</option>').join('')+'</select></label><button class="btn sec" data-scan="measure">Считать данные</button>';
+    if(confirmed && isEngineMode(r) && r.measures.length) {
+      const opts=r.measures.map((at,i)=>[at,i]).filter(([at])=>isDuty(r) || hasPid(latest.selection.pid_mask,at));
+      if(opts.length)html+='<label>Параметр<select id="scanMeasure">'+opts.map(([at,i])=>'<option value="'+i+'">'+(isDuty(r) ? 'Доля низкого уровня' : OBD_PIDS[at][0])+'</option>').join('')+'</select></label><button class="btn sec" data-scan="measure">Измерить</button>';
+    } else if(confirmed && r.measures.length)html+='<label>Блок данных ЭБУ<select id="scanMeasure">'+r.measures.map((at,i)=>'<option value="'+i+'">'+(r.module==='EGS' && (at===21 || at===23) ? (at===21 ? 'Счётчик масла' : 'Счётчик двигателя') : 'Запись '+at)+'</option>').join('')+'</select></label><button class="btn sec" data-scan="measure">Считать данные</button>';
     $('#scanRoute').innerHTML=html;
   }
   function results() {
     const r=chosen(), s=latest.selection;
     let html='';
-    if(r && r.id===s.id && r.module!=='HFM') {
+    if(r && r.id===s.id && isEngineMode(r)) {
+      html='<div class="card pad">'+kvTable(engineRows(s))+'<a class="btn sec" href="/api/report?dl=1" download>Скачать отчёт</a></div>';
+    } else if(r && r.id===s.id && r.module!=='HFM') {
       if(s.identified)html+='<div class="card pad"><h3>Идентификатор блока</h3><div class="mono scan-bytes">'+s.ident.map(esc).join(' ')+'</div></div>';
       if(s.faults_valid)html+='<div class="card pad"><h3>Память неисправностей</h3>'+(s.faults.length ? s.faults.map(d=>'<div>Код '+diagCode(d.code)+(r.protocol==='GL_ISO2' ? ' · статус '+d.status : '')+'</div>').join('') : 'Неисправностей нет')+'</div>';
       if(s.raw.length)html+='<div class="card pad"><h3>Запись '+s.at+'</h3><div class="mono scan-bytes">'+s.raw.map(esc).join(' ')+'</div></div>';
@@ -135,7 +198,7 @@ R.scanner=async () => {
   }
   async function refresh() {
     const status=await api('scanner');if(!here())return;
-    const changed=status.selection.epoch!==latest.selection.epoch || status.selection.confirmed!==latest.selection.confirmed;
+    const changed=status.selection.epoch!==latest.selection.epoch || status.selection.confirmed!==latest.selection.confirmed || status.selection.pid_mask!==latest.selection.pid_mask;
     latest=status;if(changed){reading=false;sample=null;resetAverage();scannerHistory.clear();routeForm();}
     results();report();
   }
@@ -174,6 +237,7 @@ R.scanner=async () => {
     const btn=e.target.closest('[data-scan]'),r=chosen();if(!btn||!r)return;
     const action=btn.dataset.scan;
     if(action==='pause' && (active || backgroundPoll)){manualStop=true;reading=false;try{await scannerCommand('pause',r.id);}catch(err){toast(err.message,true);}return;}
+    if(action==='open-obd'){seriesBox.value='ME-SFI · OBD-II';await list();return;}
     if(active)return;
     active=true;btn.disabled=true;
     try {
@@ -199,7 +263,9 @@ R.scanner=async () => {
         if(!here())return;await refresh();routeForm();
         if(action==='faults' && r.module==='HFM')go('dtc');else if(msg && !manualStop)toast(msg);
       }
-    } catch(err){reading=false;if(here())toast(err.message,true);}
+    } catch(err){
+      reading=false;if(here()){toast(err.message,true);try {await refresh();routeForm();}catch(_){}}
+    }
     finally {active=false;btn.disabled=false;}
   };
   await list();

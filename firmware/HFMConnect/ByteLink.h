@@ -6,6 +6,7 @@
 //   ReplayLink (tests/host: replays a recorded trace)
 #pragma once
 #include "HfmTypes.h"
+#include "EngineSignals.h"
 
 // Timing profile of the link layer. Defaults are profile "R" from REV 1.1
 // (BREAK 177 ms, post-break 214 ms, 2-byte read deadline 750 ms). They are reconstructed values (REK), not factory data.
@@ -48,6 +49,10 @@ class ByteLink {
   virtual bool frameWrite(uint8_t) { return false; }
   virtual bool frameRead(uint8_t&, uint16_t) { return false; }
   virtual void frameDrain() {}
+  virtual bool supportsDuty() const {return false;}
+  virtual bool sampleDuty(scanner::DutySample&) {return false;}
+  virtual bool supportsKeBlink() const {return false;}
+  virtual uint8_t readKeBlink() {return 0;}
 
   // Number of actual echo/reply bytes from the last exchange; -1 for old replay adapters.
   virtual int receiveCount() const { return -1; }

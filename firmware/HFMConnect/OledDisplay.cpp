@@ -72,6 +72,21 @@ void snapshot(oled::Input& in) {
   in.link = mapLink(e.link);
   in.reading = (e.job.state == JobState::Running || e.job.state == JobState::Queued) &&
                (e.job.job == Job::ReadDtc || e.job.job == Job::Identify);
+  const auto* route=scanner::route(e.module.route);
+  if(route && e.module.confirmed && (route->protocol==scanner::Protocol::Obd ||
+      route->protocol==scanner::Protocol::Duty || route->protocol==scanner::Protocol::Blink)) {
+    const auto& result=e.module.readout;
+    auto& info=in.engine;
+    const bool duty=route->protocol==scanner::Protocol::Duty;
+    info.title=duty ? "KE X11 PWM" : route->protocol==scanner::Protocol::Blink ? "KE N3" : "ME OBD-II";
+    if(in.reading)strlcpy(info.detail,"Чтение...",sizeof info.detail);
+    else if(e.module.error!=scanner::FrameError::Ok)strlcpy(info.detail,"Нет данных",sizeof info.detail);
+    else if(duty && result.duty.cycles)snprintf(info.detail,sizeof info.detail,"LOW %u.%u %%",result.duty.lowPermille/10,result.duty.lowPermille%10);
+    else if(result.faultsValid)snprintf(info.detail,sizeof info.detail,"Кодов в памяти: %u",unsigned(result.codeCount));
+    else if(result.lastBlink)snprintf(info.detail,sizeof info.detail,"Импульсный код %u",unsigned(result.lastBlink));
+    else strlcpy(info.detail,result.obdResponding ? "Есть ответ OBD-II" : "Готов к замеру",sizeof info.detail);
+    Engine.unlock();return;
+  }
   in.dtcValid = e.dtc.valid;
   in.dtcStamp = e.dtc.tMs;
   const FeatRun& fr = e.feat[prof::F_DTC_READ];

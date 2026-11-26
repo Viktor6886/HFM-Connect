@@ -100,6 +100,8 @@ void Model::update(const Input& in, uint32_t nowMs) {
     enter(Screen::Boot, nowMs);
   } else if (in.link == Link::NoAdapter) {
     enter(Screen::NoAdapter, nowMs);
+  } else if(in.engine.title && ready) {
+    enter(Screen::EngineStatus,nowMs);v_.engine=in.engine;
   } else if (in.link == Link::Idle) {
     enter(Screen::Waiting, nowMs);
   } else if (in.link == Link::Connecting) {
@@ -158,6 +160,10 @@ void Model::update(const Input& in, uint32_t nowMs) {
   // Redraw key: the picture only changes when this value changes.
   uint32_t k = 0;
   switch (v_.screen) {
+    case Screen::EngineStatus:
+      for(const char* s=v_.engine.title;*s;++s)k=k*31+uint8_t(*s);
+      for(const char* s=v_.engine.detail;*s;++s)k=k*31+uint8_t(*s);
+      break;
     case Screen::Boot: k = v_.sinceMs / 60; break;
     case Screen::Connecting:
     case Screen::Reading: k = v_.sinceMs / 120; break;

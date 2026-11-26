@@ -164,3 +164,119 @@ TEST(comfort_fault_clear_checks_profile_and_never_retransmits_busy_write) {
   io.reply(FrameKind::Iso,p->address,{0x7c,0,'Z','B'});CHECK(driver.verifyIdentity(*p)==FrameError::Address);
   CHECK(!driver.ready());CHECK(!driver.result().identityValid);
 }
+
+namespace {
+// Each negative event is a real inter-frame/inter-request silence in the fixture.
+class EngineBench : public BenchFrames {
+ public:
+  std::deque<int> input;
+  bool capable=true, validDuty=true;
+  uint8_t blink=0;
+  bool frameRead(uint8_t& b,uint16_t timeout) override {
+    if(echoPending)return BenchFrames::frameRead(b,timeout);
+    if(input.empty())return false;
+    int value=input.front();input.pop_front();
+    if(value<0)return false;
+    b=uint8_t(value);return true;
+  }
+  bool supportsDuty() const override {return capable;}
+  bool supportsKeBlink() const override {return capable;}
+  bool sampleDuty(DutySample& s) override {if(validDuty)s={700,690,710,32};return validDuty;}
+  uint8_t readKeBlink() override {return blink;}
+  void response(bool kwp,uint8_t peer,std::initializer_list<uint8_t> payload,bool corrupt=false) {
+    std::vector<uint8_t> frame={uint8_t(kwp ? 0x80|payload.size() : 0x48),uint8_t(kwp ? 0xf1 : 0x6b),peer};
+    frame.insert(frame.end(),payload.begin(),payload.end());
+    uint8_t sum=0;for(uint8_t b:frame){sum+=b;input.push_back(b);}
+    input.push_back(corrupt ? sum^1 : sum);
+    if(!kwp && frame.size()+1<11)input.push_back(-1);
+  }
+  void slowStart(bool kwp=false) {input={0x55,kwp ? 0xe9 : 8,kwp ? 0x8f : 8,0xcc};}
+  void caps(bool kwp,uint8_t peer=0x10,bool engine=true) {
+    response(kwp,peer,{0x41,0,uint8_t(engine ? 0x88 : 0),uint8_t(engine ? 0x10 : 0),0,0});
+  }
+};
+const Profile* engineRoute(Protocol protocol,const char* variant) {
+  for(size_t id=0;id<routeCount();++id) {
+    const auto& r=*route(id);
+    if(r.protocol==protocol && !strcmp(r.variant,variant))return profile(r);
+  }
+  return nullptr;
+}
+}
+TEST(me_slow_obd_handshake_requests_pid_and_verified_fault_count) {
+  EngineBench io;TraceLog trace;ModuleDriver drv(io,trace);
+  const auto* p=engineRoute(Protocol::Obd,"5 baud");CHECK(p);if(!p)return;
+  io.slowStart();io.caps(false);
+  CHECK_EQ(drv.connect(*p,9600),FrameError::Ok);
+  CHECK((io.sent==std::vector<uint8_t>{0xf7,0x68,0x6a,0xf1,1,0,0xc4}));
+  CHECK_EQ(io.baud,10400);CHECK_EQ(io.levels.size(),10);
+  CHECK((io.levels==std::vector<uint8_t>{1,0,0,1,1,0,0,1,1,0}));
+  CHECK(drv.result().obdResponding && !drv.result().identityValid);
+  CHECK_EQ(drv.result().obdPeer,0x10);CHECK_EQ(drv.result().pidMask,0x88100000u);
+  size_t prior=io.sent.size();CHECK_EQ(drv.measurement(*p,0),FrameError::Unsupported);CHECK_EQ(io.sent.size(),prior);
+  io.response(false,0x10,{0x41,0x0c,0x1a,0xf8});
+  CHECK_EQ(drv.measurement(*p,3),FrameError::Ok);CHECK_EQ(drv.result().rawLen,2);CHECK_EQ(drv.result().raw[0],0x1a);
+  io.response(false,0x10,{0x41,1,0x82,0,0,0});io.input.push_back(-1);
+  io.response(false,0x10,{0x43,3,2,1,0x15,0,0});
+  CHECK_EQ(drv.faults(*p),FrameError::Ok);CHECK(drv.result().faultsValid);
+  CHECK_EQ(drv.result().codes[0],0x0302);CHECK_EQ(drv.result().codes[1],0x0115);CHECK_EQ(meFaultSources(0x0302),7);
+  io.response(false,0x10,{0x41,1,0x82,0,0,0});io.input.push_back(-1);
+  io.response(false,0x10,{0x43,3,2,0,0,0,0});
+  CHECK_EQ(drv.faults(*p),FrameError::Length);CHECK(!drv.ready());CHECK_EQ(drv.result().codeCount,0);
+  CHECK(!drv.result().faultsValid && !drv.result().obdResponding);
+}
+TEST(me_kwp_slow_and_fast_source_selection_errors) {
+  for(bool fast:{false,true}) {
+    EngineBench io;TraceLog trace;FrameSession session(io,trace);uint32_t mask=0;
+    if(fast){io.response(true,0x10,{0xc1,0xe9,0x8f});io.input.push_back(-1);}
+    else io.slowStart(true);
+    io.caps(true,0x18,false);io.caps(true,0x10);
+    CHECK_EQ(session.connectObd(fast,mask),FrameError::Ok);CHECK(session.obdKwp());
+    CHECK_EQ(session.obdPeer(),0x10);CHECK_EQ(mask,0x88100000u);
+    if(fast)CHECK((io.sent==std::vector<uint8_t>{0xc1,0x33,0xf1,0x81,0x66,0xc2,0x33,0xf1,1,0,0xe7}));
+    uint8_t bytes[2]={0x55,0xaa};
+    io.response(true,0x18,{0x41,12,0xff,0xff});io.response(true,0x10,{0x41,12,0,0});
+    CHECK_EQ(session.obdCurrent(12,bytes,2),FrameError::Ok);CHECK_EQ(bytes[0],0);CHECK_EQ(bytes[1],0);
+    io.response(true,0x10,{0x7f,1,0x12});CHECK_EQ(session.obdCurrent(12,bytes,2),FrameError::Negative);
+    io.response(true,0x10,{0x41,12,0xff,0xff},true);CHECK_EQ(session.obdCurrent(12,bytes,2),FrameError::Sum);
+    CHECK(!session.ready());
+  }
+  EngineBench io;TraceLog trace;FrameSession s(io,trace);uint32_t mask=42;
+  io.slowStart(true);io.caps(true,0x18);io.caps(true);
+  CHECK_EQ(s.connectObd(false,mask),FrameError::Ambiguous);CHECK_EQ(mask,0);
+  io.input={0x55,0x01,0x01};CHECK_EQ(s.connectObd(false,mask),FrameError::Unsupported);
+  io.slowStart();io.caps(false);CHECK_EQ(s.connectObd(false,mask),FrameError::Ok);
+  uint8_t data[2]{};io.input={0x48,0x6b,0x10,0x41};CHECK_EQ(s.obdCurrent(12,data,2),FrameError::Length);
+}
+TEST(ke_duty_and_blink_public_workflow_no_background_transmission) {
+  EngineBench io;TraceLog trace;ModuleDriver drv(io,trace);
+  auto* duty=engineRoute(Protocol::Duty,"X11 PWM");auto* n3=engineRoute(Protocol::Blink,"N3 M104/M119");
+  CHECK(duty && n3);if(!duty || !n3)return;
+  io.capable=false;CHECK_EQ(drv.connect(*duty,0),FrameError::Unsupported);
+  io.capable=true;CHECK_EQ(drv.connect(*duty,0),FrameError::Ok);CHECK(!drv.result().identityValid);
+  CHECK(!duty->canReadFaults());CHECK_EQ(drv.faults(*duty),FrameError::Unsupported);
+  CHECK_EQ(drv.measurement(*duty,0),FrameError::Ok);CHECK_EQ(drv.result().duty.lowPermille,700);
+  io.validDuty=false;CHECK_EQ(drv.measurement(*duty,0),FrameError::Reply);CHECK_EQ(drv.result().duty.cycles,0);
+  CHECK_EQ(drv.connect(*n3,0),FrameError::Ok);
+  for(uint8_t code:{3,9,3}){io.blink=code;CHECK_EQ(drv.faults(*n3),FrameError::Ok);}
+  CHECK(drv.result().faultsValid);CHECK_EQ(drv.result().codeCount,2);
+  io.blink=1;CHECK_EQ(drv.faults(*n3),FrameError::Ok);CHECK(drv.result().faultsValid);CHECK_EQ(drv.result().codeCount,0);
+  io.blink=0;CHECK_EQ(drv.faults(*n3),FrameError::Timeout);CHECK(!drv.result().faultsValid);
+  CHECK_EQ(drv.keepAlive(*n3),FrameError::Ok);CHECK(io.sent.empty() && io.levels.empty());
+}
+TEST(ke_sampled_signals_ignore_partial_cycles_and_reject_invalid_trains) {
+  for(unsigned low:{16u,56u}) {
+    DutyCounter counter;DutySample out{};
+    for(unsigned t=17;t<4113;++t)counter.sample(t%80>=low);
+    CHECK(counter.finish(out));CHECK_EQ(out.lowPermille,low*1000/80);CHECK_EQ(out.minimum,out.maximum);CHECK(out.cycles>=49);
+    for(unsigned i=0;i<200;++i)counter.sample(true);
+    CHECK(!counter.finish(out));CHECK_EQ(out.cycles,0);
+  }
+  DutyCounter empty;DutySample d;for(unsigned i=0;i<4096;++i)empty.sample(true);CHECK(!empty.finish(d));
+  auto phase=[](BlinkCounter& b,bool high,unsigned ms){for(unsigned i=0;i<ms*8;++i)b.sample(high);};
+  BlinkCounter blink;phase(blink,true,500);for(int i=0;i<3;++i){phase(blink,false,500);phase(blink,true,500);}
+  CHECK(!blink.done());phase(blink,true,2000);CHECK_EQ(blink.result(),3);
+  BlinkCounter stuck;phase(stuck,true,10);phase(stuck,false,2200);CHECK(stuck.done());CHECK_EQ(stuck.result(),0);
+  BlinkCounter noise;phase(noise,true,10);phase(noise,false,5);phase(noise,true,2600);CHECK_EQ(noise.result(),0);
+  BlinkCounter silent;phase(silent,true,6100);CHECK(silent.done());CHECK_EQ(silent.result(),0);
+}

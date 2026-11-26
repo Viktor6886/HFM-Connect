@@ -62,7 +62,7 @@ bool DiagEngine::scannerJob(Job j,uint32_t arg,const char* text,char* msg,size_t
       ok=false;snprintf(msg,n,"Проверьте выбранный блок, контакт и поддержку подключения");return true;
     }
     static const uint32_t rates[]={9600,10400,4800,19200};
-    lock();st_.module.confirmed=true;st_.module.contact=pin;st_.module.baud=rates[speed];unlock();
+    lock();st_.module.confirmed=true;st_.module.contact=pin;st_.module.baud=p && p->obd() ? 10400 : p && p->ke() ? 0 : rates[speed];unlock();
     trace_.setRoute(id,pin);
     userDisconnected_=false;
     if(hfm) {
@@ -74,7 +74,7 @@ bool DiagEngine::scannerJob(Job j,uint32_t arg,const char* text,char* msg,size_t
     j=Job::Connect;
   }
   if(j==Job::ScanContact) {
-    if(!st_.module.confirmed || userDisconnected_ || (!hfm && !p) || guard_.state()!=guard::State::Idle || st_.recording) {
+    if(!st_.module.confirmed || userDisconnected_ || (!hfm && !p) || (p && p->mode!=scanner::EngineMode::Native) || guard_.state()!=guard::State::Idle || st_.recording) {
       ok=false;snprintf(msg,n,"Для опроса подтвердите контакт и завершите запись и сервисные операции");
     } else scanContact(msg,n,ok);
     return true;
@@ -118,12 +118,18 @@ bool DiagEngine::scannerJob(Job j,uint32_t arg,const char* text,char* msg,size_t
     ok=false;snprintf(msg,n,"Эта операция отсутствует в профиле %s",route->module);return true;
   }
   ok=err==FrameError::Ok;nextModuleMs_=millis()+(ok ? 1400 : 4000);
-  snprintf(msg,n,"%s",scanner::message(err));
+  const char* feedback=scanner::message(err);
+  if(p->ke() && ok && (j==Job::Connect || j==Job::Identify))feedback="Адаптер готов к измерению";
+  if(p->mode==scanner::EngineMode::KeDuty && !ok && err==FrameError::Reply)feedback="Нет устойчивого периодического сигнала";
+  snprintf(msg,n,"%s",feedback);
+  bool reattach=!ok && p->mode!=scanner::EngineMode::Native && !moduleDriver_->ready();
+  if(reattach) {moduleDriver_->close();userDisconnected_=true;}
   lock();st_.module.readout=moduleDriver_->result();st_.module.error=err;
+  if(reattach) {++st_.module.epoch;st_.module.confirmed=false;}
   st_.session=moduleDriver_->ready() ? SessionState::Ready : SessionState::Error;
   st_.link=moduleDriver_->ready() ? LinkPhase::Ready : LinkPhase::Recovering;
   strlcpy(st_.linkMsg,msg,sizeof st_.linkMsg);unlock();
-  if(j==Job::ReadDtc) {moduleFaultMs_=ok ? millis() : 0;storeScan(st_.module.route,moduleDriver_->result(),err);}
+  if(j==Job::ReadDtc && p->mode==scanner::EngineMode::Native) {moduleFaultMs_=ok ? millis() : 0;storeScan(st_.module.route,moduleDriver_->result(),err);}
   return true;
 }
 
@@ -191,12 +197,24 @@ void DiagEngine::scannerTick() {
   const auto* route=scanner::route(st_.module.route);
   const auto* p=route ? scanner::profile(*route) : nullptr;
   if(!p) return;
+  if(p->ke() || (p->obd() && !moduleDriver_->ready())) {
+    nextModuleMs_=millis()+1400;
+    if(!moduleDriver_->ready()) {
+      moduleDriver_->close();userDisconnected_=true;
+      lock();++st_.module.epoch;st_.module.confirmed=false;st_.module.readout={};st_.module.error=FrameError::Offline;
+      st_.session=SessionState::Disconnected;st_.link=LinkPhase::NoAdapter;
+      strlcpy(st_.linkMsg,scanner::message(FrameError::Offline),sizeof st_.linkMsg);unlock();
+    }
+    return;
+  }
   bool connected=moduleDriver_->ready();
   if(!connected && !settings_->autoConnect) return;
   FrameError e=connected ? moduleDriver_->keepAlive(*p) : moduleDriver_->connect(*p,st_.module.baud);
   if(e!=FrameError::Ok) {
     moduleDriver_->close();moduleFaultMs_=0;guard_.cancel();
-    lock();st_.plan=guard_.plan();if(connected) ++st_.module.epoch;unlock();
+    lock();st_.plan=guard_.plan();if(connected) ++st_.module.epoch;
+    if(p->obd()) {st_.module.confirmed=false;userDisconnected_=true;}
+    unlock();
   }
   nextModuleMs_=millis()+(e==FrameError::Ok ? 1400 : 5000);
   lock();st_.module.error=e;st_.module.readout=moduleDriver_->result();

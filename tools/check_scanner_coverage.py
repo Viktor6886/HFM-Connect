@@ -10,7 +10,7 @@ from run_host_tests import compiler, FW, ROOT
 def coverage():
     with tempfile.TemporaryDirectory() as tmp:
         exe = Path(tmp) / "catalogue.exe"
-        units = ["ModuleDriver.cpp", "ScannerCatalog.cpp", "FrameSession.cpp", "HfmSession.cpp", "TraceLog.cpp"]
+        units = ["ModuleDriver.cpp", "ScannerCatalog.cpp", "ObdSession.cpp", "EngineSignals.cpp", "FrameSession.cpp", "HfmSession.cpp", "TraceLog.cpp"]
         sources = [ROOT/"tests/fixtures/scanner_catalogue.cpp"] + [FW/name for name in units]
         subprocess.run(compiler()+["-std=c++17", "-O2", "-I", str(FW), *map(str,sources), "-o", str(exe)], check=True)
         lines = subprocess.check_output([str(exe)], encoding="utf8").splitlines()
@@ -24,8 +24,11 @@ def coverage():
                            dtc_read=bool(int(dtc)),module_guarded_clear=bool(int(clear)),ks3_id_bytes=int(id_bytes) or None,
                            fixed_read_records=[int(i) for i in reads.split(",") if i]))
     active=[r for r in routes if r["available"]]
+    engines=[r for r in routes if r["module"] in ("ME-OBD","KE")]
+    hht=[r for r in routes if r not in engines]
     def distinct(key, rows): return sorted({r[key] for r in rows})
-    counts = dict(series=len(distinct("series",routes)), candidates=len(distinct("module",routes)), routes=len(routes),
+    counts = dict(hht_routes=len(hht), hht_enabled_routes=sum(r["available"] for r in hht),
+                  supplemental_routes=len(engines),series=len(distinct("series",routes)), candidates=len(distinct("module",routes)), routes=len(routes),
                   enabled_routes=len(active), enabled_module_codes=len(distinct("module",active)),
                   enabled_module_variants=len({(r["module"],r["variant"]) for r in active}),
                   dtc_modules=distinct("module",[r for r in active if r["dtc_read"]]),
