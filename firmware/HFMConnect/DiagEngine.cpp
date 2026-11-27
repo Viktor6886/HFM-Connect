@@ -14,7 +14,7 @@ const char* jobCode(Job j) {
   static const char* const names[] = {"none", "connect", "disconnect", "identify", "read_dtc", "read_adapt",
                                       "read_coding", "read_vin", "live_start", "live_stop", "svc_prepare",
                                       "svc_execute", "purge_on", "purge_off", "stop", "impulse_read",
-                                      "ack_fault", "hht_screen", "select_route", "attach_route", "module_measure", "scan_contact"};
+                                      "ack_fault", "hht_screen", "select_route", "attach_route", "module_measure", "scan_contact", "module_info", "hfm_cranking", "hfm_throttle_status"};
   return names[(uint8_t)j < sizeof(names) / sizeof(names[0]) ? (uint8_t)j : 0];
 }
 
@@ -214,7 +214,7 @@ void DiagEngine::readHardware() {
       // wanted and resumes after the automatic reconnection.
       session_->disconnect();
       moduleDriver_->close(); hhtReader_.reset();
-      ++st_.module.epoch; st_.module.readout={}; st_.hhtScreen={};
+      ++st_.module.epoch; st_.module.readout={}; st_.module.cranking={}; st_.module.throttle={}; st_.module.canCrank=false; st_.hhtScreen={};
       st_.dtc.invalidate(); st_.vin={}; st_.adapt={}; st_.coding={}; st_.ident={};
       guard_.cancel();
       if (guard_.state() == guard::State::Active) guard_.finish(false);
@@ -368,7 +368,8 @@ void DiagEngine::doIdentify(char* msg, size_t n, bool& ok) {
     }
   }
   lock();
-  st_.hhtScreen = {};
+  st_.hhtScreen = {};st_.module.cranking={};st_.module.throttle={};
+  st_.module.canCrank=ok && id.extPresent && (id.vendorId==1 || id.vendorId==2) && (id.hhtCylinders==4 || id.hhtCylinders==6) && id.diagIndexRaw>=0x45;
   {
     if (!ok || strcmp(st_.ident.fingerprint, id.fingerprint) != 0) {
       // Another ECU: results of the previous one are not valid for it.
@@ -1413,7 +1414,10 @@ void DiagEngine::updateLink() {
       snprintf(m, sizeof m, "%s", st_.autoMsg[0] ? st_.autoMsg : "Поиск ЭБУ…");
   }
   // Link lost: the stored fault readout is re-read once the link is back.
-  if (st_.link == LinkPhase::Ready && ph != LinkPhase::Ready) dtcRefresh_.linkLost(millis());
+  if (st_.link == LinkPhase::Ready && ph != LinkPhase::Ready) {
+    dtcRefresh_.linkLost(millis());
+    st_.module.cranking={};st_.module.throttle={};
+  }
   st_.link = ph;
   strlcpy(st_.linkMsg, m, sizeof st_.linkMsg);
   st_.faultStop = guard_.state() == guard::State::FaultStop;

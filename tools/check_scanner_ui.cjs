@@ -22,7 +22,8 @@ const defs = [
   {id:3,module:'KLA',variant:'GL_ISO2',protocol:'GL_ISO2',contact:7,mux:0,available:true,dtc:true,clear:true,measures:[]},
   {id:4,series:'ME-SFI · OBD-II',module:'ME-OBD',variant:'5 baud',protocol:'OBD-II K-Line',contact:7,available:true,dtc:true,measures:[4,5,11,12,13,15,16,17]},
   {id:5,series:'KE-Jetronic',module:'KE',variant:'X11 PWM',protocol:'X11 PWM',contact:3,available:true,dtc:false,measures:[0]},
-  {id:6,series:'KE-Jetronic',module:'KE',variant:'N3 M104/M119',protocol:'CFI N3',contact:3,available:true,dtc:true,measures:[]}
+  {id:6,series:'KE-Jetronic',module:'KE',variant:'N3 M104/M119',protocol:'CFI N3',contact:3,available:true,dtc:true,measures:[]},
+  ...[1988,1991].map((year,i)=>({id:7+i,series:'KE-Jetronic',module:'KE',variant:'M102.985 CA '+year,protocol:'CFI N3',contact:3,available:true,dtc:true,measures:[]}))
 ];
 async function main(){
   let state, history, jobs, screen, requests, requestSequence, failRead, failJob, serviceParams, plan;
@@ -45,12 +46,24 @@ async function main(){
       if(action==='select')state={id,epoch:state.epoch+1,confirmed:false,series:defs[id].series||'124',
         module:defs[id].module,variant:defs[id].variant,ident:[],raw:[],faults:[]};
       if(action==='attach')Object.assign(state,{confirmed:true,contact:Number(body.get('contact')),identified:true,ident:['41','42']});
+      if(action==='attach' && id===0)state.can_crank=true;
+      if(action==='crank' && id===0 && body.get('prepared')==='1' && Number(body.get('epoch'))===state.epoch)
+        state.cranking={rpm:[220,210,208,207],samples:12};
+      if(action==='throttle' && id===0 && Number(body.get('epoch'))===state.epoch)
+        state.throttle={contact:2,configuration:0,learned:1};
+      if(action==='info' && id===4 && Number(body.get('epoch'))===state.epoch) {
+        const f=body.get('field');
+        if(f==='2')state.obd_vin='WDB1240281A123456';
+        if(f==='4')state.calibrations=['TEST-CAL-A'];
+        if(f==='6')state.cvns=['01234567'];
+      }
       if(action==='attach' && id>=4)Object.assign(state,{identified:false,ident:[],obd_response:id===4,obd_peer:16,pid_mask:id===4 ? 0x88100000 : 0});
       if(action==='measure' && id===4 && body.get('index')==='3')Object.assign(state,{raw:['1A','F8'],at:12});
       if(action==='measure' && id===5)state.duty={low:700,min:690,max:710,cycles:49};
       if(action==='scan'){history=[{id,module:defs[id].module,identified:true,complete:true,contact:state.contact,codes:[]}];state={...state,confirmed:false,epoch:state.epoch+1};}
       if(action==='faults')Object.assign(state,{faults_valid:true,faults:[{code:37,status:0}]});
       if(action==='faults' && id===4)state.faults=[{code:0x0302,hht_sources:7}];
+      if(action==='faults' && id>=7)Object.assign(state,{faults_valid:true,faults:[{code:12}],blink_quiet_end:true});
       if(action==='faults' && id===6)Object.assign(state,{last_blink:3,faults_valid:false,faults:[{code:3}]});
       return json({id:++jobs,ok:true});
     }
@@ -83,6 +96,10 @@ async function main(){
       await p.waitForTimeout(100);assert.equal(requests.some(x=>x[0]==='attach'),false);
       await p.check('#scanConfirm');await p.click('[data-scan="attach"]');await p.waitForSelector('#scanScreen');
       await p.click('[data-scan="sample"]');await p.waitForFunction(()=>document.querySelector('#scanResults').textContent.includes('0 °C'));
+      await p.click('[data-scan="crank"]');assert.equal(requests.filter(row=>row[0]==='crank').length,0);
+      await p.check('#crankReady');await p.click('[data-scan="crank"]');
+      await p.waitForFunction(()=>document.querySelector('#scanResults').textContent.includes('220 об/мин'));
+      await p.click('[data-scan="throttle"]');await p.waitForFunction(()=>document.querySelector('#scanResults').textContent.includes('Упор обучен (экран 53)'));
       await p.selectOption('#scanScreen','2');await p.click('[data-scan="sample"]');
       await p.waitForFunction(()=>document.querySelector('#scanResults').textContent.includes('800 об/мин'));
       assert.deepEqual(requestSequence.slice(-2),[1,2]);
@@ -136,6 +153,10 @@ async function main(){
       await p.waitForFunction(()=>document.querySelector('#scanModule')?.value==='4');
       await p.click('[data-scan="select"]');await p.check('#scanConfirm');await p.click('[data-scan="attach"]');
       await p.waitForSelector('#scanMeasure');
+      for(const [field,expected] of [['2','WDB1240281A123456'],['4','TEST-CAL-A'],['6','01234567']]){
+        await p.selectOption('#scanInfo',field);await p.click('[data-scan="info"]');
+        await p.waitForFunction(value=>document.querySelector('#scanResults').textContent.includes(value),expected);
+      }
       assert.deepEqual(await p.locator('#scanMeasure option').evaluateAll(opts=>opts.map(o=>o.value)),['1','3']);
       await p.selectOption('#scanMeasure','3');await p.click('[data-scan="measure"]');
       await p.waitForFunction(()=>document.querySelector('#scanResults').textContent.replace(/\s/g,'').includes('1726об/мин'));
@@ -151,6 +172,12 @@ async function main(){
       await p.click('[data-scan="attach"]');await p.click('[data-scan="faults"]');
       await p.waitForFunction(()=>document.querySelector('#scanResults').textContent.includes('Температура охлаждающей жидкости'));
       assert.match(await p.locator('#scanResults').innerText(),/до повтора первого/);
+      for(const [id,meaning] of [['7','Значение не назначено'],['8','Датчик температуры EGR']]){
+        await p.selectOption('#scanModule',id);await p.click('[data-scan="select"]');await p.check('#scanConfirm');
+        await p.click('[data-scan="attach"]');await p.click('[data-scan="faults"]');
+        await p.waitForFunction(v=>document.querySelector('#scanResults').textContent.includes(v),meaning);
+        assert.match(await p.locator('#scanResults').innerText(),/новых импульсов нет/);
+      }
       assert.equal(await p.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1),true);
       assert.deepEqual(errors,[]);
       await p.close();

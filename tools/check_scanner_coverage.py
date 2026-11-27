@@ -32,7 +32,7 @@ def coverage():
                   enabled_routes=len(active), enabled_module_codes=len(distinct("module",active)),
                   enabled_module_variants=len({(r["module"],r["variant"]) for r in active}),
                   dtc_modules=distinct("module",[r for r in active if r["dtc_read"]]),
-                  only_ident_modules=sorted(set(distinct("module",active))-set(distinct("module",[r for r in active if r["dtc_read"]]))),
+                  only_ident_modules=sorted(set(distinct("module",active))-set(distinct("module",[r for r in active if r["dtc_read"] or r["fixed_read_records"]]))),
                   fixed_read_modules=distinct("module",[r for r in active if r["fixed_read_records"]]),
                   non_hfm_guarded_clear_modules=distinct("module",[r for r in active if r["module_guarded_clear"]]))
     return {"schema":"hfm.coverage.v1","counts":counts,"routes":routes}

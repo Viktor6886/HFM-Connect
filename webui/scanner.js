@@ -15,7 +15,7 @@ const MODULE_NAMES = {
   EVE:'Система впрыска дизеля', GM:'Базовый модуль', LH1:'Управление двигателем LH', EZ1:'Система зажигания',
   PMS:'Управление двигателем PMS', SH1:'Автономный отопитель', SH2:'Автономный отопитель',
   ESV1:'Регулировка сиденья', SAM1:'Обработка сигналов кузова', DBE1:'Потолочная панель',
-  APS:'Навигация', CNS:'Связь и навигация', AID:'Телематический модуль', FGS:'Управление коробкой',
+  APS:'Навигация', CNS:'Связь и навигация', AID:'Телематический модуль', D2B:'Головной блок шины D2B', FGS:'Управление коробкой',
   AKS:'Автоматическое сцепление', GEM:'Электроника кузова', AAM:'Блок систем кузова',
   LWR:'Корректор фар', UBF1:'Нижняя панель управления', UBF2:'Нижняя панель управления',
   ME2:'Управление двигателем ME', M1L:'Управление двигателем, левый ряд', M1R:'Управление двигателем, правый ряд'
@@ -40,6 +40,10 @@ const CFI_N3={
   29:'Расхождение температуры ОЖ в двух блоках',31:'Прерывистый контакт датчика температуры воздуха',
   34:'Температура ОЖ от блока зажигания'
 };
+const CFI_M102={2:'Контакт полной нагрузки',3:'Датчик температуры ОЖ',4:'Потенциометр расходомера',
+  5:'Лямбда-зонд с подогревом',7:'Сигнал TD',8:'Датчик атмосферного давления',9:'Электрогидравлический регулятор',
+  10:'Контакт закрытого дросселя'};
+const m102Route=r=>r.module==='KE' && /^M102[.]985 CA (1988|1991)$/.test(r.variant);
 const isEngineMode=r=>r.module==='ME-OBD' || r.module==='KE';
 const isDuty=r=>r.module==='KE' && r.variant==='X11 PWM';
 const obdCode=code=>'PCBU'[code>>>14]+((code>>>12)&3)+diagCode(code).slice(1);
@@ -47,6 +51,7 @@ const hasPid=(mask,pid)=>((Number(mask) >>> (32-pid)) & 1)!==0;
 function engineConnector(r) {
   if(r.module==='ME-OBD')return 'OBD-II (J1962), контакт 7. Для автомобилей с диагностикой OBD-II по K-Line.';
   if(isDuty(r))return 'X11, контакт 3. Измерительный вход с высоким сопротивлением, выход передатчика отключён. Сверьте вывод по схеме автомобиля.';
+  if(m102Route(r))return 'W201, M102.985, Калифорния, модельный год '+r.variant.slice(-4)+'. X92 или X11/4 согласно схеме, диагностический контакт 3. Включите зажигание.';
   return 'X11/4, контакт 3 блока CFI N3 на соответствующих M104/M119. Включите зажигание. Одна команда считывает один импульсный код.';
 }
 function engineRows(s) {
@@ -54,6 +59,9 @@ function engineRows(s) {
   if(s.module==='ME-OBD') {
     if(!s.obd_response)return rows.concat([['Связь','Нет ответа OBD-II']]);
     rows.push(['Ответ OBD-II',(s.obd_kwp ? 'ISO 14230-4' : 'ISO 9141-2')+' · адрес 0x'+diagCode(s.obd_peer).slice(-2)]);
+    if(s.obd_vin)rows.push(['VIN',s.obd_vin]);
+    (s.calibrations || []).forEach((v,i)=>rows.push(['Калибровка '+(i+1),v]));
+    (s.cvns || []).forEach((v,i)=>rows.push(['Контрольный номер CVN '+(i+1),v]));
     const pid=OBD_PIDS[s.at];
     if(pid && s.raw?.length) {
       const bytes=s.raw.map(x=>parseInt(x,16));
@@ -72,11 +80,32 @@ function engineRows(s) {
     rows.push(['Доля низкого уровня',d ? percent(d.low) : 'Нет достоверного измерения']);
     if(d)rows.push(['Минимум / максимум',percent(d.min)+' / '+percent(d.max)],['Полных периодов',String(d.cycles)]);
   } else {
-    rows.push(['Память N3',s.faults_valid ? (s.faults.length ? 'Цикл завершён' : '1 импульс · неисправностей нет') :
-      (s.last_blink ? 'Считайте следующий код до повтора первого' : 'Нет завершённого чтения')]);
-    for(const f of s.faults || [])rows.push(['Импульсный код '+f.code,CFI_N3[f.code] || 'Нет расшифровки для N3']);
+    rows.push(['Память N3',s.faults_valid ? (s.blink_quiet_end ? 'После прочитанных кодов новых импульсов нет' : s.faults.length ? 'Цикл завершён' : '1 импульс · неисправностей нет') :
+      (s.last_blink ? (m102Route(s) ? 'Считайте следующий код до окончания выдачи' : 'Считайте следующий код до повтора первого') : 'Нет завершённого чтения')]);
+    for(const f of s.faults || []) {
+      const meaning=m102Route(s) ? (f.code===12 && s.variant.endsWith('1991') ? 'Датчик температуры EGR' : CFI_M102[f.code]) : CFI_N3[f.code];
+      rows.push(['Импульсный код '+f.code,meaning || 'Значение не назначено в таблице этого исполнения']);
+    }
   }
   return rows;
+}
+function moduleIdentification(m) {
+  if(!m.identified)return 'Нет данных';
+  const k=m.second_id_offset;
+  return k ? m.ident.slice(0,k).join(' ')+' / '+m.ident.slice(k).join(' ') : m.ident.join(' ');
+}
+function throttleTable(m) {
+  if(!m.throttle)return '';
+  const yesNo=v=>v===2 ? 'Да' : v===1 ? 'Нет' : 'Нет данных';
+  return '<h3>Обучение упора заслонки</h3>'+kvTable([
+    ['Контакт холостого хода замкнут',yesNo(m.throttle.contact)],
+    ['Упор обучен (экран 42)',yesNo(m.throttle.configuration)],
+    ['Упор обучен (экран 53)',yesNo(m.throttle.learned)]]);
+}
+function crankingTable(m) {
+  if(!m.cranking)return '';
+  return '<h3>Относительная компрессия при прокрутке</h3>'+kvTable(m.cranking.rpm.map((rpm,i)=>
+    ['Канал '+(i+1)+' (порядок HHT)',rpm+' об/мин']))+'<p class="small muted">Максимальные обороты по каналам. Выборок: '+m.cranking.samples+'.</p>';
 }
 function describeHht(field,raw) {
   if(raw==null)return 'Нет достоверного значения';
@@ -112,9 +141,10 @@ function scannerReport(report,moduleOnly) {
   const m=report.selected_module;
   if(!m)return '';
   let html=moduleOnly ? '<div class="card pad" id="repCard"><h2>Диагностический отчёт</h2><p>'+esc(report.generator)+'</p><h3>'+esc(moduleName(m.module))+'</h3>'+kvTable(isEngineMode(m) ? engineRows(m) : [
-    ['Серия',m.series],['Контакт',m.contact || 'не подтверждён'],['Идентификационный ответ',m.identified ? m.ident.join(' ') : 'нет данных'],
+    ['Серия',m.series],['Контакт',m.contact || 'не подтверждён'],['Идентификационный ответ',moduleIdentification(m)],
     ['Память неисправностей',m.faults_valid ? m.faults.map(f=>diagCode(f.code)).join(', ') || 'Неисправностей нет' : 'чтение не завершено']
   ]) : '';
+  html+=throttleTable(m)+crankingTable(m);
   const sample=report.hht_screen;
   if(sample && HHT_SCREENS[sample.screen]) {
     const [title,fields]=HHT_SCREENS[sample.screen];
@@ -153,7 +183,7 @@ R.scanner=async () => {
   function routeForm() {
     const r=chosen();if(!r)return;
     const selected=latest.selection.id===r.id,confirmed=selected && latest.selection.confirmed;
-    const desc=esc(r.protocol)+(r.variant ? ' · '+esc(r.variant) : '');
+    const desc=esc(r.protocol)+(r.variant && r.module!=='D2B' ? ' · '+esc(r.variant) : '');
     let html='<p class="muted small">'+desc+'</p>';
     if(isEngineMode(r))html+='<p>'+esc(engineConnector(r))+'</p>';
     if(['ME2','M1L','M1R'].includes(r.module))html+='<button class="btn sec" data-scan="open-obd">Открыть диагностику ME-SFI по OBD-II</button>';
@@ -167,6 +197,9 @@ R.scanner=async () => {
       (isEngineMode(r) ? '' : '<button class="btn sec" data-scan="scan">Опросить блоки на этом контакте</button>')+'<button class="btn sec" data-scan="pause">Остановить связь</button></div>';
     if(confirmed && r.clear && latest.selection.identified)html+='<button class="btn sec" data-scan="clear">Стереть память неисправностей</button>';
     if(confirmed && r.module==='HFM') html+='<label>Параметр двигателя<select id="scanScreen">'+Object.entries(HHT_SCREENS).map(([id,[title]])=>'<option value="'+id+'" '+(Number(id)===screen ? 'selected' : '')+'>'+esc(title)+' · '+id+'</option>').join('')+'</select></label><div class="btns"><button class="btn sec" data-scan="sample">Считать параметр</button><button class="btn sec" data-scan="monitor">'+(reading ? 'Остановить график' : 'Запустить график')+'</button></div>';
+    if(confirmed && r.module==='HFM')html+='<button class="btn sec" data-scan="throttle">Проверить обучение упора заслонки</button>';
+    if(confirmed && r.module==='HFM' && latest.selection.can_crank)html+='<h3>Относительная компрессия</h3><p>Подготовьте двигатель по заводской процедуре для прокрутки без запуска. После нажатия кнопки включите стартер в течение 15 секунд. Измерение длится 10 секунд. Соблюдайте допустимое время работы стартера для автомобиля.</p><label class="scan-confirm"><input type="checkbox" id="crankReady">Двигатель подготовлен, самостоятельный запуск исключён</label><button class="btn sec" data-scan="crank">Измерить обороты прокрутки</button>';
+    if(confirmed && r.module==='ME-OBD')html+='<label>Сведения OBD-II<select id="scanInfo"><option value="2">VIN</option><option value="4">Идентификаторы калибровок</option><option value="6">Контрольные номера калибровок (CVN)</option></select></label><button class="btn sec" data-scan="info">Прочитать сведения</button>';
     if(confirmed && isEngineMode(r) && r.measures.length) {
       const opts=r.measures.map((at,i)=>[at,i]).filter(([at])=>isDuty(r) || hasPid(latest.selection.pid_mask,at));
       if(opts.length)html+='<label>Параметр<select id="scanMeasure">'+opts.map(([at,i])=>'<option value="'+i+'">'+(isDuty(r) ? 'Доля низкого уровня' : OBD_PIDS[at][0])+'</option>').join('')+'</select></label><button class="btn sec" data-scan="measure">Измерить</button>';
@@ -179,7 +212,7 @@ R.scanner=async () => {
     if(r && r.id===s.id && isEngineMode(r)) {
       html='<div class="card pad">'+kvTable(engineRows(s))+'<a class="btn sec" href="/api/report?dl=1" download>Скачать отчёт</a></div>';
     } else if(r && r.id===s.id && r.module!=='HFM') {
-      if(s.identified)html+='<div class="card pad"><h3>Идентификатор блока</h3><div class="mono scan-bytes">'+s.ident.map(esc).join(' ')+'</div></div>';
+      if(s.identified)html+='<div class="card pad"><h3>Идентификатор блока</h3><div class="mono scan-bytes">'+esc(moduleIdentification(s))+'</div></div>';
       if(s.faults_valid)html+='<div class="card pad"><h3>Память неисправностей</h3>'+(s.faults.length ? s.faults.map(d=>'<div>Код '+diagCode(d.code)+(r.protocol==='GL_ISO2' ? ' · статус '+d.status : '')+'</div>').join('') : 'Неисправностей нет')+'</div>';
       if(s.raw.length)html+='<div class="card pad"><h3>Запись '+s.at+'</h3><div class="mono scan-bytes">'+s.raw.map(esc).join(' ')+'</div></div>';
     }
@@ -193,12 +226,15 @@ R.scanner=async () => {
           (raw!=null && !f[5].length ? '<canvas class="scan-chart" id="scPlot'+f[0]+'" aria-label="График измерений"></canvas>' : '')+'</div>';
       }).join('')+'</div>';
     }
+    if(r && r.id===s.id && r.module==='HFM' && s.confirmed)html+=throttleTable(s)+crankingTable(s);
+    if(r && r.id===s.id && s.confirmed && r.module==='HFM' && (s.cranking || s.throttle))
+      html+='<a class="btn sec" href="/api/report?dl=1" download>Скачать отчёт</a>';
     $('#scanResults').innerHTML=html;
     if(r && sample) for(const f of HHT_SCREENS[screen][1])scannerChart($('#scPlot'+f[0]),scannerHistory.get([s.epoch,r.id,screen,f[0]].join('/'))||[]);
   }
   async function refresh() {
     const status=await api('scanner');if(!here())return;
-    const changed=status.selection.epoch!==latest.selection.epoch || status.selection.confirmed!==latest.selection.confirmed || status.selection.pid_mask!==latest.selection.pid_mask;
+    const changed=status.selection.epoch!==latest.selection.epoch || status.selection.confirmed!==latest.selection.confirmed || status.selection.pid_mask!==latest.selection.pid_mask || status.selection.can_crank!==latest.selection.can_crank;
     latest=status;if(changed){reading=false;sample=null;resetAverage();scannerHistory.clear();routeForm();}
     results();report();
   }
@@ -257,6 +293,13 @@ R.scanner=async () => {
       if(action==='monitor'){reading=!reading;if(reading)resetAverage();routeForm();if(reading)await readScreen();}
       else if(action==='sample')await readScreen();
       else {
+        if(action==='throttle')extra.epoch=latest.selection.epoch;
+        if(action==='crank'){
+          if(!$('#crankReady').checked)throw Error('Подтвердите подготовку двигателя');
+          btn.textContent='Ожидание сигнала стартера и сбор данных…';
+          extra={prepared:1,epoch:latest.selection.epoch};
+        }
+        if(action==='info')extra={field:$('#scanInfo').value,epoch:latest.selection.epoch};
         if(action==='measure')extra.index=$('#scanMeasure').value;
         reading=false;manualStop=false;
         const msg=await scannerCommand(action,r.id,extra);

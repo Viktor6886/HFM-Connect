@@ -1,5 +1,41 @@
 #include "HhtValues.h"
 namespace hht {
+CrankPhase CrankingWindow::step(uint32_t now,bool starter,int batteryDecivolts) {
+  if(batteryDecivolts<90)return CrankPhase::LowVoltage;
+  if(!started_) {
+    if(now-waiting_>=15000)return CrankPhase::NoStarter;
+    if(!starter)return CrankPhase::Wait;
+    start_=now;started_=true;
+  }
+  if(now-start_>=10010)return CrankPhase::Done;
+  if(!starter)return CrankPhase::Released;
+  return withinSampleWindow(now) ? CrankPhase::Sample : CrankPhase::Settle;
+}
+Words crankingSpeeds(const uint8_t (&raw)[64],bool bosch,unsigned cylinders) {
+  Words result;
+  if(cylinders!=4 && cylinders!=6)return result;
+  for(unsigned i=0;i<cylinders;++i) {
+    const unsigned offset=bosch ? i*4 : i*6+2;
+    uint32_t ticks=(uint32_t(raw[offset])<<8)|raw[offset+2];
+    if(bosch && cylinders==4 && ticks<0x52e3)ticks+=65536;
+    const unsigned period=bosch ? ticks*266/10000 : ticks*8/100;
+    const uint16_t divisor=uint16_t(period*(cylinders/2));
+    if(!divisor)break;
+    result.put(i,uint16_t(600000/divisor));
+  }
+  return result;
+}
+void CrankingResult::accumulate(const Words& sample) {
+  if(cylinders!=4 && cylinders!=6)return;
+  const unsigned valid=sample.valid&((1u<<cylinders)-1);
+  if(!valid)return;
+  for(unsigned i=0;i<cylinders;++i)if(valid&(1u<<i)) {
+    const auto speed=uint16_t(sample.values[i]);
+    if(speed>rpm[i])rpm[i]=speed;
+  }
+  mask|=valid;
+  if(samples<65535)++samples;
+}
 Words smoothness(const uint8_t (&raw)[64],bool bosch,unsigned cylinders) {
   Words result;
   if(cylinders!=4 && cylinders!=6) return result;

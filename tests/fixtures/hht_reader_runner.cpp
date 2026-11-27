@@ -36,7 +36,7 @@ int main() {
     size_t n=head[7]|(unsigned(head[8])<<8);line.words.resize(n);
     if(fread(line.words.data(),1,n,stdin)!=n) return 2;
     if(session.connect(1)!=LinkStatus::Ok || session.prefix(0xf0)!=LinkStatus::Ok) return 3;
-    auto st=reader.read(session,id,head[0],reading);
+    auto st=head[9] ? reader.cranking(session,id,reading.words) : reader.read(session,id,head[0],reading);
     uint8_t result[20]={uint8_t(st),uint8_t(line.cursor==line.words.size()),uint8_t(reading.words.valid),uint8_t(reading.words.valid>>8)};
     for(unsigned i=0;i<8;++i){result[4+2*i]=uint8_t(reading.words.values[i]);result[5+2*i]=uint8_t(uint16_t(reading.words.values[i])>>8);}
     if(fwrite(result,1,sizeof result,stdout)!=sizeof result)return 4;

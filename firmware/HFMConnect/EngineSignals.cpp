@@ -2,6 +2,11 @@
 namespace scanner {
 void BlinkCounter::sample(bool high) {
   if(done_)return;
+  if(first_) {
+    if(senseIdle_)idleHigh_=high;
+    first_=false;
+  }
+  high=high==idleHigh_;
   if(high!=high_) {
     if(!high_) {
       if(phase_<minLow_ || phase_>maxLow_ || pulses_==64)bad_=true;

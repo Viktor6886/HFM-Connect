@@ -154,6 +154,56 @@ FrameError FrameSession::obdCurrent(uint8_t pid,uint8_t* out,size_t len) {
   if(err!=FrameError::Ok && err!=FrameError::Negative)close();
   return err;
 }
+FrameError FrameSession::obdInfoFrames(uint8_t pid,unsigned frames,bool counter,uint8_t* bytes) {
+  const uint8_t request[]={9,pid};
+  link_.sleepMs(55);
+  auto err=obdSend(request,sizeof request);
+  if(err!=FrameError::Ok)return err;
+  unsigned received=0;
+  bool negative=false;
+  for(unsigned i=0;i<80;++i) {
+    uint8_t first=0,source=0;size_t length=0;const uint8_t* payload=nullptr;
+    if(!obdByte(first,100)) {
+      if(!link_.isOpen())return FrameError::Offline;
+      if(negative)return received ? FrameError::Reply : FrameError::Negative;
+      if(!received)return FrameError::Timeout;
+      return received==frames ? FrameError::Ok : FrameError::Length;
+    }
+    err=obdFrame(first,source,payload,length);
+    if(err!=FrameError::Ok)return err;
+    if(source!=obdPeer_)continue;
+    if(length==3 && payload[0]==0x7f && payload[1]==9) {negative=true;continue;}
+    if(length!=(counter ? 3u : 7u) || received>=frames)return FrameError::Length;
+    if(payload[0]!=0x49 || payload[1]!=pid)return FrameError::Reply;
+    if(counter)bytes[0]=payload[2];
+    else {
+      if(payload[2]!=received+1)return FrameError::Reply;
+      memcpy(bytes+received*4,payload+3,4);
+    }
+    ++received;
+  }
+  close(); // A saturated bus may still contain packets from this request.
+  return FrameError::Limit;
+}
+
+FrameError FrameSession::obdInformation(uint8_t pid,uint8_t (&bytes)[64],uint8_t& length) {
+  length=0;
+  if(!ready_)return FrameError::Offline;
+  if(pid!=2 && pid!=4 && pid!=6)return FrameError::Unsupported;
+  uint8_t frames=5;  // VIN is 17 characters, right-aligned in five packets.
+  auto err=FrameError::Ok;
+  if(pid!=2) {
+    err=obdInfoFrames(pid-1,1,true,&frames);
+    if(err==FrameError::Ok && (!frames || (pid==4 && frames%4)))err=FrameError::Length;
+    if(err==FrameError::Ok && frames>(pid==4 ? 16 : 4))err=FrameError::Limit;
+  }
+  if(err==FrameError::Ok)err=obdInfoFrames(pid,frames,false,bytes);
+  if(err==FrameError::Ok)length=frames*4;
+  // An optional PID may time out or be rejected on an otherwise working ECU.
+  else if(err!=FrameError::Timeout && err!=FrameError::Negative && err!=FrameError::Limit)close();
+  return err;
+}
+
 FrameError FrameSession::obdFaults(uint16_t* out,size_t cap,uint8_t& count) {
   count=0;if(!ready_)return FrameError::Offline;
   uint8_t status[4]{};

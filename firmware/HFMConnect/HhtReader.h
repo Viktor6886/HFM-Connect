@@ -8,6 +8,7 @@ class Reader {
  public:
   void reset() { romReady_=false; }
   LinkStatus read(HfmSession& s,const EcuIdent& id,uint16_t screen,Reading& result);
+  LinkStatus cranking(HfmSession& s,const EcuIdent& id,Words& result);
   LinkStatus coding(HfmSession& s, const EcuIdent& id, uint8_t (&code)[3], uint8_t& flags, uint8_t& ack);
   static bool exists(uint16_t screen);
  private:

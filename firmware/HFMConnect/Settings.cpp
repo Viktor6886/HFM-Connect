@@ -1,5 +1,6 @@
 #ifdef ARDUINO
 #include "Settings.h"
+#include "HfmServices.h"
 
 #include <Preferences.h>
 
@@ -58,6 +59,7 @@ void Settings::load() {
   if (!prefs.getString("lsel", liveSel, sizeof liveSel)) strlcpy(liveSel, "rpm,maf,o2_mv,lambda", sizeof liveSel);
   if (!prefs.getString("lcat", liveCat, sizeof liveCat)) strlcpy(liveCat, "all", sizeof liveCat);
   prefs.getString("code9", code9, sizeof code9);
+  if(!svc::validVariantCode(code9))code9[0]=0;
   wakeLearnedBreak = prefs.getUShort("wlbrk", 0);
   wakeLearnedModem = prefs.getUChar("wlmod", 0) & 3;
   prefs.getString("ecufp", ecuFp, sizeof ecuFp);

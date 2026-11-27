@@ -1217,7 +1217,7 @@ R.commission = async () => {
         ${step(snapDone ? 'done' : '', 'Снимок «до»', `${snap.map(x => `<div class="check"><i class="${x[1] ? 'ok' : 'unk'}">${x[1] ? '✓' : '?'}</i><div>${x[0]}: ${x[1] ? 'прочитано' : 'не прочитано'}</div></div>`).join('')}
           <div class="btns mt"><button class="btn sm" id="cmBefore">Прочитать всё и сохранить снимок</button></div>`)}
         ${step(ecu.coding.decimal_code ? 'done' : '', '9-значный код комплектации', `Прочитано из ЭБУ: <b>${esc(ecu.coding.decimal_code || 'нет результата')}</b>. Заводская запись требует совместимого адаптера. Поле ниже сохраняет вручную введённый код в отчёте.
-          <input class="field mt" id="code9" maxlength="9" inputmode="numeric" placeholder="9 цифр" value="${esc(code9)}">`)}
+          <input class="field mt" id="code9" maxlength="9" inputmode="numeric" placeholder="000000000" value="${esc(code9)}"><div id="code9Hint" class="small muted">Три группы от 000 до 255.</div>`)}
         ${step('', 'Дроссель и упоры', 'Проверка CTP/WOT/угла по Текущие параметры — раздел «Исполнительные тесты». Автоматическое обучение не выполняется.')}
         ${step('', 'DAS / разрешение запуска', 'С MY1996 возможна постоянная привязка N3/4 к DAS: новый тестовый ЭБУ — не более 40 запусков до необратимой привязки (OEM M111 11/3). Обход и перепривязка не выполняются.')}
         ${step('', 'Контроль и отчёт', '<button class="btn sm" onclick="go(\'reports\')">Сформировать отчёт</button>')}
@@ -1227,10 +1227,13 @@ R.commission = async () => {
       c9._b = 1;
       let t = 0;
       c9.addEventListener('input', () => {
-        c9.value = c9.value.replace(/\D/g, '');
-        S.settings.code9 = c9.value;
         clearTimeout(t);
-        t = setTimeout(() => post('settings', {code9: c9.value}).catch(() => {}), 700);
+        const value=c9.value, valid=value==='' || (/^[0-9]{9}$/.test(value) && value.match(/.{3}/g).every(g=>Number(g)<=255));
+        $('#code9Hint').textContent=valid ? 'Три группы от 000 до 255.' : 'Проверьте каждую группу. Изменение ещё не сохранено.';
+        if(valid)t=setTimeout(async()=>{
+          try {await post('settings',{code9:value});S.settings.code9=value;}
+          catch(e){toast(e.message,true);}
+        },350);
       });
     }
     const bb = $('#cmBefore');

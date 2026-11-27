@@ -67,6 +67,19 @@ LinkStatus Reader::read(HfmSession& s,const EcuIdent& id,uint16_t screen,Reading
   result.words.valid &= valid;
   return LinkStatus::Ok;
 }
+LinkStatus Reader::cranking(HfmSession& s,const EcuIdent& id,Words& result) {
+  result={};
+  const unsigned cylinders=id.hhtCylinders;
+  if(!s.ready() || (cylinders!=4 && cylinders!=6) || id.diagIndexRaw<0x45 ||
+     (id.vendorId!=1 && id.vendorId!=2))return LinkStatus::NotAllowed;
+  uint8_t raw[64]{},first=0;uint16_t valid=0;
+  const auto st=readIndex(s,id,cylinders==4 ? 126 : 125,raw,valid,first);
+  if(st!=LinkStatus::Ok)return st;
+  const unsigned needed=(1u<<cylinders)-1;
+  if((valid&needed)!=needed)return LinkStatus::NotAllowed;
+  result=crankingSpeeds(raw,id.vendorId==1,cylinders);
+  return LinkStatus::Ok;
+}
 LinkStatus Reader::readIndex(HfmSession& s,const EcuIdent& id,unsigned idx,uint8_t (&raw)[64],uint16_t& valid,uint8_t& firstValue) {
   const bool b=id.vendorId==1;
   const Entry& e=entries[idx][b]; uint8_t request[64]{},reply[64]{},src[32]{},dst[32]{};

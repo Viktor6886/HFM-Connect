@@ -662,8 +662,24 @@ static void writeModule(JsonWriter& w,const ModuleState& m) {
     .kv("series",r ? r->series : "").kv("variant",r ? r->variant : "").kv("error",scanner::message(m.error))
     .kv("obd_response",m.readout.obdResponding).kv("obd_kwp",m.readout.obdKwp)
     .kv("obd_peer",unsigned(m.readout.obdPeer)).kv("pid_mask",m.readout.pidMask)
-    .kv("last_blink",unsigned(m.readout.lastBlink))
+    .kv("last_blink",unsigned(m.readout.lastBlink)).kv("blink_quiet_end",m.readout.blinkQuietEnd)
     .kv("identified",m.readout.identityValid).kv("faults_valid",m.readout.faultsValid);
+  w.kv("can_crank",m.canCrank).kv("second_id_offset",unsigned(m.readout.secondIdOffset));
+  if(m.throttle.configuration || m.throttle.learned)
+    w.key("throttle").beginObject().kv("contact",unsigned(m.throttle.contact))
+      .kv("configuration",unsigned(m.throttle.configuration)).kv("learned",unsigned(m.throttle.learned)).endObject();
+  if(m.cranking.complete) {
+    w.key("cranking").beginObject().kv("samples",unsigned(m.cranking.samples)).key("rpm").beginArray();
+    for(unsigned i=0;i<m.cranking.cylinders;++i)w.value(unsigned(m.cranking.rpm[i]));
+    w.endArray().endObject();
+  }
+  w.kv("obd_vin",m.readout.obdVin).key("calibrations").beginArray();
+  for(unsigned i=0;i<m.readout.calibrationCount;++i)w.value(m.readout.calibrations[i]);
+  w.endArray().key("cvns").beginArray();
+  for(unsigned i=0;i<m.readout.cvnCount;++i) {
+    char hex[9];snprintf(hex,sizeof hex,"%08lX",(unsigned long)m.readout.cvns[i]);w.value(hex);
+  }
+  w.endArray();
   w.key("ident").beginArray();for(unsigned i=0;i<m.readout.identLen;++i) w.hex(m.readout.ident[i]);w.endArray();
   const auto& duty=m.readout.duty;
   if(duty.cycles)w.key("duty").beginObject().kv("low",unsigned(duty.lowPermille))
@@ -695,7 +711,7 @@ static void hScannerCatalog() {
     if(series!=r.series) continue;
     const auto* p=scanner::profile(r);bool hfm=!strcmp(r.module,"HFM");
     w.beginObject().kv("id",unsigned(i)).kv("module",r.module).kv("variant",r.variant)
-      .kv("protocol",p && p->iso ? "GL_ISO2" : scanner::protocolName(r.protocol))
+      .kv("protocol",p && p->iso ? p->isoName() : scanner::protocolName(r.protocol))
       .kv("contact",unsigned(r.contact)).kv("mux",unsigned(r.mux)).kv("available",hfm || p)
       .kv("dtc",hfm || (p && p->canReadFaults())).kv("clear",p && p->clearFaultMemory).kv("fixed_baud",p && p->fastKs).key("measures").beginArray();
     if(p)for(unsigned k=0;k<p->measureCount;++k)w.value(unsigned(p->measures[k].at));
@@ -727,11 +743,19 @@ static void hScannerAction() {
       job=Job::AttachRoute;arg=(id<<16)|(speed<<6)|pin;
     } else if(action=="scan")job=Job::ScanContact;
     else if(action=="measure" && numberArg("index",255,arg))job=Job::ModuleMeasure;
+    else if(action=="info" && numberArg("field",6,arg) && (arg==2 || arg==4 || arg==6))job=Job::ModuleInfo;
+    else if(action=="throttle")job=Job::HfmThrottleStatus;
+    else if(action=="crank" && server.arg("prepared")=="1") {job=Job::HfmCranking;arg=1;}
     else if(action=="faults")job=Job::ReadDtc;
     else if(action=="pause")job=Job::Disconnect;
     else return sendError(400,"Неизвестная операция");
   }
   Engine.lock();
+  unsigned epoch=0;
+  if((job==Job::ModuleInfo || job==Job::HfmCranking || job==Job::HfmThrottleStatus) &&
+     (!numberArg("epoch",0xffffffffu,epoch) || epoch!=Engine.state().module.epoch || !Engine.state().module.confirmed)) {
+    Engine.unlock();return sendError(409,"Подключение изменилось. Проверьте выбранный ЭБУ");
+  }
   if(job!=Job::SelectRoute && int(id)!=Engine.state().module.route) {
     Engine.unlock();return sendError(409,"Выбранный блок изменился");
   }
@@ -868,6 +892,9 @@ static bool argBool(const char* k, bool cur) {
 
 static void hSettingsPost() {
   Settings& s = AppSettings;
+  String variant=server.arg("code9");
+  if(variant.length() && (variant.length()!=9 || !svc::validVariantCode(variant.c_str())))
+    return sendError(400,"Код комплектации должен содержать три группы по три цифры от 000 до 255");
   if(server.hasArg("ap_pass")) {
     if(server.arg("current_password")!=String(s.apPass[0] ? s.apPass : HFM_AP_DEFAULT_PASS))
       return sendError(403,"Введите действующий пароль точки доступа");
@@ -902,14 +929,7 @@ static void hSettingsPost() {
   if (server.hasArg("oled_level")) s.oledLevel = (uint8_t)constrain(server.arg("oled_level").toInt(), 1, 3);
   oledConfigure(s.oledOn, s.oledType, s.oledFlip, s.oledLevel);
   if (server.hasArg("live_cat")) strlcpy(s.liveCat, server.arg("live_cat").c_str(), sizeof s.liveCat);
-  if (server.hasArg("code9")) {
-    String c = server.arg("code9");
-    char d[10] = {0};
-    uint8_t k = 0;
-    for (unsigned i = 0; i < c.length() && k < 9; i++)
-      if (c[i] >= '0' && c[i] <= '9') d[k++] = c[i];
-    strlcpy(s.code9, d, sizeof s.code9);
-  }
+  if(server.hasArg("code9"))strlcpy(s.code9,variant.c_str(),sizeof s.code9);
   s.experimentalReads = argBool("experimental_reads", s.experimentalReads);
   s.engineerMode = argBool("engineer_mode", s.engineerMode);
   s.requireWriteKey = argBool("require_write_key", s.requireWriteKey);

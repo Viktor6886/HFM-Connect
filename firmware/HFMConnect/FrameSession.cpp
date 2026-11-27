@@ -102,7 +102,7 @@ FrameError FrameSession::frame(uint8_t expected,const Timing& t) {
   }
   return checkFrame(kind_,rx_,address_,tester_,expected,start_,count_);
 }
-FrameError FrameSession::command(const uint8_t* p,size_t n,uint8_t expect,const Timing& t) {
+FrameError FrameSession::command(const uint8_t* p,size_t n,uint8_t expect,const Timing& t,bool allowSilentReply) {
   Frame tx;
   nrc_ = 0; count_ = 0;
   const bool start = kind_==FrameKind::Iso && n==1 && p[0]==0x81;
@@ -120,6 +120,7 @@ FrameError FrameSession::command(const uint8_t* p,size_t n,uint8_t expect,const 
     Timing rxTime=t;
     for (unsigned pending=0;pending<4;++pending) {
       auto e=frame(expect,rxTime);
+      if(allowSilentReply && !pending && e==FrameError::Timeout && !rx_.size)return FrameError::Ok;
       if (e!=FrameError::Negative) return e;
       nrc_=data()[1];
       if (nrc_==0x21) { if(risk_!=CommandRisk::Read) return FrameError::Busy; break; }
@@ -162,7 +163,30 @@ FrameError FrameSession::connectKs(uint8_t addr,uint32_t baud,const Timing& init
   if (e==FrameError::Ok) ready_=true; else close();
   return e;
 }
-FrameError FrameSession::connectIso(uint8_t addr,uint8_t tester,bool slow,uint8_t sessionAddress,bool functional,uint32_t baud) {
+FrameError FrameSession::fastStart(bool allowSilentReply) {
+  link_.sleepMs(300);
+  const bool low=link_.frameBreak(true);
+  link_.sleepMs(25);
+  const bool released=link_.frameBreak(false);
+  if(!low || !released)return FrameError::Offline;
+  link_.frameDrain();
+  const uint8_t start=0x81;
+  auto err=command(&start,1,0xc1,iso_,allowSilentReply);
+  if(err==FrameError::Ok && count_!=2 && !(allowSilentReply && !rx_.size))return FrameError::Length;
+  return err;
+}
+FrameError FrameSession::negotiateTiming(uint8_t mode) {
+  const uint8_t timing[]={0x83,mode};
+  auto err=command(timing,2,0xc3,iso_);
+  if(err!=FrameError::Ok)return err;
+  if(count_!=6 || data()[0]!=mode || !data()[2])return FrameError::Reply;
+  const auto* d=data();
+  iso_.first=uint16_t(d[2])*25;
+  iso_.pause=(d[3]+1)/2+5;
+  iso_.gap=(d[5]+1)/2;
+  return FrameError::Ok;
+}
+FrameError FrameSession::connectIso(uint8_t addr,uint8_t tester,bool slow,uint8_t sessionAddress,bool functional,uint32_t baud,IsoStart strategy) {
   close(); kind_=FrameKind::Iso; startAddress_=addr; address_=sessionAddress==0xff ? addr : sessionAddress;
   tester_=tester; extended_=false;
   functionalStart_=functional;
@@ -180,29 +204,38 @@ FrameError FrameSession::connectIso(uint8_t addr,uint8_t tester,bool slow,uint8_
     if (e==FrameError::Ok) e=receive(b,50);
     if (e==FrameError::Ok && b!=uint8_t(~addr) && b!=uint8_t(~addr^0x80)) e=FrameError::Sync;
   } else {
-    link_.sleepMs(300);
-    if (!link_.frameBreak(true)) e=FrameError::Offline;
-    link_.sleepMs(25);
-    if (!link_.frameBreak(false)) e=FrameError::Offline;
-    link_.frameDrain();
-    uint8_t start=0x81;
-    if (e==FrameError::Ok) e=command(&start,1,0xc1,iso_);
-    if (e==FrameError::Ok && count_!=2) e=FrameError::Length;
+    if(strategy==IsoStart::Aid || strategy==IsoStart::Lwr) {
+      e=fastStart(strategy==IsoStart::Lwr);
+      if(e==FrameError::Ok) {
+        const uint8_t end=0x82;
+        e=command(&end,1,0xc2,iso_);
+        if(e==FrameError::Ok && count_)e=FrameError::Length;
+      }
+    }
+    if(e==FrameError::Ok) {
+      const uint8_t physical=address_;
+      if(strategy==IsoStart::D2b)address_=startAddress_;
+      e=fastStart();
+      // Some masters answer the functional start from their physical address.
+      if(strategy==IsoStart::D2b && e==FrameError::Address)
+        e=checkFrame(FrameKind::Iso,rx_,physical,tester_,0xc1,start_,count_);
+      address_=physical;
+      if(e==FrameError::Ok && count_!=2)e=FrameError::Length;
+    }
     if (e==FrameError::Ok) { k1=data()[0]; k2=data()[1]; }
   }
-  if (e==FrameError::Ok && (k2==0x8f || (k1!=0x43 && k1!=0xc2 && k1!=0xc4))) e=FrameError::Reply;
+  const bool kwp=strategy==IsoStart::D2b;
+  if (e==FrameError::Ok && (kwp ? k2!=0x8f : k2==0x8f || (k1!=0x43 && k1!=0xc2 && k1!=0xc4)))e=FrameError::Reply;
   functionalStart_=false;
   extended_=k1==0x43;
-  const uint8_t timing[]={0x83,0};
-  if (e==FrameError::Ok) e=command(timing,2,0xc3,iso_);
-  if (e==FrameError::Ok && (count_!=6 || data()[0]!=0 || !data()[2])) e=FrameError::Reply;
-  if (e==FrameError::Ok) {
-    const auto* d=data();
-    iso_.first=uint16_t(d[2])*25;
-    iso_.pause=(d[3]+1)/2+5;
-    iso_.gap=(d[5]+1)/2;
-    ready_=true;
-  } else close();
+  if(e==FrameError::Ok)e=negotiateTiming(kwp ? 2 : 0);
+  if(e==FrameError::Ok && strategy!=IsoStart::Direct) {
+    const uint8_t present=kwp ? 0x3e : 0x3f;
+    e=command(&present,1,present+0x40,iso_);
+    if(e==FrameError::Ok && count_)e=FrameError::Reply;
+    if(e==FrameError::Ok && strategy==IsoStart::Lwr)e=negotiateTiming(0);
+  }
+  if(e==FrameError::Ok)ready_=true;else close();
   return e;
 }
 }

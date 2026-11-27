@@ -21,7 +21,7 @@ void DiagEngine::selectRoute(int id,char* msg,size_t n,bool& ok) {
   ++st_.module.epoch;
   trace_.setRoute(id,0);
   st_.module.route=id;st_.module.confirmed=false;st_.module.contact=0;
-  st_.module.error=FrameError::Ok;st_.module.readout={};
+  st_.module.error=FrameError::Ok;st_.module.readout={};st_.module.cranking={};st_.module.throttle={};st_.module.canCrank=false;
   st_.ident=EcuIdent();st_.dtc.invalidate();st_.adapt={};st_.coding={};st_.vin={};st_.impulse={};
   st_.liveActive=false;st_.live={};st_.snap={};st_.hhtScreen={};st_.liveCycles=0;
   st_.plan=guard::Plan();st_.lastServiceResult[0]=0;st_.purgeOn=false;
@@ -85,7 +85,7 @@ bool DiagEngine::scannerJob(Job j,uint32_t arg,const char* text,char* msg,size_t
       ok=false;snprintf(msg,n,"Сначала остановите исполнительный тест");return true;
     }
     guard_.cancel();
-    lock();++st_.module.epoch;st_.module.confirmed=false;st_.hhtScreen={};st_.plan=guard_.plan();unlock();
+    lock();++st_.module.epoch;st_.module.confirmed=false;st_.module.cranking={};st_.module.throttle={};st_.module.canCrank=false;st_.hhtScreen={};st_.plan=guard_.plan();unlock();
     if(hfm) return false;
     userDisconnected_=true;moduleDriver_->close();
     lock();st_.link=LinkPhase::Paused;st_.session=SessionState::Disconnected;
@@ -94,6 +94,32 @@ bool DiagEngine::scannerJob(Job j,uint32_t arg,const char* text,char* msg,size_t
   }
   if(!st_.module.confirmed) {
     ok=false;snprintf(msg,n,"Подтвердите диагностический контакт выбранного блока");return true;
+  }
+  if(j==Job::HfmThrottleStatus) {
+    ModuleState::ThrottleStatus result;
+    lock();st_.module.throttle={};unlock();
+    ok=hfm && session_->ready() && guard_.state()==guard::State::Idle;
+    uint8_t* fields[]={&result.contact,&result.configuration,&result.learned};
+    const uint8_t screens[]={22,42,53},positions[]={0,6,0};
+    for(unsigned i=0;i<3 && ok;++i) {
+      hht::Reading reading;
+      auto status=hhtReader_.read(*session_,st_.ident,screens[i],reading);
+      if(status==LinkStatus::NotAllowed)continue;
+      ok=status==LinkStatus::Ok;
+      if(ok && (reading.words.valid&(1u<<positions[i]))) {
+        const auto state=reading.words.values[positions[i]];
+        if(state==1 || state==2)*fields[i]=uint8_t(state);
+      }
+    }
+    ok=ok && (result.configuration || result.learned);
+    if(ok){lock();st_.module.throttle=result;unlock();}
+    snprintf(msg,n,"%s",ok ? "Прочитан признак обучения упора" : "ЭБУ не выдал достоверного признака обучения");
+    return true;
+  }
+  if(j==Job::HfmCranking) {
+    if(!hfm || !arg) {ok=false;snprintf(msg,n,"Выберите HFM и подтвердите подготовку двигателя");}
+    else ok=measureCranking(msg,n);
+    return true;
   }
   if(hfm) return false;
   if(!p) {ok=false;snprintf(msg,n,"Для этого варианта требуется отдельный сценарий подключения");return true;}
@@ -110,9 +136,10 @@ bool DiagEngine::scannerJob(Job j,uint32_t arg,const char* text,char* msg,size_t
   FrameError err=FrameError::Ok;
   if(j==Job::Connect || j==Job::Identify) {
     userDisconnected_=false;err=moduleDriver_->connect(*p,st_.module.baud);
-  } else if(j==Job::ReadDtc || j==Job::ModuleMeasure) {
+  } else if(j==Job::ReadDtc || j==Job::ModuleMeasure || j==Job::ModuleInfo) {
     if(!moduleDriver_->ready()) err=FrameError::Offline;
     else if(j==Job::ReadDtc) err=moduleDriver_->faults(*p);
+    else if(j==Job::ModuleInfo) err=moduleDriver_->information(*p,arg);
     else err=moduleDriver_->measurement(*p,arg);
   } else {
     ok=false;snprintf(msg,n,"Эта операция отсутствует в профиле %s",route->module);return true;
@@ -131,6 +158,49 @@ bool DiagEngine::scannerJob(Job j,uint32_t arg,const char* text,char* msg,size_t
   strlcpy(st_.linkMsg,msg,sizeof st_.linkMsg);unlock();
   if(j==Job::ReadDtc && p->mode==scanner::EngineMode::Native) {moduleFaultMs_=ok ? millis() : 0;storeScan(st_.module.route,moduleDriver_->result(),err);}
   return true;
+}
+
+bool DiagEngine::measureCranking(char* msg,size_t n) {
+  hht::CrankingResult result;
+  result.cylinders=st_.ident.hhtCylinders;
+  lock();st_.module.cranking={};
+  const bool allowed=st_.module.canCrank && !st_.liveActive && !st_.recording;
+  unlock();
+  auto fail=[&](const char* reason){snprintf(msg,n,"%s",reason);return false;};
+  if(!allowed || !session_->ready() || guard_.state()!=guard::State::Idle)
+    return fail("Проверьте профиль HFM, остановите запись, текущие данные и сервисные операции");
+  hht::CrankingWindow window(millis());
+  for(;;) {
+    lock();
+    bool cancelled=st_.recording;
+    for(unsigned i=0;i<qCount_;++i) {
+      Job next=q_[i].job;
+      if(next==Job::Stop || next==Job::Disconnect || next==Job::SelectRoute)cancelled=true;
+    }
+    unlock();
+    if(cancelled)return fail("Измерение отменено");
+    hht::Reading battery,starter;
+    if(hhtReader_.read(*session_,st_.ident,60,battery)!=LinkStatus::Ok || !(battery.words.valid&1))
+      return fail("Нет достоверного напряжения от ЭБУ");
+    if(hhtReader_.read(*session_,st_.ident,15,starter)!=LinkStatus::Ok || !(starter.words.valid&1) ||
+       (starter.words.values[0]!=1 && starter.words.values[0]!=2))return fail("Нет достоверного сигнала клеммы 50");
+    const auto phase=window.step(millis(),starter.words.values[0]==2,battery.words.values[0]);
+    if(phase==hht::CrankPhase::LowVoltage)return fail("Напряжение ЭБУ ниже 9,0 В");
+    if(phase==hht::CrankPhase::NoStarter)return fail("За 15 секунд ЭБУ не подтвердил включение стартера");
+    if(phase==hht::CrankPhase::Released)return fail("Стартер выключен до окончания измерения");
+    if(phase==hht::CrankPhase::Done)break;
+    if(phase==hht::CrankPhase::Sample) {
+      hht::Words sample;
+      if(hhtReader_.cranking(*session_,st_.ident,sample)!=LinkStatus::Ok)
+        return fail("ЭБУ не выдал данные прокрутки по цилиндрам");
+      if(window.withinSampleWindow(millis()))result.accumulate(sample);
+    }
+    delay(30);
+  }
+  if(result.mask!=(1u<<result.cylinders)-1)return fail("Недостаточно данных для всех цилиндров");
+  result.complete=true;
+  lock();st_.module.cranking=result;unlock();
+  snprintf(msg,n,"Измерение закончено. Получено выборок: %u",unsigned(result.samples));return true;
 }
 
 void DiagEngine::moduleClear(Job job,uint32_t arg,const char* text,const scanner::Profile& p,char* msg,size_t n,bool& ok) {
@@ -271,7 +341,7 @@ void DiagEngine::scanContact(char* msg,size_t n,bool& ok) {
       found+=read.identityValid;session_->disconnect();
     } else {
       auto err=moduleDriver_->connect(*p,st_.module.baud);
-      if(err==FrameError::Ok && !p->classicIdBytes) err=moduleDriver_->faults(*p);
+      if(err==FrameError::Ok && p->canReadFaults()) err=moduleDriver_->faults(*p);
       if(moduleDriver_->result().identityValid) {
         ++found;
         if(answeredCount<64) answered[answeredCount++]=p;

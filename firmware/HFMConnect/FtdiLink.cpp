@@ -644,14 +644,15 @@ void FtdiLink::close() {
 }
 
 bool FtdiLink::sampleDuty(scanner::DutySample& out) {
-  out={};uint8_t unused=0;
-  return captureEngineSignal(&out,unused);
+  out={};uint8_t unused=0;bool idle=false;
+  return captureEngineSignal(&out,unused,idle);
 }
-uint8_t FtdiLink::readKeBlink() {
+uint8_t FtdiLink::readKeBlink(bool& idle,bool senseIdle) {
   uint8_t blink=0;
-  return captureEngineSignal(nullptr,blink) ? blink : 0;
+  return captureEngineSignal(nullptr,blink,idle,senseIdle) ? blink : 0;
 }
-bool FtdiLink::captureEngineSignal(scanner::DutySample* duty,uint8_t& blink) {
+bool FtdiLink::captureEngineSignal(scanner::DutySample* duty,uint8_t& blink,bool& idle,bool senseIdle) {
+  idle=false;
   if(!ioMtx_)return false;
   IoGuard guard(ioMtx_);
   if(!isOpen() || !supportsDuty())return false;
@@ -684,7 +685,7 @@ bool FtdiLink::captureEngineSignal(scanner::DutySample* duty,uint8_t& blink) {
         uint32_t elapsed=micros()-clockStart;
         uint32_t hz=elapsed ? (sizeof initial*1000000u)/elapsed : 0;
         if(hz<1000 || hz>24000){ok=false;break;}
-        counter=scanner::BlinkCounter(hz);
+        counter=scanner::BlinkCounter(hz,senseIdle);
         for(auto byte:initial)counter.sample(byte & 2);
       }
     } else {
@@ -701,7 +702,7 @@ bool FtdiLink::captureEngineSignal(scanner::DutySample* duty,uint8_t& blink) {
   if(!uart) {configured_=false;open_=false;needsReattach_=true;return false;}
   if(!ok)return false;
   if(duty)return received==4160 && pwm.finish(*duty);
-  blink=counter.result();
+  idle=counter.idleWindow();blink=counter.result();
   return blink!=0;
 }
 bool FtdiLink::frameBaud(uint32_t baud) {

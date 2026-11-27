@@ -3,6 +3,19 @@
 #include <string.h>
 
 namespace svc {
+bool validVariantCode(const char* text) {
+  if(!text)return false;
+  for(unsigned group=0;group<3;++group) {
+    unsigned byte=0;
+    for(unsigned digit=0;digit<3;++digit) {
+      char c=*text++;
+      if(c<'0' || c>'9')return false;
+      byte=10*byte+unsigned(c-'0');
+    }
+    if(byte>255)return false;
+  }
+  return *text==0;
+}
 
 LinkStatus readFaultMemory(HfmSession& s, FaultMemory& fm, bool extended) {
   fm = FaultMemory();

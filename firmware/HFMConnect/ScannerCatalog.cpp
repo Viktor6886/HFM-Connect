@@ -6,6 +6,8 @@ static constexpr Route engineRoutes[]={
   {"ME-SFI · OBD-II","ME-OBD","fast init",Protocol::Obd,7,0},
   {"KE-Jetronic","KE","X11 PWM",Protocol::Duty,3,0},
   {"KE-Jetronic","KE","N3 M104/M119",Protocol::Blink,3,0},
+  {"KE-Jetronic","KE","M102.985 CA 1988",Protocol::Blink,3,0},
+  {"KE-Jetronic","KE","M102.985 CA 1991",Protocol::Blink,3,0},
 };
 static constexpr size_t hhtCount=sizeof(routes)/sizeof(routes[0]);
 size_t routeCount() {return hhtCount+sizeof(engineRoutes)/sizeof(engineRoutes[0]);}

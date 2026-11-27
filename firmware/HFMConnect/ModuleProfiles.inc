@@ -3,6 +3,7 @@ static const Measure m10[] = {{5,52,0,4,{8,5,2500,500}},{6,90,0,4,{8,5,2500,500}
 static const Measure m11[] = {{5,118,0,1,{10,3,1000,300}},{6,119,0,1,{10,3,1000,300}},{7,120,0,1,{10,3,1000,300}},{8,121,0,1,{10,3,1000,300}},{9,122,0,1,{10,3,1000,300}},{10,133,0,1,{10,3,1000,300}},{11,123,0,2,{10,3,1000,300}},{12,125,0,2,{10,3,1000,300}},{13,131,0,2,{10,3,1000,300}}};
 static const Measure m14[] = {{6,0,0,1,{20,4,1000,300}},{7,133,0,11,{20,4,1000,300}}};
 static const Measure egsCounters[] = {{21,0,96,4,{30,10,1995,1995}},{23,80,96,4,{30,10,1995,1995}}};
+static const Measure d2bRecords[] = {{1,0,0,0,{}},{2,0,0,0,{}},{3,0,0,0,{}},{4,0,0,0,{}}};
 static const Profile profiles[] = {
   {"ABS","0aa2@30",48,0,false,false,{500,200,4500,1},{30,4,1000,300},{30,4,1000,300},nullptr,0},
   {"ABS","0aa2@34",52,0,false,false,{500,200,4500,1},{30,4,1000,300},{30,4,1000,300},nullptr,0},
@@ -30,10 +31,12 @@ static const Profile profiles[] = {
   {"AAM","GL_ISO2",33,242,true,false,{},{},{},nullptr,0,0,33,false,false,10400},
   {"AB2","GL_ISO2",65,242,true,false,{},{},{},nullptr,0,0,65,false,false,10400},
   {"ADS","GL_ISO2",58,242,true,true,{},{},{},nullptr,0,0,58,false,false,10400},
+  {"AID","GL_ISO2",108,242,true,false,{},{},{},nullptr,0,0,108,false,false,10400,false,EngineMode::Native,IsoStart::Aid},
   {"AKS","GL_ISO2",37,242,true,false,{},{},{},nullptr,0,0,37,false,false,10400},
   {"APS","GL_ISO2",99,242,true,false,{},{},{},nullptr,0,0,99,false,false,10400,true},
   {"BAS","GL_ISO2",54,242,true,false,{},{},{},nullptr,0,0,54,false,false,10400},
   {"CNS","GL_ISO2",98,242,true,false,{},{},{},nullptr,0,0,98,false,false,10400},
+  {"D2B","GL_ISO2",208,242,true,false,{},{},{},d2bRecords,4,0,123,true,false,10400,false,EngineMode::Native,IsoStart::D2b},
   {"DIESEL","GL_ISO2",8,242,true,false,{},{},{},nullptr,0,0,8,false,false,10400},
   {"EDW2","GL_ISO2",112,242,true,false,{},{},{},nullptr,0,0,112,false,false,10400},
   {"EPH","GL_ISO2",116,242,true,false,{},{},{},nullptr,0,0,116,false,false,10400,true},
@@ -44,6 +47,7 @@ static const Profile profiles[] = {
   {"KI","GL_ISO2",105,242,true,false,{},{},{},nullptr,0,0,105,false,false,10400,true},
   {"KIW","GL_ISO2",105,242,true,false,{},{},{},nullptr,0,0,105,false,false,10400},
   {"KLA","GL_ISO2",80,242,true,false,{},{},{},nullptr,0,0,80,false,false,10400,true},
+  {"LWR","GL_ISO2",117,242,true,false,{},{},{},nullptr,0,0,117,false,false,10400,false,EngineMode::Native,IsoStart::Lwr},
   {"PML","GL_ISO2",41,242,true,false,{},{},{},nullptr,0,0,41,false,false,10400},
   {"SEM","GL_ISO2",112,242,true,false,{},{},{},nullptr,0,0,112,false,false,10400},
   {"SH2","GL_ISO2",81,242,true,false,{},{},{},nullptr,0,0,81,false,false,10400,true},

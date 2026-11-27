@@ -10,7 +10,7 @@ from run_host_tests import ROOT,FW,compiler
 def corpus(kit):
     sys.path.insert(0,str(kit/'03_REFERENCE'))
     import hfm_rom
-    from hfm_special_tests import Smoothness
+    from hfm_special_tests import Smoothness,cylinder_speeds
     from hfm_module import HfmModule
     from hfm_runtime import identify_core
     from hfm_decode import convert
@@ -55,6 +55,10 @@ def corpus(kit):
                         if mask & ((1<<cyl)-1) != (1<<cyl)-1: vals=[]
                     else: vals=convert(s['conversion'],r,variant,diag,0x55,cyl,s['screen_parameter'])
                     valid=sum(1<<i for i,x in enumerate(vals) if x is not None) & mask
+                    if special and diag>=0x45:
+                        speeds=[(x+32768)%65536-32768 for x in cylinder_speeds(r,variant,cyl,True)]
+                        assert mask & ((1<<cyl)-1) == (1<<cyl)-1
+                        yield bytes([screen,v,diag,0x55,cyl,3,228])+struct.pack('<HH',len(wire),1)+wire, ('crank',variant,diag,cyl,(1<<len(speeds))-1,speeds)
                     yield bytes([screen,v,diag,0x55,cyl,3,228])+struct.pack('<HH',len(wire),0)+wire, (screen,variant,diag,cyl,valid,vals)
 def main():
     parser=argparse.ArgumentParser(description=__doc__);parser.add_argument('kit',type=Path);args=parser.parse_args()
@@ -70,5 +74,9 @@ def main():
             screen,v,d,cyl,mask,vals=exp
             if row[:3]!=(0,1,mask) or any(mask&(1<<i) and row[3+i]!=x for i,x in enumerate(vals)):
                 raise ValueError((screen,v,d,cyl,mask,vals,row))
+        cranking=sum(x[0]=='crank' for x in expected)
+        if cranking!=8:raise ValueError('missing cranking replay contexts')
+        print(f'C++ HFM cranking: {cranking} reader contexts')
+        expected=[x for x in expected if x[0]!='crank']
         print(f'C++ HFM physical-word replay: {len(expected)} screens/contexts, {len(set(x[0] for x in expected))} distinct screens')
 if __name__=='__main__':main()

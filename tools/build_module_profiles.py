@@ -65,7 +65,40 @@ def generate(kit):
         passport=read(d,'passport'); c=passport['connection']; address=c.get('ecu_address')
         if not address or c['status']!='end' or c.get('gateway'):continue
         if not c.get('init'): continue
-        if d.name in ('D2B','AID','LWR'):continue
+        if d.name in ('D2B','AID','LWR'):
+            addr=int(address,16)
+            start=int(c['session_address'],16)
+            tester=int(c['tester_address'],16)
+            af=read(d,'af_programs')['af']
+            def calls(prog):
+                return [(i['args']['af'],i['args']['params']) for i in prog['insns'] if i['name']=='CALLAF']
+            def command(payload):
+                wire=bytes.fromhex(payload)
+                assert wire[2]==tester and wire[-1]==sum(wire[:-1])%256 and len(wire)==(wire[0]&63)+4
+                return wire[1],wire[3:-1].hex()
+            def requests(group,signal):
+                row=next(row for row in passport['functions'][group] if row['signal']==signal and row['status']=='end')
+                return [command(tx) for tx in row['requests']]
+            kwp=d.name=='D2B'
+            setup=[command(t['tx']) for t in c['telegrams'] if t['tx']]
+            expected=[(start,'81'),(addr,'8302'),(addr,'3e'),(addr,'1a86')]+[(addr,f'21{i:02x}') for i in range(1,5)] if kwp else [
+                (addr,'81'),(addr,'82'),(addr,'81'),(addr,'8300'),(addr,'3f')]
+            if d.name=='LWR':expected += [(addr,'8300'),(addr,'3c00')]
+            assert setup==expected and tester==0xf2
+            assert requests('1_ident','ID_LESEN')==([(addr,'1a86')] if kwp else [(addr,'3c00')]+([(addr,'3c01')] if d.name=='AID' else []))
+            params=[0,start,addr,addr,tester]+([] if kwp else [0,0])
+            assert any((['G',10 if kwp else 53],[['imm',v] for v in params]) in calls(prog)
+                       for prog in af if prog['clean'])
+            symbol='nullptr'; reads=0
+            if kwp:
+                symbol='d2bRecords'; reads=4
+                tables.append('static const Measure d2bRecords[] = {'+','.join('{%d,0,0,0,{}}'%i for i in range(1,5))+'};')
+            else:
+                assert requests('2_read_faults','FS_LESEN')==[(addr,'a1')]
+            strategy={'D2B':'D2b','AID':'Aid','LWR':'Lwr'}[d.name]
+            options[d.name,'GL_ISO2']=f',0,{start},{str(kwp).lower()},false,10400,false,EngineMode::Native,IsoStart::{strategy}'
+            profiles.append((d.name,'GL_ISO2',addr,tester,True,False,'{}','{}','{}',symbol,reads))
+            continue
         addr=int(address,16)
         af=read(d,'af_programs')['af']
         setup=[i['args']['params'] for prog in af if prog['clean'] and 'AUFBAU' in prog['signals']

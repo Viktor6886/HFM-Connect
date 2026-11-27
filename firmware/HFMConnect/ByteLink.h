@@ -52,7 +52,7 @@ class ByteLink {
   virtual bool supportsDuty() const {return false;}
   virtual bool sampleDuty(scanner::DutySample&) {return false;}
   virtual bool supportsKeBlink() const {return false;}
-  virtual uint8_t readKeBlink() {return 0;}
+  virtual uint8_t readKeBlink(bool& idle,bool /*senseIdle*/) {idle=false;return 0;}
 
   // Number of actual echo/reply bytes from the last exchange; -1 for old replay adapters.
   virtual int receiveCount() const { return -1; }

@@ -20,7 +20,7 @@ class FtdiLink;
 
 enum class Job : uint8_t {
   None, Connect, Disconnect, Identify, ReadDtc, ReadAdapt, ReadCoding, ReadVin,
-  LiveStart, LiveStop, SvcPrepare, SvcExecute, PurgeOn, PurgeOff, Stop, ImpulseRead, AckFault, HhtScreen, SelectRoute, AttachRoute, ModuleMeasure, ScanContact
+  LiveStart, LiveStop, SvcPrepare, SvcExecute, PurgeOn, PurgeOff, Stop, ImpulseRead, AckFault, HhtScreen, SelectRoute, AttachRoute, ModuleMeasure, ScanContact, ModuleInfo, HfmCranking, HfmThrottleStatus
 };
 const char* jobCode(Job j);
 
@@ -98,6 +98,9 @@ struct ModuleState {
   bool confirmed=false;
   scanner::FrameError error=scanner::FrameError::Ok;
   scanner::Readout readout;
+  hht::CrankingResult cranking;
+  struct ThrottleStatus {uint8_t contact=0,configuration=0,learned=0;} throttle;
+  bool canCrank=false;
 };
 struct ScanRecord {
   int16_t route=-1;
@@ -196,6 +199,7 @@ class DiagEngine {
   void scannerTick();
   void moduleClear(Job job,uint32_t arg,const char* text,const scanner::Profile& profile,char* msg,size_t size,bool& ok);
   void storeScan(int id,const scanner::Readout& read,scanner::FrameError error);
+  bool measureCranking(char* msg,size_t n);
   void scanContact(char* msg,size_t n,bool& ok);
   void execute(Job j, uint32_t arg, const char* text);
   bool ensureConnected(char* msg, size_t n);

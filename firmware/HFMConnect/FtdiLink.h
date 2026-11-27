@@ -34,7 +34,7 @@ class FtdiLink : public ByteLink {
   bool supportsDuty() const override {return attached_ && vid_==0x0403 && pid_==0x6001 && bcd_==0x0600;}
   bool sampleDuty(scanner::DutySample& out) override;
   bool supportsKeBlink() const override {return supportsDuty();}
-  uint8_t readKeBlink() override;
+  uint8_t readKeBlink(bool& idle,bool senseIdle) override;
   bool isOpen() const override { return open_ && attached_; }
   LinkStatus wakeup(const LinkTiming& t, uint8_t& echo, uint8_t& sync) override;
   LinkStatus exchange(uint8_t tx, Parity p, uint16_t deadlineMs, uint8_t& echo, uint8_t& resp) override;
@@ -164,7 +164,7 @@ class FtdiLink : public ByteLink {
   static int logHook(const char* fmt, va_list ap);
   void closeDevice();
   bool configure();
-  bool captureEngineSignal(scanner::DutySample* duty,uint8_t& blink);
+  bool captureEngineSignal(scanner::DutySample* duty,uint8_t& blink,bool& idle,bool senseIdle=false);
   bool needsReattach_=false;
   bool ctrl(uint8_t request, uint16_t value, uint16_t index);
   bool setLine(Parity p, bool brk);

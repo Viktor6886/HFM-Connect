@@ -11,6 +11,7 @@
 #include "HfmSession.h"
 
 namespace svc {
+bool validVariantCode(const char* text);
 
 // ---- read services ----------------------------------------------------------
 struct FaultMemory {

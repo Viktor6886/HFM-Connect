@@ -27,7 +27,9 @@ const Profile* profile(const Route& r) {
     engineProfile("ME-OBD","5 baud",EngineMode::ObdSlow,obdMeasures,8),
     engineProfile("ME-OBD","fast init",EngineMode::ObdFast,obdMeasures,8),
     engineProfile("KE","X11 PWM",EngineMode::KeDuty,dutyMeasure,1),
-    engineProfile("KE","N3 M104/M119",EngineMode::KeBlink,nullptr,0)
+    engineProfile("KE","N3 M104/M119",EngineMode::KeBlink,nullptr,0),
+    engineProfile("KE","M102.985 CA 1988",EngineMode::KeBlinkM102,nullptr,0),
+    engineProfile("KE","M102.985 CA 1991",EngineMode::KeBlinkM102,nullptr,0)
   };
   if(r.protocol==Protocol::Obd || r.protocol==Protocol::Duty || r.protocol==Protocol::Blink) {
     for(const auto& p:engines)if(!strcmp(r.module,p.module) && !strcmp(r.variant,p.variant))return &p;
@@ -60,21 +62,34 @@ FrameError ModuleDriver::connect(const Profile& p,uint32_t baud) {
     if(allEcho) {close();return FrameError::Echo;}
     out_.identLen=p.classicIdBytes;out_.identityValid=true;return FrameError::Ok;
   }
-  auto e=p.iso ? wire_.connectIso(p.initAddress==0xff ? p.address : p.initAddress,p.tester,p.slow,p.address,p.functional,p.isoBaud) :
+  auto e=p.iso ? wire_.connectIso(p.initAddress==0xff ? p.address : p.initAddress,p.tester,p.slow,p.address,p.functional,p.isoBaud,p.start) :
                  wire_.connectKs(p.address,p.fastKs ? 9600 : baud,p.init,p.fastKs);
   if (e!=FrameError::Ok) return e;
   if (p.iso) {
-    const uint8_t id[]={0x3c,0};
-    e=wire_.request(id,sizeof id,0x7c,wire_.isoTiming());
-    if (e==FrameError::Ok && (wire_.size()<2 || wire_.data()[0]!=0)) e=FrameError::Reply;
+    const bool kwp=p.start==IsoStart::D2b;
+    const uint8_t id[]={uint8_t(kwp ? 0x1a : 0x3c),uint8_t(kwp ? 0x86 : 0)};
+    e=wire_.request(id,sizeof id,id[0]+0x40,wire_.isoTiming());
+    if(e==FrameError::Ok && (wire_.size()<2 || wire_.data()[0]!=id[1]))e=FrameError::Reply;
   }
   size_t skip=p.iso ? 1 : 0;
   if (e==FrameError::Ok && wire_.size()-skip>sizeof out_.ident) e=FrameError::Length;
   if (e==FrameError::Ok) {
     out_.identLen=wire_.size()-skip;
     memcpy(out_.ident,wire_.data()+skip,out_.identLen);
-    out_.identityValid=true;
-  } else close();
+    if(p.start==IsoStart::Aid) {
+      const uint8_t id[]={0x3c,1};
+      e=wire_.request(id,sizeof id,0x7c,wire_.isoTiming());
+      if(e==FrameError::Ok && (wire_.size()<2 || wire_.data()[0]!=1))e=FrameError::Reply;
+      if(e==FrameError::Ok && wire_.size()-1>sizeof out_.ident-out_.identLen)e=FrameError::Length;
+      if(e==FrameError::Ok) {
+        out_.secondIdOffset=out_.identLen;
+        memcpy(out_.ident+out_.identLen,wire_.data()+1,wire_.size()-1);
+        out_.identLen+=wire_.size()-1;
+      }
+    }
+    out_.identityValid=e==FrameError::Ok;
+  }
+  if(e!=FrameError::Ok)close();
   return e;
 }
 FrameError ModuleDriver::keepAlive(const Profile& p) {
@@ -90,8 +105,8 @@ FrameError ModuleDriver::keepAlive(const Profile& p) {
     return words_.readIdent(&value,1)==LinkStatus::Ok && value==out_.ident[0] ? FrameError::Ok : FrameError::Reply;
   }
   if (p.iso) {
-    uint8_t request=0x3f;
-    return wire_.request(&request,1,0x7f,wire_.isoTiming());
+    uint8_t request=p.start==IsoStart::D2b ? 0x3e : 0x3f;
+    return wire_.request(&request,1,request+0x40,wire_.isoTiming());
   }
   uint8_t status[]={0x50,1};
   auto result=wire_.request(status,2,0xd0,p.status);
@@ -100,9 +115,17 @@ FrameError ModuleDriver::keepAlive(const Profile& p) {
   uint8_t state=wire_.data()[0];
   return state==8 || state==0x72 || state==0x74 || state==0x78 ? FrameError::Negative : FrameError::Ok;
 }
-FrameError ModuleDriver::nextBlink() {
+FrameError ModuleDriver::nextBlink(bool m102) {
+  out_.blinkQuietEnd=false;
   if(out_.faultsValid) {out_.codeCount=0;out_.faultsValid=false;}
-  uint8_t code=link_.readKeBlink();out_.lastBlink=code;
+  bool idle=false;
+  uint8_t code=link_.readKeBlink(idle,m102);out_.lastBlink=code;
+  if(m102 && idle && !code && out_.codeCount && link_.isOpen()) {
+    out_.faultsValid=true;out_.blinkQuietEnd=true;return FrameError::Ok;
+  }
+  if(m102 && (code>12 || (code && out_.codeCount && code<=out_.codes[out_.codeCount-1]))) {
+    out_.codeCount=out_.lastBlink=0;return FrameError::Reply;
+  }
   if(!code) {out_.codeCount=0;return link_.isOpen() ? FrameError::Timeout : FrameError::Offline;}
   if(code==1 && !out_.codeCount) {out_.faultsValid=true;return FrameError::Ok;}
   if(out_.codeCount && code==out_.codes[0]) {out_.faultsValid=true;return FrameError::Ok;}
@@ -112,7 +135,7 @@ FrameError ModuleDriver::nextBlink() {
   return FrameError::Ok;
 }
 FrameError ModuleDriver::faults(const Profile& p) {
-  if(p.mode==EngineMode::KeBlink)return nextBlink();
+  if(p.blink())return nextBlink(p.mode==EngineMode::KeBlinkM102);
   out_.faultsValid=false; out_.codeCount=0;
   if(!p.canReadFaults())return FrameError::Unsupported;
   if(p.obd()) {
@@ -162,9 +185,51 @@ FrameError ModuleDriver::clearFaults(const Profile& p) {
   if(error==FrameError::Ok && wire_.size()!=0) return FrameError::Reply;
   return error;
 }
+FrameError ModuleDriver::information(const Profile& p,unsigned pid) {
+  if(!p.obd() || (pid!=2 && pid!=4 && pid!=6))return FrameError::Unsupported;
+  if(pid==2)out_.obdVin[0]=0;
+  if(pid==4)out_.calibrationCount=0;
+  if(pid==6)out_.cvnCount=0;
+  uint8_t raw[64]{},len=0;
+  const auto err=wire_.obdInformation(uint8_t(pid),raw,len);
+  if(err!=FrameError::Ok) {if(!wire_.ready())close();return err;}
+  if(pid==2) {
+    if(len!=20 || raw[0] || raw[1] || raw[2])return FrameError::Reply;
+    for(unsigned i=3;i<len;++i) {
+      const uint8_t c=raw[i];
+      if(!((c>='0' && c<='9') || (c>='A' && c<='Z' && c!='I' && c!='O' && c!='Q')))return FrameError::Reply;
+    }
+    memcpy(out_.obdVin,raw+3,17);out_.obdVin[17]=0;
+  } else if(pid==4) {
+    for(unsigned i=0;i<len/16;++i) {
+      auto* field=raw+i*16;
+      unsigned n=16;
+      while(n && (field[n-1]==0 || field[n-1]==' '))--n;
+      if(!n)return FrameError::Reply;
+      for(unsigned j=0;j<n;++j)if(field[j]<0x20 || field[j]>0x7e)return FrameError::Reply;
+      memcpy(out_.calibrations[i],field,n);out_.calibrations[i][n]=0;
+    }
+    out_.calibrationCount=len/16;
+  } else {
+    for(unsigned i=0;i<len/4;++i) {
+      const auto* b=raw+i*4;
+      out_.cvns[i]=(uint32_t(b[0])<<24)|(uint32_t(b[1])<<16)|(uint32_t(b[2])<<8)|b[3];
+    }
+    out_.cvnCount=len/4;
+  }
+  return FrameError::Ok;
+}
 FrameError ModuleDriver::measurement(const Profile& p,unsigned index) {
   out_.rawLen=0;
   if(index>=p.measureCount) return FrameError::Reply;
+  if(p.start==IsoStart::D2b) {
+    const uint8_t request[]={0x21,p.measures[index].at};
+    auto err=wire_.request(request,2,0x61,wire_.isoTiming());
+    if(err!=FrameError::Ok)return err;
+    if(wire_.size()<2 || wire_.size()-1>sizeof out_.raw || wire_.data()[0]!=request[1])return FrameError::Reply;
+    out_.rawLen=wire_.size()-1;out_.at=request[1];memcpy(out_.raw,wire_.data()+1,out_.rawLen);
+    return FrameError::Ok;
+  }
   if(p.mode==EngineMode::KeDuty) {
     out_.duty={};
     bool ok=link_.sampleDuty(out_.duty);
